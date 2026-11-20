@@ -1,0 +1,2 @@
+# The greeter remembers the last user and session here.
+d /var/cache/enzui-greeter 0700 greeter greeter -

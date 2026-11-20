@@ -1,0 +1,23 @@
+#!/usr/bin/env lua
+local monitor={name="TEST",width=1440,height=900,scale=1,enabled=true,transform=0,is_mirror=false,
+    reserved={left=3,top=36,right=3,bottom=3}}
+hl={get_monitors=function()return{monitor}end}
+dofile(arg[0]:match("^(.*)/").."/../config/output-size.lua")
+dofile(arg[0]:match("^(.*)/").."/../config/settings-launch.lua")
+local command="env ENZUI_SETTINGS_PAGE=notifications '/owned/test settings'"
+assert(enzui_settings_command(command,"TEST")=="env ENZUI_SETTINGS_WIDTH=1024 ENZUI_SETTINGS_HEIGHT=768 "..command)
+monitor.width=480;monitor.height=800;monitor.reserved.top=3;monitor.reserved.bottom=36
+assert(enzui_settings_command(command,"TEST")=="env ENZUI_SETTINGS_WIDTH=446 ENZUI_SETTINGS_HEIGHT=733 "..command)
+monitor.width=960;monitor.height=1600;monitor.scale=2
+assert(enzui_settings_command(command,"TEST")=="env ENZUI_SETTINGS_WIDTH=446 ENZUI_SETTINGS_HEIGHT=733 "..command)
+assert(not pcall(enzui_settings_command,command,"ENZREMOTE-APP"))
+assert(not pcall(enzui_settings_command,command,"MISSING"))
+monitor.enabled=false;assert(not pcall(enzui_settings_command,command,"TEST"));monitor.enabled=true
+monitor.is_mirror=true;assert(not pcall(enzui_settings_command,command,"TEST"));monitor.is_mirror=false
+monitor.transform=1;assert(enzui_settings_command(command,"TEST")=="env ENZUI_SETTINGS_WIDTH=766 ENZUI_SETTINGS_HEIGHT=413 "..command);monitor.transform=0
+monitor.scale=0;assert(not pcall(enzui_settings_command,command,"TEST"));monitor.scale=2
+monitor.reserved.left=-1;assert(not pcall(enzui_settings_command,command,"TEST"));monitor.reserved.left=3
+monitor.width=0/0;assert(not pcall(enzui_settings_command,command,"TEST"));monitor.width=960
+monitor.reserved.top=1000;assert(not pcall(enzui_settings_command,command,"TEST"))
+assert(not pcall(enzui_settings_command,string.rep("x",8193),"TEST"))
+print("Settings launch: dynamic logical work area, bounded size, intact command and invalid-output rejection passed.")

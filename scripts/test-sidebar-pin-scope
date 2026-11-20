@@ -1,0 +1,82 @@
+#!/usr/bin/env lua
+local output={name="TEST",width=1440,height=900,scale=1,x=0,y=0,enabled=true,transform=0,is_mirror=false}
+local desktops={{id=1,monitor=output},{id=2,monitor=output}}
+local current=desktops[1]
+local windows={}
+local pointer={x=500,y=300}
+local no_warps,follow=false,1
+hl={dsp={window={},cursor={}}}
+function hl.get_monitors() return {output} end
+function hl.get_workspaces() return desktops end
+function hl.get_active_workspace(name) assert(name=="TEST");return current end
+function hl.get_windows() return windows end
+function hl.get_cursor_pos() return pointer end
+function hl.get_config(key) if key=="cursor.no_warps" then return no_warps elseif key=="input.follow_mouse" then return follow end end
+function hl.config(value) if value.cursor then no_warps=value.cursor.no_warps end;if value.input then follow=value.input.follow_mouse end end
+function hl.dsp.event() return {kind="event"} end
+function hl.dsp.focus(args) args.kind="focus";return args end
+function hl.dsp.cursor.move(args) args.kind="cursor";return args end
+for _,key in ipairs({"pin","float","move","resize","tag","alter_zorder"})do
+    hl.dsp.window[key]=function(args) args.kind=key;return args end
+end
+function hl.window_rule(rule) assert(rule.name=="sidebar-app-chrome" and rule.no_xdg_drags) end
+function hl.dispatch(args)
+    local w=args.window
+    if args.kind=="focus" then assert(no_warps and follow==3)
+    elseif args.kind=="cursor" then pointer={x=args.x,y=args.y}
+    elseif args.kind=="pin" then w.pinned=args.action=="on"
+    elseif args.kind=="float" then w.floating=args.action=="on"
+    elseif args.kind=="move" then
+        if args.workspace then
+            w.workspace=type(args.workspace)=="number" and desktops[args.workspace] or {name=args.workspace,monitor=output}
+        else w.at={x=args.x,y=args.y} end
+    elseif args.kind=="resize" then w.size={x=args.x,y=args.y}
+    elseif args.kind=="tag" then
+        if args.tag:sub(1,1)=="+" then w.tags[#w.tags+1]=args.tag:sub(2)
+        else for i=#w.tags,1,-1 do if w.tags[i]==args.tag:sub(2) then table.remove(w.tags,i) end end end
+    end
+    return {ok=true}
+end
+local root=arg[0]:match("^(.*)/").."/../config/"
+dofile(root.."output-size.lua")
+dofile(root.."shell-metrics.lua")
+dofile(root.."sidebar-policy.lua")
+local function app(pid)
+    local w={address="0x"..pid,stable_id="scope-"..pid,pid=pid,mapped=true,hidden=false,monitor=output,
+        workspace=current,class="scope-test",pinned=false,fullscreen=0,floating=true,at={x=300,y=180},size={x=500,y=380},tags={}}
+    windows[#windows+1]=w;return w
+end
+local function rows()
+    local snapshot=enzui_sidebar_snapshot()
+    local entries=snapshot:match('"entries":%[([^%]]*)%]')
+    local found={}
+    for id in entries:gmatch('"id":(%d+)')do found[#found+1]=tonumber(id) end
+    return found,tonumber(snapshot:match('"shown":(%d+)')),snapshot
+end
+assert(not pcall(enzui_sidebar_configure,"TEST","left","top",888,nil,nil,nil,"invalid"))
+assert(enzui_sidebar_configure("TEST","left","top",888,nil,nil,nil,"desktop").ok)
+local a=app(777);assert(enzui_sidebar_pin_window(a).ok)
+local id=enzui_sidebar.entries[1].id
+assert(enzui_sidebar.entries[1].desktop==1 and a.workspace.name=="special:enzui-miniapps")
+assert(enzui_sidebar_toggle(id).ok and a.pinned)
+current=desktops[2]
+local listed,shown=rows();assert(#listed==0 and shown==0)
+assert(not enzui_sidebar_toggle(id).ok)
+enzui_sidebar_tick()
+assert(not a.pinned and a.workspace.name=="special:enzui-miniapps" and enzui_sidebar.shown==nil)
+local b=app(778);assert(enzui_sidebar_pin_window(b).ok)
+local second=enzui_sidebar.entries[2].id
+listed,shown=rows();assert(#listed==1 and listed[1]==second and shown==0)
+assert(enzui_sidebar_toggle(second).ok and b.pinned)
+current=desktops[1];enzui_sidebar_tick();listed,shown=rows()
+assert(#listed==1 and listed[1]==id and shown==0 and not b.pinned)
+assert(enzui_sidebar_toggle(id).ok and a.pinned)
+assert(enzui_sidebar_configure("TEST","left","top",888,nil,nil,nil,"shared").ok)
+current=desktops[2];enzui_sidebar_tick();listed,shown=rows()
+assert(#listed==2 and listed[1]==id and listed[2]==second and shown==id and a.pinned)
+assert(enzui_sidebar_hide().ok)
+assert(enzui_sidebar_configure("TEST","left","top",888,nil,nil,nil,"desktop").ok)
+listed,shown=rows();assert(#listed==1 and listed[1]==second and shown==0)
+current=desktops[1];enzui_sidebar_tick();assert(enzui_sidebar_unpin(id,false).ok)
+assert(a.workspace.id==1 and not a.pinned and #enzui_sidebar.entries==1)
+print("Sidebar pin scope: per-desktop filtering, workspace switch close, shared visibility, live mode change and safe restore passed.")

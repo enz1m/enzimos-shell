@@ -1,0 +1,67 @@
+[
+  {
+    "family": "Fredoka",
+    "bundled_family": "Fredoka",
+    "source": "https://raw.githubusercontent.com/google/fonts/47d54ca1ebb14fd864695f1d39dc734f39017c33/ofl/fredoka/Fredoka%5Bwdth%2Cwght%5D.ttf",
+    "sha256": "2ba02e68b152868aef9ba28e24b3648c7d457fe6f25c761f2c2c53fb61a73fc8",
+    "weights": [
+      300,
+      400,
+      500,
+      600,
+      700
+    ],
+    "subset": "Latin + punctuation; other scripts use installed fallback fonts",
+    "licence": "Fredoka-OFL.txt"
+  },
+  {
+    "family": "Nunito",
+    "bundled_family": "Nunito",
+    "source": "https://raw.githubusercontent.com/google/fonts/47d54ca1ebb14fd864695f1d39dc734f39017c33/ofl/nunito/Nunito%5Bwght%5D.ttf",
+    "sha256": "bb55a5ca5c2042335b3991af27c4d0705d0ef41cac6164ac737fd8f2a1e85207",
+    "weights": [
+      200,
+      300,
+      400,
+      500,
+      600,
+      700,
+      800,
+      900
+    ],
+    "subset": "Latin + punctuation; other scripts use installed fallback fonts",
+    "licence": "Nunito-OFL.txt"
+  },
+  {
+    "family": "Quicksand",
+    "bundled_family": "Enz Pebble",
+    "source": "https://raw.githubusercontent.com/google/fonts/47d54ca1ebb14fd864695f1d39dc734f39017c33/ofl/quicksand/Quicksand%5Bwght%5D.ttf",
+    "sha256": "39c9b64223561f56aaff6062a6f04063c4fc86809ad6768722c06614d977e1cc",
+    "weights": [
+      300,
+      400,
+      500,
+      600,
+      700
+    ],
+    "subset": "Latin + punctuation; other scripts use installed fallback fonts",
+    "licence": "Quicksand-OFL.txt"
+  },
+  {
+    "family": "Rubik",
+    "bundled_family": "Rubik",
+    "source": "https://raw.githubusercontent.com/google/fonts/47d54ca1ebb14fd864695f1d39dc734f39017c33/ofl/rubik/Rubik%5Bwght%5D.ttf",
+    "sha256": "1b3a7437ba2af80e465e773ed60c5036d1ba6ace492d89046dbcf18fb31e4e88",
+    "weights": [
+      300,
+      400,
+      500,
+      600,
+      700,
+      800,
+      900
+    ],
+    "subset": "Latin + punctuation; other scripts use installed fallback fonts",
+    "licence": "Rubik-OFL.txt"
+  }
+]

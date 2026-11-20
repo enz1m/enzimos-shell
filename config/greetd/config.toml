@@ -1,0 +1,11 @@
+
+[terminal]
+vt = 1
+
+[general]
+# Session command quoting in lock/src/exec.rs requires profile sourcing.
+source_profile = true
+
+[default_session]
+command = "/usr/lib/enzui/enzui-greeter-session"
+user = "greeter"

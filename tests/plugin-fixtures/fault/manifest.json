@@ -1,0 +1,1 @@
+{"format":1,"id":"fault-fixture","name":"Owned fault fixture","version":"1","description":"Disposable crash, hang, flood, invalid UI and allocation tests. Never install into a user profile.","permissions":["shell.bar","shell.panels","notifications.read"],"elements":[{"id":"fault","section":"end","before":"builtin.controls"}],"settings":[]}

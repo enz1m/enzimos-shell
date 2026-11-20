@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MIT
+[Unit]
+Description=enzUI credential unlock dialogs
+PartOf=enzui-session.target
+After=enzui-session.target
+
+[Service]
+Type=dbus
+BusName=dev.enzui.SecretPrompter
+ExecStart=/usr/lib/enzui/bin/enzui-keyring-prompt
+NoNewPrivileges=yes
+LimitCORE=0
+Restart=on-failure

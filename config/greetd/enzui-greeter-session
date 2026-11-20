@@ -1,0 +1,6 @@
+#!/bin/sh
+# greetd entry point; starts the private compositor and greeter using ENZUI_SHELL_SETTINGS.
+export ENZUI_DESKTOP_ROOT="${ENZUI_DESKTOP_ROOT:-/usr/share/enzui}"
+export ENZUI_SHELL_SETTINGS="${ENZUI_SHELL_SETTINGS:-/etc/enzui/greeter.json}"
+export XDG_SESSION_TYPE=wayland
+exec Hyprland --config "${ENZUI_GREETER_CONFIG:-/usr/share/enzui/greeter/hyprland.lua}"

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+if [[ ${1:-} != --help ]]; then
+    "$root/scripts/setup-sources" >&2
+fi
+exec "$root/scripts/with-build-budget" python3 "$root/tools/build-remote-desktop-portal.py" "$@"

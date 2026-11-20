@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+"""Initialize the recorded sources without advancing an existing checkout."""
+import json
+from pathlib import Path
+import subprocess
+
+root = Path(__file__).resolve().parent.parent
+pins = json.loads((root / 'sources.lock.json').read_text())
+status = subprocess.check_output(['git', '-C', str(root), 'submodule', 'status'], text=True)
+if any(line.startswith(('+', 'U')) for line in status.splitlines()):
+    raise SystemExit('Submodule revisions differ from the recorded gitlinks; refusing an implicit update')
+if any(line.startswith('-') for line in status.splitlines()):
+    subprocess.run(['git', '-C', str(root), 'submodule', 'update', '--init'], check=True)
+for name, path in [('hyprland', 'vendor/Hyprland'), ('aquamarine', 'vendor/aquamarine'), ('framework', 'vendor/enzui'), ('iced', 'vendor/iced'), ('enzwall', 'enzwall'), ('remote_desktop_portal', 'vendor/xdg-desktop-portal-hyprland'), ('phone_link_client', 'vendor/phone-link')]:
+    actual = subprocess.check_output(['git', '-C', str(root/path), 'rev-parse', 'HEAD'], text=True).strip()
+    if actual != pins[name]['revision']:
+        raise SystemExit(f'{name} differs from sources.lock.json; refusing an implicit source update')
+# The remote portal builds these recorded dependencies from source.
+portal = root / 'vendor/xdg-desktop-portal-hyprland'
+nested = subprocess.check_output(['git', '-C', str(portal), 'submodule', 'status'], text=True)
+if any(line.startswith(('+', 'U')) for line in nested.splitlines()):
+    raise SystemExit('Portal submodule revisions differ from their recorded gitlinks; refusing an implicit update')
+if any(line.startswith('-') for line in nested.splitlines()):
+    subprocess.run(['git', '-C', str(portal), 'submodule', 'update', '--init'], check=True)
+subprocess.run(['cargo', 'fetch', '--locked'], cwd=root, check=True)
+subprocess.run(['cargo', 'fetch', '--locked', '--manifest-path', 'tools/wgsl-glsl/Cargo.toml'], cwd=root, check=True)
+subprocess.run([str(root / 'enzwall/scripts/setup-sources')], cwd=root / 'enzwall', check=True)
+print('Pinned desktop sources and Cargo SDK are ready.')

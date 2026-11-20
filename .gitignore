@@ -1,0 +1,14 @@
+# Runtime artifacts belong in $XDG_RUNTIME_DIR, but ignore local overrides too.
+.runtime/
+.build/
+target/
+__pycache__/
+*.log
+*.png
+!/assets/wallpaper.png
+!/lock/assets/scene.png
+!/enzwall/scenes/*/*.png
+
+# Retired app checkouts; apps are built and packaged from their own repositories.
+/vendor/enzui-apps/
+/vendor/apps/

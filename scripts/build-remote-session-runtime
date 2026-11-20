@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+[[ $# -le 1 ]] || { echo 'Usage: build-remote-session-runtime [runtime-root]' >&2; exit 2; }
+export ENZUI_SIDEBAR_BUILDROOT=${1:-$root/.build/remote-session}
+export ENZUI_HYPR_BUILDROOT=$ENZUI_SIDEBAR_BUILDROOT-compositor
+"$root/scripts/build-desktop-compositor" remote-session
+exec "$root/scripts/build-sidebar-scene"

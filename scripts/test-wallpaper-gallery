@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+from pathlib import Path
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import tempfile
+import unittest
+from PIL import Image
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def load(name):
+    loader = importlib.machinery.SourceFileLoader(name.replace('-', '_'), str(ROOT / 'scripts' / name))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+worker = load('wallpaper-gallery')
+importer = load('import-wallpaper')
+installer = load('install-wallpapers')
+
+
+class GalleryTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.folder = self.root / 'Pictures/Wallpapers'
+        self.folder.mkdir(parents=True)
+        self.cache = self.root / 'thumbs'
+
+    def picture(self, name='sample.png', color='red'):
+        path = self.folder / name
+        Image.new('RGB', (64, 36), color).save(path)
+        return path
+
+    def listing(self):
+        return worker.gallery({'folder': str(self.folder), 'cache': str(self.cache)})
+
+    def test_gallery_inputs_are_bounded_normalized_thumbnails(self):
+        path = self.picture()
+        self.cache = self.root / 'fresh-config' / 'enzui-shell' / 'thumbs'
+        before = path.read_bytes()
+        result = self.listing()
+        self.assertEqual(self.cache.parent.stat().st_mode & 0o777, 0o700)
+        entry = result['entries'][0]
+        self.assertEqual(entry['digest'], hashlib.sha256(before).hexdigest())
+        with Image.open(entry['thumbnail']) as image:
+            self.assertEqual(image.size, (384, 216))
+            self.assertEqual(image.format, 'PNG')
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(self.listing(), result)
+
+    def test_identical_images_have_distinct_action_identity(self):
+        self.picture('a.png')
+        self.picture('b.png')
+        entries = self.listing()['entries']
+        self.assertEqual(entries[0]['thumbnail'], entries[1]['thumbnail'])
+        self.assertNotEqual(entries[0]['id'], entries[1]['id'])
+
+    def test_missing_folder_is_an_empty_gallery(self):
+        result = worker.gallery({'folder': str(self.root/'missing'), 'cache': str(self.cache)})
+        self.assertEqual(result['entries'], [])
+        self.assertFalse(result['truncated'])
+
+    def test_symlinks_and_non_images_are_not_gallery_choices(self):
+        path = self.picture()
+        (self.folder/'link.png').symlink_to(path)
+        (self.folder/'bad.jpg').write_bytes(b'not a JPEG')
+        (self.folder/'notes.txt').write_text('not an image')
+        result = self.listing()
+        self.assertEqual(len(result['entries']), 1)
+        self.assertEqual(result['skipped'], 1)
+
+    def test_gallery_cap_is_explicit(self):
+        for index in range(49):
+            self.picture(f'wallpaper-{index:02d}.png')
+        result = self.listing()
+        self.assertEqual(len(result['entries']), 48)
+        self.assertTrue(result['truncated'])
+        self.assertEqual(len({entry['id'] for entry in result['entries']}), 48)
+        self.assertLess(len(json.dumps(result).encode()), 65536)
+
+    def test_changed_image_invalidates_the_import_selection(self):
+        path = self.picture()
+        entry = self.listing()['entries'][0]
+        self.picture(color='blue')
+        with self.assertRaisesRegex(ValueError, 'changed since'):
+            importer.import_image({'source': str(path), 'cache': str(self.root/'wallpapers'), 'expected_sha256': entry['digest']})
+        self.assertNotEqual(self.listing()['entries'][0]['id'], entry['id'])
+
+    def test_matching_selection_imports_without_changing_original(self):
+        path = self.picture()
+        entry = self.listing()['entries'][0]
+        before = path.read_bytes()
+        result = importer.import_image({'source': str(path), 'cache': str(self.root/'wallpapers'), 'expected_sha256': entry['digest']})
+        self.assertTrue(Path(result['path']).is_file())
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_thumbnail_cache_cannot_be_a_symlink(self):
+        destination = self.root/'other'
+        destination.mkdir()
+        self.cache.symlink_to(destination)
+        with self.assertRaises(ValueError):
+            self.listing()
+
+    def test_existing_wallpapers_are_not_overwritten(self):
+        name = next((ROOT/'assets/wallpapers').glob('enzui-*.jpg')).name
+        path = self.folder/name
+        path.write_bytes(b'keep this existing file')
+        installed, preserved = installer.install(self.folder)
+        self.assertEqual((installed, preserved), (5, 1))
+        self.assertEqual(path.read_bytes(), b'keep this existing file')
+        self.assertEqual(installer.install(self.folder), (0, 6))
+
+
+if __name__ == '__main__':
+    unittest.main()

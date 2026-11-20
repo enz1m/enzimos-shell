@@ -1,0 +1,47 @@
+[submodule "vendor/Hyprland"]
+	path = vendor/Hyprland
+	url = https://github.com/enz1m/enzim-hyprland.git
+[submodule "vendor/wayland-protocols"]
+	path = vendor/wayland-protocols
+	url = https://gitlab.freedesktop.org/wayland/wayland-protocols.git
+[submodule "vendor/hyprutils"]
+	path = vendor/hyprutils
+	url = https://github.com/hyprwm/hyprutils.git
+[submodule "vendor/hyprgraphics"]
+	path = vendor/hyprgraphics
+	url = https://github.com/hyprwm/hyprgraphics.git
+[submodule "vendor/aquamarine"]
+	path = vendor/aquamarine
+	url = https://github.com/enz1m/enzim-aquamarine.git
+[submodule "vendor/hyprlang"]
+	path = vendor/hyprlang
+	url = https://github.com/hyprwm/hyprlang.git
+[submodule "vendor/hyprcursor"]
+	path = vendor/hyprcursor
+	url = https://github.com/hyprwm/hyprcursor.git
+[submodule "vendor/hyprwayland-scanner"]
+	path = vendor/hyprwayland-scanner
+	url = https://github.com/hyprwm/hyprwayland-scanner.git
+[submodule "vendor/hyprwire"]
+	path = vendor/hyprwire
+	url = https://github.com/hyprwm/hyprwire.git
+[submodule "vendor/enzui"]
+	path = vendor/enzui
+	url = https://github.com/enz1m/enzui.git
+[submodule "vendor/json"]
+	path = vendor/json
+	url = https://github.com/nlohmann/json.git
+
+[submodule "enzwall"]
+	path = enzwall
+	url = https://github.com/enz1m/enzwall.git
+
+[submodule "vendor/xdg-desktop-portal-hyprland"]
+	path = vendor/xdg-desktop-portal-hyprland
+	url = https://github.com/enz1m/enzim-xdg-desktop-portal-hyprland.git
+[submodule "vendor/phone-link"]
+	path = vendor/phone-link
+	url = https://github.com/enz1m/enzimos-phone-link.git
+[submodule "vendor/iced"]
+	path = vendor/iced
+	url = https://github.com/enz1m/enzim-iced.git

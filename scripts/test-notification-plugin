@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+import importlib.util
+import json
+from pathlib import Path
+import unittest
+
+root = Path(__file__).resolve().parent.parent
+spec = importlib.util.spec_from_file_location('notification_plugin', root / 'examples/plugins/notifications/main.py')
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+
+class Notifications(unittest.TestCase):
+    def fixture(self, grants=('notifications.read',)):
+        output = []
+        return module.Notifications({'collect': True}, grants, output.append), output
+
+    def provider(self, available=True):
+        return {'type': 'provider', 'data': {
+            'provider': 'notifications', 'event': 'snapshot', 'available': available,
+            'total': 13 if available else 0, 'truncated': available,
+            'items': ([{'id': f'notice:fixture:{i}', 'source': 'Fixture',
+                       'title': f'Title {i}', 'preview': 'Preview 👩‍👧'} for i in range(8)]
+                      if available else []),
+        }}
+
+    def test_denied_grant_does_not_issue_a_read_request(self):
+        client, output = self.fixture(())
+        self.assertFalse(client.collecting)
+        self.assertFalse(any(message['type'] == 'request' for message in output))
+        self.assertIn('not granted', client.status)
+
+    def test_current_previews_are_bounded_keyed_and_have_no_action_controls(self):
+        client, output = self.fixture()
+        client.handle(self.provider())
+        self.assertEqual(client.total, 13)
+        self.assertEqual(len(client.items), 8)
+        nodes = output[-1]['elements'][0]['panel']['nodes']
+        self.assertEqual(len(nodes), 10)
+        def walk(nodes):
+            self.assertLessEqual(len(nodes), 16)
+            for node in nodes:
+                yield node
+                yield from walk(node.get('children', []))
+        flat = list(walk(nodes))
+        self.assertLessEqual(len(flat), 128)
+        self.assertEqual(len({node['key'] for node in flat}), len(flat))
+        self.assertFalse(any(node['type'] == 'action' for node in flat))
+        self.assertIn('👩‍👧', nodes[-1]['children'][-1]['text'])
+
+    def test_pause_clears_previews_and_ignores_late_snapshots(self):
+        client, output = self.fixture()
+        client.handle(self.provider())
+        client.handle({'type': 'action', 'action': 'collect', 'value': False})
+        self.assertEqual(client.items, [])
+        self.assertEqual(client.total, 0)
+        self.assertFalse(output[-2]['request']['enabled'])
+        client.handle(self.provider())
+        self.assertEqual(client.items, [])
+
+    def test_config_resume_and_service_loss(self):
+        client, _ = self.fixture()
+        client.handle({'type': 'config', 'config': {'collect': False}})
+        client.handle({'type': 'config', 'config': {'collect': True}})
+        client.handle(self.provider())
+        self.assertEqual(len(client.items), 8)
+        client.handle(self.provider(False))
+        self.assertEqual(client.items, [])
+        self.assertIn('unavailable', client.status)
+
+    def test_heartbeats_do_not_publish_redundant_views(self):
+        client, output = self.fixture()
+        count = len(output)
+        client.handle({'type': 'ping', 'sequence': 9})
+        self.assertEqual(output[count:], [{'type': 'pong', 'sequence': 9}])
+
+    def test_maximum_unicode_previews_fit_one_worker_frame(self):
+        client, output = self.fixture()
+        event = self.provider()
+        for item in event['data']['items']:
+            item.update(source='🦀' * 96, title='🦀' * 128, preview='🦀' * 256)
+        client.handle(event)
+        self.assertLess(len(json.dumps(output[-1], separators=(',', ':')).encode()), 65536)
+
+
+unittest.main()

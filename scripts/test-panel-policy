@@ -1,0 +1,78 @@
+#!/usr/bin/env lua
+local path = arg[0]:match("^(.*)/") .. "/../config/panel-policy.lua"
+local panel = {class="dev.enzui.Desktop",mapped=true,at={x=0,y=0},size={x=1440,y=36}}
+local app = {class="app",mapped=true,at={x=200,y=80},size={x=800,y=600}}
+local active, point = panel, {x=400,y=18}
+local bindings, removed, dispatched, rule = {}, {}, {}, nil
+hl = {dsp={window={}}}
+function hl.config() error("Panel policy must preserve compositor preferences") end
+function hl.window_rule(value) rule=value end
+function hl.get_active_window() return active end
+function hl.get_cursor_pos() return point end
+function hl.get_windows() return {panel,app} end
+function hl.unbind(key) assert(key~="all");removed[key]=(removed[key]or 0)+1;bindings[key]=nil end
+function hl.bind(key,action,options) bindings[key]={action=action,options=options} end
+function hl.dispatch(action)
+    if type(action)=="function" then return action() end
+    table.insert(dispatched,action)
+    return {ok=true,request_release=action.kind=="drag" or action.kind=="resize"}
+end
+for _,kind in ipairs({"close","float","fullscreen","move","drag","resize"}) do
+    hl.dsp.window[kind]=function(args) return {kind=kind,args=args} end
+end
+local function call(key) return bindings[key].action() end
+dofile(path)
+assert(rule.match.class=="^dev[.]enzui[.]Desktop$" and rule.no_xdg_drags)
+assert(rule.suppress_event=="maximize fullscreen")
+local keyboard={"SUPER + Q","ALT + F4","SUPER + V","SUPER + F","SUPER + M"}
+for i=1,9 do table.insert(keyboard,"SUPER + SHIFT + "..i) end
+for _,key in ipairs(keyboard)do call(key) end
+assert(#dispatched==0)
+active=app
+for _,key in ipairs(keyboard)do call(key) end
+assert(#dispatched==#keyboard)
+assert(dispatched[1].kind=="close" and dispatched[2].kind=="close")
+local count=#dispatched
+assert(call("SUPER + mouse:272").pass_event);assert(call("SUPER + mouse:273").pass_event);assert(#dispatched==count)
+assert(bindings["SUPER + mouse:272"].options.mouse)
+active=panel;point={x=400,y=200}
+assert(call("SUPER + mouse:272").request_release)
+local previous=bindings["SUPER + mouse:272"].action
+dofile(path);assert(previous==bindings["SUPER + mouse:272"].action)
+point={x=400,y=18};call("SUPER + mouse:272");assert(#dispatched==count+2)
+call("SUPER + mouse:272");assert(#dispatched==count+2)
+point={x=400,y=200};assert(call("SUPER + mouse:273").request_release)
+point={x=400,y=18};call("SUPER + mouse:273");assert(#dispatched==count+4)
+point={x=400,y=37};call("SUPER + mouse:272");assert(#dispatched==count+4)
+panel.at={x=8,y=791};point={x=400,y=805};call("SUPER + mouse:272");assert(#dispatched==count+4)
+panel.hidden=true;call("SUPER + mouse:272");assert(#dispatched==count+5);call("SUPER + mouse:272")
+panel.hidden=false;panel.mapped=false;call("SUPER + mouse:273");assert(#dispatched==count+7);call("SUPER + mouse:273")
+active=nil;call("SUPER + Q");assert(#dispatched==count+8)
+panel.mapped=true;panel.class="dev.enzui.WorkspaceOverview";active=panel
+call("SUPER + Q");assert(#dispatched==count+8)
+for _,class in ipairs({"dev.enzui.PluginPanel","dev.enzui.NotificationCenter","dev.enzui.NotificationToasts"}) do
+ panel.class=class
+ for _,key in ipairs(keyboard)do call(key)end
+ assert(#dispatched==count+8)
+end
+point={x=400,y=805};active=app
+assert(call("SUPER + mouse:272").pass_event and call("SUPER + mouse:273").pass_event)
+assert(#dispatched==count+8)
+for _,n in pairs(removed)do assert(n==1) end
+assert(removed["SUPER + Return"]==nil and removed["SUPER + 1"]==nil)
+active=app;app.monitor={name="WAYLAND-1"}
+function enzui_workspace_id_at(output,index)assert(output=="WAYLAND-1");if index==2 then return 23 end end
+local count=#dispatched;call("SUPER + SHIFT + 2");assert(#dispatched==count+1 and dispatched[#dispatched].args.workspace==23)
+call("SUPER + SHIFT + 9");assert(#dispatched==count+1)
+local observed={}
+function enzui_sidebar_press()observed[#observed+1]=#dispatched end
+function enzui_sidebar_release()observed[#observed+1]=#dispatched end
+panel.class="dev.enzui.Sidebar";panel.at={x=0,y=0};panel.size={x=36,y=864}
+enzui_sidebar={entries={},reveal=false,error=""}
+point={x=400,y=200};local start=#dispatched
+call("SUPER + mouse:272")
+enzui_sidebar.reveal=true;point={x=18,y=200};call("SUPER + mouse:272")
+assert(observed[1]==start and observed[2]==start+2)
+local before=#dispatched;assert(call("SUPER + mouse:272").pass_event);assert(#dispatched==before)
+enzui_sidebar.reveal=false;call("SUPER + mouse:272");call("SUPER + mouse:272");assert(#dispatched==before+2)
+print("Panel policy: client drags, focused shortcuts, pointer targeting, release-over-panel, sidebar hooks and hidden-rail passthrough passed.")

@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+BIN=$ROOT/target/debug/enzui-plugin-probe
+[[ -x "$BIN" ]] || { printf 'Build enzui-plugin-probe first.\n' >&2; exit 2; }
+if find "$ROOT/shell/src/plugins" "$ROOT/shell/src/bin/enzui-plugin-probe.rs" "$ROOT/shell/build.rs" "$ROOT/tools/enzui-plugin-worker.c" "$ROOT/shell/Cargo.toml" "$ROOT/Cargo.lock" -type f -newer "$BIN" -print -quit | grep -q .; then
+    printf 'Plugin probe is older than its inputs; rebuild it first.\n' >&2
+    exit 2
+fi
+for tool in systemd-run bwrap python3; do command -v "$tool" >/dev/null || { printf 'Missing prerequisite: %s\n' "$tool" >&2; exit 2; }; done
+nonce=$(python3 -c 'import secrets;print(secrets.token_hex(8))')
+unit=enzui-plugin-probe-$nonce
+install -d -m 700 "$ROOT/.build/plugin-probes"
+output=$(mktemp -d "$ROOT/.build/plugin-probes/run-XXXXXXXX")
+printf 'Plugin fault probe evidence: %s\n' "$output"
+if ! systemd-run --user --unit="$unit" --wait --collect \
+    -p Delegate=yes -p DelegateSubgroup=supervisor -p MemoryMax=256M \
+    -p MemorySwapMax=0 -p TasksMax=64 -p LimitCORE=0 -p RuntimeMaxSec=60 \
+    -p "StandardOutput=append:$output/result.log" -p "StandardError=append:$output/result.log" \
+    env ENZUI_PLUGIN_ISOLATION=delegated \
+    "$BIN" disposable "$nonce"; then
+    tail -n 40 "$output/result.log" >&2
+    exit 1
+fi
+python3 - "$output/result.log" <<'PY'
+import json,sys
+from pathlib import Path
+report=json.loads(Path(sys.argv[1]).read_text())
+assert report['healthy_worker_survived_all'] and report['supervisor_survived']
+assert {case['case']for case in report['isolated_worker_cases']}=={'crash','hang','invalid','oversize','memory','flood','processes','blocked-input','cancelled-read-deadline','pool-limit','drop-reclamation','cancelled-start-reclamation','bootstrap-magic','bootstrap-empty','bootstrap-oversize','bootstrap-truncated','bootstrap-abi','readonly-memory-source','maximum-source-bootstrap','abrupt-supervisor-exit'}
+print('Plugin worker: twenty isolated bootstrap/limit/fault/reclamation cases passed; healthy worker and supervisor survived.')
+PY

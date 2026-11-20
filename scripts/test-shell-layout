@@ -1,0 +1,101 @@
+#!/usr/bin/env lua
+local monitor={name="TEST",width=1440,height=900,scale=1,x=0,y=0,refresh_rate=60,transform=0,enabled=true,is_mirror=false}
+local panel={class="dev.enzui.Desktop",mapped=true,monitor=monitor,at={x=0,y=0},size={x=100,y=10},pid=9,address="0x100"}
+local app={class="app",mapped=true,monitor=monitor}
+local writes,rule,moved,resized=0,nil,nil,nil
+hl={dsp={window={}}}
+function hl.get_monitors()return{monitor}end
+function hl.get_windows()return{panel,app}end
+function hl.monitor(args) writes=writes+1;rule=args;monitor.reserved=args.reserved end
+function hl.window_rule(args)assert(args.match.class=="^dev[.]enzui[.]Desktop$")end
+function hl.dsp.window.move(args)args.operation="move";return args end
+function hl.dsp.window.resize(args)args.operation="resize";return args end
+local moves,resizes=0,0
+function hl.dispatch(args)
+    assert(args.window==panel)
+    if args.operation=="move"then moved=args;moves=moves+1;panel.at={x=args.x,y=args.y}
+    else resized=args;resizes=resizes+1;panel.size={x=args.x,y=args.y} end
+    return{ok=true}
+end
+dofile(arg[0]:match("^(.*)/").."/../config/output-size.lua")
+dofile(arg[0]:match("^(.*)/").."/../config/shell-metrics.lua")
+dofile(arg[0]:match("^(.*)/").."/../config/sidebar-visibility.lua")
+dofile(arg[0]:match("^(.*)/").."/../config/shell-reservations.lua")
+dofile(arg[0]:match("^(.*)/").."/../config/shell-layout.lua")
+enzui_apply_shell_layout("TEST","bottom")
+assert(moved.x==0 and moved.y==864 and enzui_bar_edge=="bottom")
+assert(rule.reserved.bottom==36 and rule.reserved.top==8 and rule.reserved.left==8 and rule.reserved.right==8)
+assert(resized.x==1440 and resized.y==36)
+assert(rule.mode=="1440x900@60.000000" and rule.scale==1 and rule.position=="0x0")
+local counts={writes,moves,resizes}
+enzui_apply_shell_layout("TEST","bottom")
+assert(writes==counts[1] and moves==counts[2] and resizes==counts[3])
+enzui_apply_shell_layout("TEST","top")
+assert(moved.y==0 and rule.reserved.top==36 and rule.reserved.bottom==8)
+local metrics=enzui_resolve_metrics();metrics.bar=56;metrics.frame=12
+enzui_apply_shell_layout("TEST","bottom",metrics)
+assert(moved.y==844 and resized.y==56 and rule.reserved.left==12 and rule.reserved.top==12)
+metrics.bar=100;assert(not pcall(enzui_apply_shell_layout,"TEST","top",metrics))
+local before=writes
+assert(not pcall(enzui_apply_shell_layout,"ENZREMOTE-APP","top"))
+assert(not pcall(enzui_apply_shell_layout,"TEST","left"))
+assert(writes==before)
+monitor.transform=1;enzui_apply_shell_layout("TEST","top");assert(resized.x==900 and resized.y==36);monitor.transform=0
+panel.monitor={name="OTHER"};enzui_apply_shell_layout("TEST","bottom");assert(resized.x==1440 and moved.y==864)
+panel.monitor=monitor
+local anchor
+hl.plugin={enzui_sidebar_scene={version=function()return 8 end,anchor_panel=function(address,owner,x,y,w,h,bottom)
+    assert(address==panel.address and owner==panel.pid)
+    anchor={x=x,y=y,w=w,h=h,bottom=bottom};return true
+end}}
+enzui_apply_shell_layout("TEST","top")
+assert(anchor.y==0 and anchor.h==36 and not anchor.bottom)
+enzui_apply_shell_layout("TEST","bottom")
+assert(anchor.y==864 and anchor.h==36 and anchor.bottom)
+local function merge_named(existing,args)
+    local merged={mode="preferred",scale=-1,position="auto"}
+    for key,value in pairs(existing or {})do merged[key]=value end
+    for key,value in pairs(args)do merged[key]=value end
+    return merged
+end
+local missing=merge_named(nil,{output="TEST",reserved={top=50}})
+assert(missing.mode=="preferred" and missing.scale==-1)
+local seeded=merge_named(nil,rule)
+assert(seeded.mode=="1440x900@60.000000" and seeded.scale==1 and seeded.position=="0x0")
+local existing=merge_named({mode="1440x900@60",scale=1,position="0x0",bitdepth=10},rule)
+assert(existing.bitdepth==10 and existing.scale==1)
+local islands=enzui_resolve_metrics({frame=0,bar=32,radius=16,rail=40,text=13,icon=16,islands={height=32,gap=8,edge_gap=10,side_gap=12,radius=16,rail=40,padding=16}})
+assert(islands.islands.joined_bar==false)
+local joined_input={frame=0,bar=32,radius=16,rail=40,text=13,icon=16,islands={height=32,gap=8,edge_gap=10,side_gap=12,radius=16,rail=40,padding=16,joined_bar=true}}
+assert(enzui_resolve_metrics(joined_input).islands.joined_bar==true)
+joined_input.islands.joined_bar="yes";assert(not pcall(enzui_resolve_metrics,joined_input))
+enzui_sidebar={output="TEST",side="right",entries={{}},error="",behavior={visibility="reserved",fullscreen_padding=8}}
+enzui_apply_shell_layout("TEST","top",islands)
+assert(rule.reserved.right==60 and rule.reserved.left==0 and rule.reserved.top==50)
+enzui_sidebar.entries={};enzui_apply_shell_layout("TEST","top",islands)
+assert(rule.reserved.right==0 and rule.reserved.top==50)
+print("Shell layout: edge anchors, reserved sidebar, complete named-rule geometry, wildcard negative control and fail-closed targets passed.")
+
+local on_open
+function hl.on(event,callback) assert(event=="window.open");on_open=callback;return {} end
+dofile(arg[0]:match("^(.*)/").."/../config/shell-layout.lua")
+local other={class="other",pid=11,address="0x111",mapped=true,floating=true,pinned=false,fullscreen=0,monitor=monitor,workspace={id=1},at={x=15,y=18},size={x=1900,y=1100}}
+app.pid=10;app.address="0x110";app.floating=true;app.pinned=false;app.fullscreen=0;app.workspace={id=1}
+app.at={x=-100,y=-90};app.size={x=1900,y=1100}
+monitor.x=120;monitor.y=50;monitor.reserved={left=3,right=3,top=36,bottom=3}
+function hl.get_windows()return {panel,app,other}end
+function hl.dispatch(args)
+    if args.operation=="resize" then args.window.size={x=args.x,y=args.y}
+    else args.window.at={x=args.x,y=args.y} end
+    return {ok=true}
+end
+on_open(app)
+assert(app.size.x==1406 and app.size.y==833 and app.at.x==137 and app.at.y==100)
+assert(other.size.x==1900 and other.at.x==15)
+for _,field in ipairs({"pinned","fullscreen","mapped"}) do
+    app.size={x=1900,y=1100};app[field]=field=="fullscreen" and 1 or field=="pinned"
+    on_open(app);assert(app.size.x==1900)
+    app[field]=field=="fullscreen" and 0 or field=="mapped"
+end
+on_open(panel);assert(panel.size.x==1440)
+print("Floating admission: oversized first map clamped at nonzero output origin; existing, pinned, fullscreen, unmapped and shell clients preserved")

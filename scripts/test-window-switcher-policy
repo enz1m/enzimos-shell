@@ -1,0 +1,47 @@
+#!/usr/bin/env lua
+local windows, focused, events, warps, workspace_id, raised = {}, nil, {}, false, 1, nil
+hl = {
+    get_windows=function() return windows end,
+    get_active_window=function() return focused end,
+    get_active_workspace=function() return {id=workspace_id,monitor={name="QA"}} end,
+    get_config=function() return warps end,
+    config=function(value) warps=value.cursor.no_warps end,
+    dsp={window={alter_zorder=function(value) assert(value.mode=="top");return {raise=value.window} end},event=function(name) return {event=name} end,focus=function(value) return {focus=value.window} end},
+    dispatch=function(action)
+        if action.event then events[#events+1]=action.event end
+        if action.raise then raised=action.raise end
+        if action.focus then assert(raised==action.focus);focused=action.focus end
+        return {ok=true}
+    end,
+}
+dofile(arg[0]:match("^(.*)/").."/../config/window-switcher.lua")
+local function window(id, rank, class)
+    return {stable_id=id,pid=100+rank,focus_history_id=rank,mapped=true,hidden=false,accepts_input=true,
+        class=class or "app",workspace={id=1},monitor={name="QA"},tags={}}
+end
+local a,b,c=window("a",0),window("b",1),window("c",2,"other")
+windows={a,b,c};focused=a
+local sidebar=window("d",3);sidebar.tags={"enzui-sidebar-1"};windows[#windows+1]=sidebar
+local remote=window("e",4);remote.monitor.name="ENZREMOTE-test";windows[#windows+1]=remote
+local shell=window("f",5,"dev.enzui.Desktop");windows[#windows+1]=shell
+local dock=window("i",8,"dev.enzui.Dock");windows[#windows+1]=dock
+local hidden=window("g",6);hidden.hidden=true;windows[#windows+1]=hidden
+local foreign=window("h",7);foreign.workspace.id=2;windows[#windows+1]=foreign
+assert(not enzui_switcher.active)
+enzui_switcher_step(1,false);assert(#enzui_switcher.entries==3 and enzui_switcher.selected==2)
+enzui_switcher_commit();assert(focused==b and not enzui_switcher.active and not warps)
+assert(events[#events]=="enzui-command:switch-state")
+focused=a;enzui_switcher_step(-1,false);assert(enzui_switcher.selected==3);enzui_switcher_commit();assert(focused==c)
+focused=a;enzui_switcher_step(1,true);assert(#enzui_switcher.entries==2);enzui_switcher_commit();assert(focused==b)
+focused=a;enzui_switcher_step(1,false);enzui_switcher_cancel();enzui_switcher_commit();assert(focused==a)
+enzui_switcher_step(1,false);local old=enzui_switcher.revision;enzui_switcher_step(1,false)
+assert(enzui_switcher_pick(old,2)=="stale" and focused==a)
+assert(enzui_switcher_pick(enzui_switcher.revision,2)=="ok" and focused==b)
+focused=a;enzui_switcher_step(1,false);b.stable_id="replacement";enzui_switcher_commit();assert(focused==a)
+b.stable_id="b";focused=a;enzui_switcher_step(1,false);b.mapped=false;local text=enzui_switcher_snapshot();assert(text:find('"active":false',1,true));assert(not enzui_switcher.active)
+b.mapped=true;focused=a;enzui_switcher_step(1,false);b.workspace.id=2;enzui_switcher_commit();assert(focused==a)
+b.workspace.id=1
+focused=a;enzui_switcher_step(1,false);workspace_id=2;enzui_switcher_commit();assert(focused==a);workspace_id=1
+windows={a};focused=a;enzui_switcher_step(1,false);enzui_switcher_commit();assert(focused==a)
+windows={};enzui_switcher_step(1,false);assert(not enzui_switcher.active)
+print("Window switcher request-edge policy passed")

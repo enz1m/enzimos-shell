@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: MIT
+[Unit]
+Description=enzUI desktop session
+# start-shell-platform starts this target with an installed enzUI session and
+# stops it when the session ends. User services that belong to enzUI alone
+# (MCP Center, on-device AI) run with it and are PartOf it, so another desktop
+# of the same account, such as Plasma beside enzUI on Arch, never runs them. A
+# service that is not installed is skipped.
+Wants=enzui-center.service enzimos-ai-setup.service enzimos-inference.service enzimos-ai-gateway.service
+RefuseManualStart=no

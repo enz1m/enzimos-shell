@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Builds the material plugin against a prepared compositor root.
+set -euo pipefail
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+exec "$root/scripts/with-build-budget" python3 "$root/tools/build-material-plugin.py" \
+    "${1:-$root/.build/sidebar-scene}" "${2:-$root/.build/material}"

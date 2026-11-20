@@ -1,0 +1,78 @@
+#!/usr/bin/env lua
+local values, calls, fault, leaves = {}, 0, nil, {}
+local device={border_color=0,border_custom=0x0a84ff,border_active=80,border_inactive=20,scroll=100,repeat_delay=600,repeat_rate=25,zoom=100,cursor=24,accel=true,left_handed=false,tap=true,dwt=true,gestures=false,kb_options="caps:ctrl_modifier,grp:alt_shift_toggle",kb_variant="",kb_layout="",x11_sharp=false,terminal="/usr/bin/terminal-emulator"}
+local environment,gestures={},{}
+hl = {
+    config = function(value) values=value;calls=calls+1 end,
+    env = function(key,value) environment[key]=value end,
+    gesture = function(value)
+        local previous=gestures[value.direction]
+        if value.action=="unset" then
+            assert(previous,"No gesture is bound")
+            gestures[value.direction]=nil
+        else
+            assert(not previous,"Gesture is already bound")
+            gestures[value.direction]=value.action
+        end
+    end,
+    animation = function(value) leaves[value.leaf]=value end,
+    get_config = function(key)
+        if key==fault then return -999 end
+        if key=="input.kb_options" and not values.input then return "compose:ralt,caps:escape,grp:ctrl_space_toggle" end
+        local value=values
+        for part in key:gmatch("[^.]+") do value=value[part] end
+        if key=="general.gaps_in" or key=="general.gaps_out" or key=="general.float_gaps" then
+            return {top=value,right=value,bottom=value,left=value}
+        end
+        return value
+    end,
+}
+dofile(arg[0]:match("^(.*)/").."/../config/desktop-preferences.lua")
+assert(enzui_apply_desktop_preferences(6,12,2,12,true,false,false,0,100,device))
+assert(leaves.global.speed==3 and leaves.workspaces.speed==3 and leaves.workspaces.style=="slide")
+assert(values.general.col.active_border=="rgba(92969dcc)" and values.general.col.inactive_border=="rgba(55585d33)","Default borders")
+enzui_drag_maximize_accent="3b82f6";device.border_color=1;device.border_active=50;device.border_inactive=0
+assert(enzui_apply_desktop_preferences(6,12,2,12,true,false,false,0,100,device))
+assert(values.general.col.active_border=="rgba(3b82f680)" and values.general.col.inactive_border=="rgba(55585d00)","Accent borders")
+device.border_color=4;device.border_custom=0xff3b30
+assert(enzui_apply_desktop_preferences(6,12,2,12,true,false,false,0,100,device))
+assert(values.general.col.active_border=="rgba(ff3b3080)","Custom border")
+device.border_custom=0x1000000;assert(not pcall(enzui_apply_desktop_preferences,6,12,2,12,true,false,false,0,100,device),"Out-of-range custom colour")
+device.border_custom=0x0a84ff
+device.border_color=5;assert(not pcall(enzui_apply_desktop_preferences,6,12,2,12,true,false,false,0,100,device),"Unknown border colour")
+device.border_color=0;device.border_active=80;device.border_inactive=20
+assert(values.input.follow_mouse==2 and values.input.float_switch_override_focus==0 and values.input.sensitivity==0)
+assert(enzui_apply_desktop_preferences(48,96,6,32,false,true,true,-100,200,device))
+assert(not values.animations.enabled and leaves.global.speed==1.5 and leaves.workspaces.speed==1.5)
+assert(values.input.follow_mouse==1 and values.input.float_switch_override_focus==0 and values.input.sensitivity==-1 and values.input.touchpad.natural_scroll)
+assert(values.input.kb_options=="compose:ralt,caps:ctrl_modifier,grp:alt_shift_toggle")
+assert(environment.ENZUI_TERMINAL==device.terminal and environment.XCURSOR_SIZE=="24")
+assert(values.input.repeat_delay==600 and values.cursor.zoom_factor==1 and not values.xwayland.force_zero_scaling)
+local good={6,12,2,12,true,false,false,0,100,device}
+assert(next(gestures)==nil)
+device.gestures=true
+assert(enzui_apply_desktop_preferences(table.unpack(good)))
+assert(enzui_apply_desktop_preferences(table.unpack(good)))
+assert(gestures.horizontal=="workspace" and type(gestures.up)=="function")
+device.gestures=false
+assert(enzui_apply_desktop_preferences(table.unpack(good)))
+assert(enzui_apply_desktop_preferences(table.unpack(good)))
+assert(next(gestures)==nil)
+for _,bad in ipairs({{1,-1},{1,49},{2,97},{3,7},{4,33},{5,1},{6,"true"},{7,0},{8,101},{8,.1},{9,24},{9,201},{9,100.1}}) do
+    local arguments={table.unpack(good)}
+    arguments[bad[1]]=bad[2]
+    local before=calls
+    assert(not pcall(enzui_apply_desktop_preferences,table.unpack(arguments)))
+    assert(calls==before)
+end
+for _,bad in ipairs({{field="scroll",value=24},{field="repeat_rate",value=81},{field="zoom",value=99},{field="cursor",value=15},{field="terminal",value="/usr/bin/term;false"},{field="kb_layout",value="us;false"},{field="accel",value=1}}) do
+    local invalid={};for key,value in pairs(device) do invalid[key]=value end
+    invalid[bad.field]=bad.value
+    local arguments={table.unpack(good)};arguments[10]=invalid;local before=calls
+    assert(not pcall(enzui_apply_desktop_preferences,table.unpack(arguments)));assert(calls==before)
+end
+for _,key in ipairs({"general.border_size","input.follow_mouse","input.float_switch_override_focus"}) do
+    fault=key
+    assert(not pcall(enzui_apply_desktop_preferences,table.unpack(good)))
+end
+print("Desktop preferences: bounded typed options, field mapping and applied-value readback passed")

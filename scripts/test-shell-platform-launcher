@@ -1,0 +1,725 @@
+#!/usr/bin/env python3
+import argparse
+import fcntl
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from unittest import mock
+from urllib.parse import quote
+
+SCRIPT = Path(__file__).resolve().with_name("start-shell-platform")
+loader = importlib.machinery.SourceFileLoader("platform_launcher", str(SCRIPT))
+spec = importlib.util.spec_from_loader(loader.name, loader)
+platform = importlib.util.module_from_spec(spec)
+loader.exec_module(platform)
+
+
+class PlatformTests(unittest.TestCase):
+    def setUp(self):
+        self.mask = os.umask(0o077)
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+
+    def tearDown(self):
+        self.temp.cleanup()
+        os.umask(self.mask)
+
+    def test_renamed_compositor_is_preferred(self):
+        build = self.root / "build"
+        (build / "hyprland-current-build/hyprctl").mkdir(parents=True)
+        for name in ("hyprland-current-build/Hyprland", "hyprland-current-build/hyprctl/hyprctl"):
+            (build / name).touch()
+        self.assertEqual(platform.compositor_binary(build).name, "Hyprland")
+        self.assertEqual(platform.control_path(build).name, "hyprctl")
+        for name in ("hyprland-current-build/enz-hyprland", "hyprland-current-build/hyprctl/enz-hyprctl"):
+            (build / name).touch()
+        self.assertEqual(platform.compositor_binary(build).name, "enz-hyprland")
+        self.assertEqual(platform.control_path(build).name, "enz-hyprctl")
+
+    def test_enzui_only_services_run_with_the_session_target(self):
+        calls = []
+
+        def run(args, **_):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with mock.patch.object(platform.subprocess, "run", side_effect=run), \
+                mock.patch.object(platform, "enroll"):
+            platform.enroll_components(self.root)
+            platform.stop_session_target()
+        self.assertEqual(calls, [["systemctl", "--user", "start", "--no-block", "enzui-session.target"],
+                                 ["systemctl", "--user", "stop", "enzui-session.target"]])
+        target = (SCRIPT.parent.parent / "config/systemd/enzui-session.target").read_text()
+        wants = next(line for line in target.splitlines() if line.startswith("Wants=")).split("=", 1)[1].split()
+        for unit in ("enzui-center.service", "enzimos-ai-setup.service", "enzimos-inference.service", "enzimos-ai-gateway.service"):
+            self.assertIn(unit, wants)
+
+    def test_compositor_state_lives_apart_from_hyprlands(self):
+        home = self.root / "home"
+        homes = platform.compositor_state_homes({"HOME": str(home), "XDG_CACHE_HOME": str(self.root / "cache")})
+        self.assertEqual(homes, {"ENZUI_HYPR_DATA_HOME": str(home / ".local/share/enzui/compositor"),
+                                 "ENZUI_HYPR_CACHE_HOME": str(self.root / "cache/enzui/compositor")})
+        for directory in homes.values():
+            self.assertEqual(Path(directory).stat().st_mode & 0o777, 0o700)
+        self.assertFalse((home / ".local/share/hyprland").exists())
+
+    def test_shell_is_a_reapable_direct_child_without_inherited_capabilities(self):
+        runtime = self.root / "runtime"
+        runtime.mkdir(mode=0o700)
+        executable = self.root / "enzui-shell"
+        executable.write_text("#!/usr/bin/python3\nimport json,os,time\n"
+                              "print(json.dumps({'parent':os.getppid(),'session':os.getsid(0),'display':os.environ.get('DISPLAY'),"
+                              "'wayland':os.environ.get('WAYLAND_DISPLAY'),'arenas':os.environ.get('MALLOC_ARENA_MAX'),"
+                              "'bar_width':os.environ.get('ENZUI_SHELL_BAR_WIDTH'),"
+                              "'libraries':os.environ.get('LD_LIBRARY_PATH'),"
+                              "'capability':os.environ.get('ENZUI_SHELL_LAUNCHER_FD'),'leaked_fd':os.path.exists('/proc/self/fd/'+os.environ['QA_FD'])}),flush=True)\n"
+                              "time.sleep(30)\n")
+        executable.chmod(0o700)
+        inherited = os.open(executable, os.O_RDONLY)
+        os.set_inheritable(inherited, True)
+        config = {"runtime": str(runtime), "shell_bin_dir": str(self.root), "build": str(self.root), "output": "QA"}
+        monitors = json.dumps([{"name": "QA", "width": 2560, "height": 1600, "scale": 2}])
+        with mock.patch.object(platform, "OWNED_SHELL", None), mock.patch.object(platform, "control", return_value=monitors), mock.patch.dict(os.environ, {"DISPLAY": ":fixture", "QA_FD": str(inherited), "ENZUI_SHELL_LAUNCHER_FD": str(inherited), "LD_LIBRARY_PATH": "/owned-runtime/lib"}):
+            try:
+                pid, ticks = platform.launch_shell(config, {"display": "owned-wayland", "instance": "owned-instance"})
+                deadline = time.monotonic() + 3
+                while not (runtime / "shell.log").read_text().strip() and time.monotonic() < deadline:
+                    time.sleep(.01)
+                data = json.loads((runtime / "shell.log").read_text())
+                self.assertEqual(data["parent"], os.getpid())
+                self.assertEqual(data["session"], pid)
+                self.assertEqual(data["wayland"], "owned-wayland")
+                self.assertEqual(data["bar_width"], "1280")
+                self.assertEqual(data["arenas"], "2")
+                self.assertEqual(data["libraries"], str(self.root / "prefix/lib") + ":/owned-runtime/lib")
+                self.assertIsNone(data["display"])
+                self.assertIsNone(data["capability"])
+                self.assertFalse(data["leaked_fd"])
+                self.assertEqual(int(platform.read_private(runtime / "shell.pid")), pid)
+                self.assertEqual(int(platform.read_private(runtime / "shell.pid.start")), ticks)
+                with self.assertRaisesRegex(RuntimeError, "live shell"):
+                    platform.launch_shell(config, {"display": "other", "instance": "other"})
+            finally:
+                os.close(inherited)
+                if platform.OWNED_SHELL is not None:
+                    platform.OWNED_SHELL.terminate()
+                    try:
+                        platform.OWNED_SHELL.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        platform.OWNED_SHELL.kill()
+                        platform.OWNED_SHELL.wait(timeout=3)
+            self.assertFalse(platform.live(pid, ticks))
+
+    def test_compositor_receives_original_supervisor_pidfd_only_during_start(self):
+        (self.root / "build-revisions").write_bytes(b"privileged-launcher-child-pidfd-v2 fixture\n")
+        for fail in (False, True):
+            handles = []
+            def start(arguments, *, env, timeout, pass_fds):
+                self.assertEqual(arguments[-1], "start")
+                self.assertEqual(len(pass_fds), 1)
+                handle = pass_fds[0]
+                handles.append(handle)
+                self.assertEqual(env["ENZUI_SHELL_LAUNCHER_FD"], str(handle))
+                info = Path(f"/proc/self/fdinfo/{handle}").read_text()
+                self.assertIn(f"Pid:\t{os.getpid()}\n", info)
+                if fail:
+                    raise RuntimeError("Fixture start refused")
+            with mock.patch.object(platform, "command", side_effect=start):
+                if fail:
+                    with self.assertRaisesRegex(RuntimeError, "Fixture start refused"):
+                        platform.start_compositor({"build": str(self.root)})
+                else:
+                    platform.start_compositor({"build": str(self.root)})
+            self.assertEqual(len(handles), 1)
+            with self.assertRaises(OSError):
+                os.fstat(handles[0])
+
+    def test_legacy_compositor_gets_no_pidfd_and_provenance_is_bounded(self):
+        revisions = self.root / "build-revisions"
+        revisions.write_bytes(b"legacy\nnot-privileged-launcher-child-pidfd-v2 fixture\n")
+        with mock.patch.object(platform.os, "pidfd_open", side_effect=AssertionError("Legacy compositor must not inherit a capability")), mock.patch.object(platform, "command") as command:
+            platform.start_compositor({"build": str(self.root)})
+            self.assertNotIn("pass_fds", command.call_args.kwargs)
+            revisions.write_bytes(b"x" * 65537)
+            with self.assertRaisesRegex(RuntimeError, "provenance exceeds"):
+                platform.start_compositor({"build": str(self.root)})
+
+    def test_desktop_compositor_receipt_with_privileged_clients_gets_the_pidfd(self):
+        # build-desktop-compositor stamps build-revisions with a hash only; its receipt names the patch.
+        (self.root / "build-revisions").write_bytes(b"4c7708d25dfe8eaf\n")
+        receipt = self.root / "desktop-compositor.json"
+        receipt.write_text(json.dumps({"complete": True, "patches": {"privileged-clients.patch": "x"}}))
+        self.assertTrue(platform.launcher_pidfd_supported(self.root))
+        for body in ({"complete": False, "patches": {"privileged-clients.patch": "x"}},
+                     {"complete": True, "patches": {"headless-only.patch": "x"}}, ["privileged-clients.patch"]):
+            receipt.write_text(json.dumps(body))
+            self.assertFalse(platform.launcher_pidfd_supported(self.root))
+        receipt.write_bytes(b" " * 65537)
+        with self.assertRaisesRegex(RuntimeError, "receipt exceeds"):
+            platform.launcher_pidfd_supported(self.root)
+        receipt.unlink()
+        self.assertFalse(platform.launcher_pidfd_supported(self.root))
+
+    def test_v2_refuses_a_subreaper_that_could_adopt_foreign_processes(self):
+        (self.root / "build-revisions").write_bytes(b"privileged-launcher-child-pidfd-v2 fixture\n")
+        code = ("import ctypes,runpy,sys\n"
+                "assert ctypes.CDLL(None).prctl(36,1,0,0,0)==0\n"
+                "module=runpy.run_path(sys.argv[1],run_name='fixture')\n"
+                "try: module['start_compositor']({'build':sys.argv[2]})\n"
+                "except RuntimeError as error:\n"
+                " assert 'cannot adopt orphan processes' in str(error)\n"
+                " print('SUBREAPER_REFUSED')\n"
+                "else: raise AssertionError('Untrusted adoption was accepted')\n")
+        result = subprocess.run([sys.executable, "-c", code, str(SCRIPT), str(self.root)], capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "SUBREAPER_REFUSED")
+
+    def test_normal_preview_relaunches_only_its_owned_shell(self):
+        runtime = self.root / "runtime"
+        runtime.mkdir()
+        ready = {"shell_pid": 41, "shell_start": 9, "output": "owned-output"}
+        platform.publish(runtime / "ready.json", ready)
+        config = {"runtime": str(runtime), "exit_with_shell": False}
+        identity = {"pid": 42, "start": 7}
+        child = mock.Mock(returncode=0)
+        with mock.patch.object(platform, "OWNED_SHELL", child), mock.patch.object(platform, "live", side_effect=[True, False]), \
+                mock.patch.object(platform.time, "sleep"), mock.patch.object(platform, "launch_shell", return_value=(43, 10)) as launch, mock.patch.object(platform, "command") as command:
+            platform.supervise(config, identity)
+        launch.assert_called_once_with(config, identity)
+        command.assert_not_called()
+        self.assertEqual(json.loads(platform.read_private(runtime / "ready.json")), {**ready, "shell_pid": 43, "shell_start": 10})
+
+    def test_exit_with_shell_review_never_relaunches(self):
+        runtime = self.root / "runtime"
+        runtime.mkdir()
+        platform.publish(runtime / "ready.json", {"shell_pid": 41, "shell_start": 9})
+        with mock.patch.object(platform, "OWNED_SHELL", None), mock.patch.object(platform, "live", side_effect=[True, False]), \
+                mock.patch.object(platform, "launch_shell") as launch:
+            platform.supervise({"runtime": str(runtime), "exit_with_shell": True}, {"pid": 42, "start": 7})
+        launch.assert_not_called()
+        self.assertTrue(json.loads(platform.read_private(runtime / "ended.json"))["whole_session_cleanup"])
+
+    def test_repeated_preview_restart_failures_retain_other_clients(self):
+        runtime = self.root / "runtime"
+        runtime.mkdir()
+        platform.publish(runtime / "ready.json", {"shell_pid": 41, "shell_start": 9})
+        with mock.patch.object(platform, "OWNED_SHELL", mock.Mock(returncode=1)), mock.patch.object(platform, "live", side_effect=[True] * 5 + [False]), \
+                mock.patch.object(platform.time, "sleep"), mock.patch.object(platform.time, "monotonic", return_value=1), \
+                mock.patch.object(platform, "launch_shell", side_effect=OSError("Fixture refused")) as launch, mock.patch.object(platform, "command") as command:
+            platform.supervise({"runtime": str(runtime), "exit_with_shell": False}, {"pid": 42, "start": 7})
+        self.assertEqual(launch.call_count, 3)
+        command.assert_not_called()
+        self.assertTrue(json.loads(platform.read_private(runtime / "failed.json"))["retain_compositor"])
+
+    def test_activation_updates_only_the_verified_private_bus(self):
+        runtime = self.root / "runtime"
+        runtime.mkdir(mode=0o700)
+        (runtime / "session-bus").write_text("unix:path=/owned-bus")
+        peer = {"pid": 41, "start": 9}
+        platform.publish(runtime / "session-bus-peer.json", peer)
+        config = {"runtime": str(runtime), "unit": "owned.service", "xdg_runtime": str(self.root)}
+        identity = {"pid": 42, "start": 10, "display": "wayland-19", "instance": "owned-instance"}
+        with mock.patch.dict(os.environ, {"DBUS_SESSION_BUS_ADDRESS": "unix:path=/owned-bus", "WAYLAND_DISPLAY": "/parent-wayland"}, clear=True), mock.patch.object(platform, "private_bus", return_value=peer), mock.patch.object(platform, "compositor", return_value=identity), mock.patch.object(platform, "command") as command:
+            platform.bind_activation_environment(config, identity)
+            args = command.call_args.args[0]
+            self.assertEqual(args[0], "/usr/bin/dbus-update-activation-environment")
+            self.assertNotIn("--systemd", args)
+            self.assertNotIn("/parent-wayland", args)
+            self.assertIn("WAYLAND_DISPLAY=wayland-19", args)
+            self.assertIn("DISPLAY=", args)
+            self.assertIn("GDK_BACKEND=wayland", args)
+            self.assertIn("GIO_USE_VFS=local", args)
+            self.assertFalse(any(arg.startswith("ENZUI_DESKTOP_SESSION=") for arg in args), "a preview never relabels the user manager")
+            self.assertEqual(os.environ["DBUS_SESSION_BUS_ADDRESS"], "unix:path=/owned-bus")
+            self.assertEqual(os.environ["WAYLAND_DISPLAY"], "wayland-19")
+        saved = json.loads(platform.read_private(runtime / "activation-environment.json"))
+        self.assertEqual(saved["pid"], 42)
+        self.assertFalse(saved["systemd_environment_updated"])
+        self.assertFalse(saved["gui_services_observed"])
+
+    def test_installed_activation_gives_activated_settings_the_desktop(self):
+        runtime = self.root / "runtime"
+        runtime.mkdir(mode=0o700)
+        (runtime / "session-bus").write_text("unix:path=/owned-bus")
+        peer = {"pid": 41, "start": 9}
+        platform.publish(runtime / "session-bus-peer.json", peer)
+        config = {"runtime": str(runtime), "unit": "owned.service", "xdg_runtime": str(self.root), "installed": True,
+                  "build": "/usr/lib/enzui/compositor", "settings": "/home/ann/.config/enzui-shell/settings.json",
+                  "shell_bin_dir": "/usr/lib/enzui/bin"}
+        identity = {"pid": 42, "start": 10, "display": "wayland-1", "instance": "owned-instance"}
+        with mock.patch.dict(os.environ, {"DBUS_SESSION_BUS_ADDRESS": "unix:path=/owned-bus"}, clear=True), mock.patch.object(platform, "private_bus", return_value=peer), \
+                mock.patch.object(platform, "compositor", return_value=identity), mock.patch.object(platform, "command") as command:
+            platform.bind_activation_environment(config, identity)
+            args = command.call_args_list[0].args[0]
+            self.assertIn("--systemd", args)
+            for expected in ("ENZUI_PLUGIN_ISOLATION=delegated", "ENZUI_DESKTOP_SESSION=installed", "ENZUI_HYPR_CONTROL_BIN=/usr/lib/enzui/compositor/hyprland-current-build/hyprctl/hyprctl",
+                             f"ENZUI_HYPR_RUNROOT={runtime}", "ENZUI_SHELL_SETTINGS=/home/ann/.config/enzui-shell/settings.json",
+                             "ENZUI_SHELL_BIN_DIR=/usr/lib/enzui/bin", "WAYLAND_DISPLAY=wayland-1"):
+                self.assertIn(expected, args)
+
+    def test_activation_rejects_a_different_bus_before_any_command(self):
+        runtime = self.root / "runtime"
+        runtime.mkdir(mode=0o700)
+        (runtime / "session-bus").write_text("unix:path=/owned-bus")
+        platform.publish(runtime / "session-bus-peer.json", {"pid": 41})
+        with mock.patch.dict(os.environ, {"DBUS_SESSION_BUS_ADDRESS": "unix:path=/other-bus"}), mock.patch.object(platform, "command") as command, \
+                mock.patch.object(platform, "peer", return_value={"pid": 42}), mock.patch.object(platform, "member", return_value=True):
+            with self.assertRaisesRegex(RuntimeError, "this desktop's session bus"):
+                platform.bind_activation_environment({"runtime": str(runtime), "unit": "owned.service"}, {})
+            command.assert_not_called()
+
+    def test_only_headless_runtime_main_config_disables_parent_input(self):
+        source = self.root / "hyprland.lua"
+        source.write_bytes(b"fixture\n")
+        self.assertEqual(platform.runtime_config(source, False), b"fixture\n")
+        isolated = platform.runtime_config(source, True)
+        self.assertIn(b'hl.device({name="wl_keyboard",enabled=false})', isolated)
+        self.assertIn(b'hl.device({name="wl_pointer",enabled=false})', isolated)
+        self.assertEqual(source.read_bytes(), b"fixture\n")
+        other = self.root / "other.lua"
+        other.write_bytes(b"other")
+        self.assertEqual(platform.runtime_config(other, True), b"other")
+
+    def test_installed_output_starts_without_ppi_heuristics(self):
+        source = self.root / "hyprland.lua"
+        source.write_bytes(b"fixture\n")
+        installed = platform.runtime_config(source, False, True)
+        self.assertIn(b'position = "auto", scale = 1', installed)
+        self.assertNotIn(b'scale = "auto"', installed)
+        self.assertEqual(source.read_bytes(), b"fixture\n")
+
+    def test_profile_and_canvas_bounds(self):
+        self.assertEqual(platform.profile_name("fixture-1"), "fixture-1")
+        for value in ("../other", "Upper", "", "a" * 33, "a;exec"):
+            with self.assertRaises(argparse.ArgumentTypeError):
+                platform.profile_name(value)
+        self.assertEqual(platform.dimensions("1440x900"), [1440, 900])
+        for value in ("1x2", "0x900", "900x9000", "4096x4096", "900x800;", "1440X900"):
+            with self.assertRaises(argparse.ArgumentTypeError):
+                platform.dimensions(value)
+
+    def test_private_metadata_rejects_links_public_modes_and_special_files(self):
+        regular = self.root / "regular"
+        regular.write_bytes(b"fixture")
+        regular.chmod(0o600)
+        link = self.root / "link"
+        link.symlink_to(regular)
+        with self.assertRaises(OSError):
+            platform.read_private(link)
+        os.link(regular, self.root / "hardlink")
+        with self.assertRaises(RuntimeError):
+            platform.read_private(regular)
+        (self.root / "hardlink").unlink()
+        regular.chmod(0o644)
+        with self.assertRaises(RuntimeError):
+            platform.read_private(regular)
+        fifo = self.root / "fifo"
+        os.mkfifo(fifo, 0o600)
+        with self.assertRaises(RuntimeError):
+            platform.read_private(fifo)
+        directory = self.root / "public"
+        directory.mkdir(mode=0o755)
+        directory.chmod(0o755)
+        with self.assertRaises(RuntimeError):
+            platform.private_directory(directory)
+        self.assertEqual(regular.read_bytes(), b"fixture")
+
+    def test_a_new_start_retires_only_its_profiles_last_runtime(self):
+        xdg = self.root / "xdg"
+        profile = self.root / "profiles" / "check"
+        profile.mkdir(parents=True, mode=0o700)
+        old = xdg / "enzui-shell-platform" / "check-0123456789abcdef"
+        client = xdg / "e01234567"
+        other = xdg / "enzui-shell-platform" / "other-fedcba9876543210"
+        for directory in (old, client, other):
+            directory.mkdir(parents=True, mode=0o700)
+        (old / "startup.log").write_text("started")
+        platform.publish(profile / "active.json", {"runtime": str(old)})
+        platform.retire_previous(profile, xdg)
+        self.assertFalse(old.exists())
+        self.assertFalse(client.exists())
+        self.assertTrue(other.exists())
+        self.assertEqual((profile / "last-startup.log").read_text(), "started")
+        outside = self.root / "elsewhere" / "check-0123456789abcdef"
+        outside.mkdir(parents=True)
+        platform.publish(profile / "active.json", {"runtime": str(outside)})
+        platform.retire_previous(profile, xdg)
+        self.assertTrue(outside.exists(), "only the runtime parent is touched")
+        platform.publish(profile / "active.json", {"runtime": str(other)})
+        platform.retire_previous(profile, xdg)
+        self.assertTrue(other.exists(), "another profile's runtime is kept")
+
+    def test_publish_is_private_bounded_and_lock_is_exclusive(self):
+        path = self.root / "state.json"
+        platform.publish(path, {"version": 1})
+        self.assertEqual(json.loads(platform.read_private(path)), {"version": 1})
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        with self.assertRaises(RuntimeError):
+            platform.read_private(path, 1)
+        with platform.private_file(self.root / "lock", create=True) as first:
+            fcntl.flock(first, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with platform.private_file(self.root / "lock", create=True) as second:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(second, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_private_bus_requires_the_managed_peer_not_just_a_unix_address(self):
+        path = self.root / "bus,owned"
+        with socket.socket(socket.AF_UNIX) as server:
+            server.bind(str(path))
+            server.listen(4)
+            address = "unix:path=" + quote(str(path), safe="/") + ",guid=fixture"
+            with mock.patch.object(platform, "member", return_value=True) as member:
+                identity = platform.private_bus(address, "owned.service")
+                self.assertEqual(identity["pid"], os.getpid())
+                member.assert_called_once_with(os.getpid(), "owned.service")
+            with mock.patch.object(platform, "member", return_value=False):
+                with self.assertRaises(RuntimeError):
+                    platform.private_bus(address, "foreign.service")
+        for address in ("tcp:host=localhost", "unix:path=/a;unix:path=/b", "unix:path=/a,abstract=b", "unix:path=/a,path=/b"):
+            with self.assertRaises(RuntimeError):
+                platform.private_bus(address, "owned.service")
+
+    def test_inner_refuses_changed_launch_data_and_undelegated_execution(self):
+        path=self.root/"launch.json";platform.publish(path,{"unit":"fixture.service"})
+        with mock.patch.object(platform,"prepare_desktop") as prepare:
+            with self.assertRaisesRegex(RuntimeError,"configuration changed"):
+                platform.inner(str(path),"0"*64)
+            with self.assertRaises(RuntimeError):
+                platform.delegated_root("definitely-not-this-service.service")
+            prepare.assert_not_called()
+
+    def test_dead_or_reused_shell_ends_only_an_opted_in_session(self):
+        runtime = self.root / "runtime"
+        runtime.mkdir(mode=0o700)
+        platform.publish(runtime / "ready.json", {"shell_pid": 43, "shell_start": 8})
+        with mock.patch.object(platform, "live", side_effect=[True, False]) as live, mock.patch.object(platform.time, "sleep") as sleep:
+            platform.supervise({"runtime": str(runtime), "exit_with_shell": True}, {"pid": 42, "start": 7})
+            self.assertEqual(live.call_args_list, [mock.call(42, 7), mock.call(43, 8)])
+            sleep.assert_not_called()
+        self.assertTrue(json.loads(platform.read_private(runtime / "ended.json"))["whole_session_cleanup"])
+
+    def test_default_supervision_retains_apps_after_shell_exit(self):
+        with mock.patch.object(platform, "live", side_effect=[True, False]) as live, mock.patch.object(platform.time, "sleep") as sleep:
+            platform.supervise({"runtime": str(self.root)}, {"pid": 42, "start": 7})
+            self.assertEqual(live.call_args_list, [mock.call(42, 7), mock.call(42, 7)])
+            sleep.assert_called_once_with(.5)
+
+    def installed_wait(self, replies, stopping=None):
+        clock = iter(range(0, 1000, 1))
+        calls = []
+        def query(argv, **kwargs):
+            calls.append(argv)
+            reply = replies.pop(0)
+            if isinstance(reply, BaseException):
+                raise reply
+            return subprocess.CompletedProcess(argv, reply[0], reply[1], "")
+        platform.wait_installed_unit("fixture.service", stopping if stopping is not None else [], query=query, clock=lambda: next(clock), sleep=lambda _: None)
+        return calls
+
+    def test_installed_wait_survives_a_user_manager_reexec(self):
+        refused = (1, "")
+        replies = [(0, "active\n"), refused, subprocess.TimeoutExpired("systemctl", 2), refused, (0, "reloading\n"), (0, "active\n"), (0, "inactive\n")]
+        self.assertEqual(len(self.installed_wait(replies)), 7)
+
+    def test_installed_wait_ends_on_failure_stop_or_lasting_outage(self):
+        self.assertEqual(len(self.installed_wait([(0, "active\n"), (0, "failed\n")])), 2)
+        self.assertEqual(self.installed_wait([], stopping=[True]), [])
+        with self.assertRaisesRegex(RuntimeError, "User manager unavailable"):
+            self.installed_wait([(1, "")] * 20)
+
+    def test_a_preview_registers_its_own_portal_backend_only_when_built(self):
+        with tempfile.TemporaryDirectory() as folder:
+            runtime, binaries = Path(folder) / "runtime", Path(folder) / "bin"
+            runtime.mkdir()
+            binaries.mkdir()
+            self.assertIsNone(platform.portal_registration(runtime, binaries))
+            portal = binaries / "enzui-portal"
+            portal.write_text("#!/bin/sh\n")
+            portal.chmod(0o755)
+            data = platform.portal_registration(runtime, binaries)
+            self.assertEqual(data, runtime / "portal-data")
+            service = (data / "dbus-1/services/org.freedesktop.impl.portal.desktop.enzui.service").read_text()
+            self.assertIn(f"Exec={portal.resolve()}", service)
+            self.assertIn("FileChooser", (data / "xdg-desktop-portal/portals/enzui.portal").read_text())
+            self.assertIn("FileChooser=enzui", (data / "xdg-desktop-portal/enzui-portals.conf").read_text())
+            self.assertEqual(oct(data.stat().st_mode & 0o777), "0o700")
+
+    def test_privileged_clients_name_the_shell_and_only_explicit_dev_tools(self):
+        values = platform.privileged_clients(self.root)
+        self.assertEqual(values["ENZUI_PRIVILEGED_CLIENTS"], "enforce")
+        self.assertEqual(values["ENZUI_SHELL_EXE"], str((self.root / "enzui-shell").resolve()))
+        self.assertNotIn("ENZUI_DEV_PRIVILEGED_EXES", values)
+        remote = str((self.root / "xdg-desktop-portal-enzui-remote").resolve())
+        self.assertEqual(values["ENZUI_PORTAL_EXES"].split(":"), ["/usr/lib/xdg-desktop-portal-hyprland", remote])
+        self.assertEqual(values["ENZUI_PORTAL_INPUT_EXES"], remote)
+        self.assertNotIn(remote, values["ENZUI_PORTAL_HELPER_EXES"])
+        self.assertEqual(platform.privileged_clients(self.root, "/usr/bin/env")["ENZUI_DEV_PRIVILEGED_EXES"], "/usr/bin/env")
+        for bad in ["env", "/nonexistent/tool", "/usr/bin/env:relative", "/usr/bin/e nv"]:
+            with self.assertRaises(argparse.ArgumentTypeError):
+                platform.dev_tool_list(bad)
+        self.assertEqual(platform.dev_tool_list("/usr/bin/env"), str(Path("/usr/bin/env").resolve()))
+
+    def test_live_rejects_zombies_and_reused_process_ids(self):
+        for state, ticks, expected in [("S", 7, True), ("Z", 7, False), ("X", 7, False), ("S", 8, False)]:
+            fields = [state] + ["0"] * 18 + [str(ticks)]
+            with mock.patch.object(Path, "read_text", return_value="42 (fixture) " + " ".join(fields)):
+                self.assertEqual(platform.live(42, 7), expected)
+
+    def test_startup_failure_retains_a_verified_compositor_until_it_exits(self):
+        import hashlib
+        project=self.root/"project";(project/"config").mkdir(parents=True);(project/"config/hyprland.lua").write_text("fixture")
+        runtime=self.root/"runtime";runtime.mkdir(mode=0o700)
+        config={"unit":"enzui-platform-fixture-0123456789abcdef.service","profile":str(self.root/"profile"),"runtime":str(runtime),"parent_socket":"/fixture","parent_peer":{"pid":1}}
+        path=runtime/"launch.json";platform.publish(path,config);digest=hashlib.sha256(platform.read_private(path)).hexdigest()
+        with mock.patch.object(platform,"ROOT",project),mock.patch.object(platform,"member",return_value=True),mock.patch.object(platform,"delegated_root"),mock.patch.object(platform,"peer",return_value={"pid":1}),mock.patch.object(platform,"private_bus",return_value={"pid":2}),mock.patch.object(platform,"prepare_desktop",side_effect=RuntimeError("fixture")),mock.patch.object(platform,"compositor",return_value={"pid":42,"start":7}),mock.patch.object(platform,"live",side_effect=[True,False]),mock.patch.object(platform.time,"sleep") as sleep,mock.patch.object(platform,"command") as command,mock.patch.dict(os.environ,{"DBUS_SESSION_BUS_ADDRESS":"unix:path=/fixture"}):
+            platform.inner(str(path),digest)
+            sleep.assert_called_once_with(.5)
+            command.assert_not_called()
+        self.assertTrue((runtime/"failed.json").exists())
+        self.assertFalse((runtime/"ready.json").exists())
+
+    def test_headless_rule_precedes_creation_and_origin_follows_parent_removal(self):
+        parent = {"name": "WAYLAND-1", "width": 1440, "height": 900, "scale": 1.25, "transform": 0, "x": 0, "y": 10}
+        target = {"name": "OWNED", "width": 400, "height": 640, "scale": 1, "transform": 0, "x": 1168, "y": 10}
+        replies = iter([[parent], [parent, target], [{**target, "x": 0, "y": 0}]])
+        calls = []
+        def control(config, identity, *args):
+            calls.append(args)
+            return json.dumps(next(replies)) if args == ("-j", "monitors") else "ok"
+        with mock.patch.object(platform, "control", side_effect=control):
+            saved = platform.prepare_headless({"output": "OWNED", "headless": [400, 640]}, {"pid": 42})
+        self.assertEqual(saved["parent"], parent)
+        self.assertEqual(saved["temporary"], target)
+        self.assertEqual(saved["final"], {**target, "x": 0, "y": 0})
+        self.assertEqual(saved["pid"], 42)
+        self.assertIs(saved["sampled_stages_only"], True)
+        self.assertEqual(calls[1][0], "eval")
+        self.assertIn('position="1168x10"', calls[1][1])
+        self.assertEqual(calls[2], ("output", "create", "headless", "OWNED"))
+        self.assertEqual(calls[4], ("output", "remove", "WAYLAND-1"))
+        self.assertEqual(calls[5][0], "eval")
+        self.assertIn('position="0x0"', calls[5][1])
+
+        # A private compositor can have a renderer without a parent output.
+        # It must still create the requested phone canvas at the origin.
+        replies = iter([[], [{**target, "x": 0, "y": 0}]])
+        calls.clear()
+        with mock.patch.object(platform, "control", side_effect=control):
+            saved = platform.prepare_headless({"output": "OWNED", "headless": [400, 640]}, {"pid": 42})
+        self.assertEqual(saved["final"], {"name": "OWNED", "width": 400, "height": 640})
+        self.assertIs(saved["standalone"], True)
+        self.assertEqual(calls[2], ("output", "create", "headless", "OWNED"))
+        self.assertNotIn(("output", "remove", "WAYLAND-1"), calls)
+
+    def test_headless_origin_waits_for_applied_geometry(self):
+        parent = {"name": "WAYLAND-1", "width": 1440, "height": 900, "scale": 1, "transform": 0, "x": 0, "y": 0}
+        target = {"name": "OWNED", "width": 400, "height": 640, "scale": 1, "transform": 0, "x": 1456, "y": 0}
+        replies = iter([[parent], [parent, target], [target], [{**target, "x": 0}]])
+        def control(config, identity, *args):
+            return json.dumps(next(replies)) if args == ("-j", "monitors") else "ok"
+        with mock.patch.object(platform, "control", side_effect=control), mock.patch.object(platform.time, "sleep") as sleep:
+            platform.prepare_headless({"output": "OWNED", "headless": [400, 640]}, {})
+            sleep.assert_called_once_with(.05)
+
+    def test_invalid_initial_headless_geometry_has_no_mutation(self):
+        parent = {"name": "WAYLAND-1", "width": 1440, "height": 900, "scale": 1, "transform": 0, "x": 0, "y": 0}
+        for change in [{"x": float("nan")}, {"scale": 0}, {"scale": True}, {"transform": 1}, {"width": -1}, {"name": "OTHER"}]:
+            with self.subTest(change=change), mock.patch.object(platform, "control", return_value=json.dumps([{**parent, **change}])) as control:
+                with self.assertRaises(RuntimeError):
+                    platform.prepare_headless({"output": "OWNED", "headless": [400, 640]}, {})
+                self.assertEqual(control.call_count, 1)
+
+    def test_headless_mismatch_retains_parent(self):
+        parent = {"name": "WAYLAND-1", "width": 1440, "height": 900, "scale": 1, "transform": 0, "x": 0, "y": 0}
+        calls = []
+        def control(config, identity, *args):
+            calls.append(args)
+            return json.dumps([parent]) if args == ("-j", "monitors") else "ok"
+        with mock.patch.object(platform, "control", side_effect=control):
+            with self.assertRaisesRegex(RuntimeError, "Temporary headless"):
+                platform.prepare_headless({"output": "OWNED", "headless": [400, 640]}, {})
+        self.assertNotIn(("output", "remove", "WAYLAND-1"), calls)
+
+    def test_headless_parent_drift_is_rejected_before_removal(self):
+        parent = {"name": "WAYLAND-1", "width": 1440, "height": 900, "scale": 1, "transform": 0, "x": 0, "y": 0}
+        target = {"name": "OWNED", "width": 400, "height": 640, "scale": 1, "transform": 0, "x": 1456, "y": 0}
+        replies = iter([[parent], [{**parent, "width": 1920}, target]])
+        calls = []
+        def control(config, identity, *args):
+            calls.append(args)
+            return json.dumps(next(replies)) if args == ("-j", "monitors") else "ok"
+        with mock.patch.object(platform, "control", side_effect=control):
+            with self.assertRaises(RuntimeError):
+                platform.prepare_headless({"output": "OWNED", "headless": [400, 640]}, {})
+        self.assertNotIn(("output", "remove", "WAYLAND-1"), calls)
+
+    def test_headless_origin_wait_has_a_deadline(self):
+        parent = {"name": "WAYLAND-1", "width": 1440, "height": 900, "scale": 1, "transform": 0, "x": 0, "y": 0}
+        target = {"name": "OWNED", "width": 400, "height": 640, "scale": 1, "transform": 0, "x": 1456, "y": 0}
+        replies = iter([[parent], [parent, target], [target]])
+        def control(config, identity, *args):
+            return json.dumps(next(replies)) if args == ("-j", "monitors") else "ok"
+        with mock.patch.object(platform, "control", side_effect=control), mock.patch.object(platform.time, "monotonic", side_effect=[0, 4]), mock.patch.object(platform.time, "sleep") as sleep:
+            with self.assertRaisesRegex(RuntimeError, "requested geometry"):
+                platform.prepare_headless({"output": "OWNED", "headless": [400, 640]}, {})
+            sleep.assert_not_called()
+
+    def test_frontend_help_does_not_touch_the_legacy_runtime(self):
+        runtime=self.root/"runtime";runtime.mkdir(mode=0o700)
+        result=subprocess.run([str(SCRIPT.parent.parent/"enzui-hypr"),"platform","--help"],env={**os.environ,"XDG_RUNTIME_DIR":str(runtime)},capture_output=True,timeout=3)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertIn(b"--experimental",result.stdout)
+        self.assertEqual(list(runtime.iterdir()),[])
+
+    def test_missing_opt_in_has_no_startup_side_effects(self):
+        with mock.patch.object(platform, "private_directory") as mkdir:
+            with self.assertRaises(RuntimeError):
+                platform.start(argparse.Namespace(experimental=False))
+            mkdir.assert_not_called()
+
+    def test_existing_profile_is_not_replaced(self):
+        runtime = self.root / "runtime"
+        config = self.root / "config"
+        runtime.mkdir(mode=0o700)
+        profile = config / "enzui-shell/profiles/fixture"
+        platform.private_directory(profile)
+        with platform.private_file(profile / "session.lock", create=True) as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": str(runtime), "XDG_CONFIG_HOME": str(config)}, clear=True), mock.patch.object(platform, "command") as command:
+                with self.assertRaisesRegex(RuntimeError, "already in use"):
+                    platform.start(argparse.Namespace(experimental=True, profile="fixture"))
+                command.assert_not_called()
+
+    def test_new_unit_uses_clean_environment_and_never_a_stop_or_build_command(self):
+        self.check_binary_directory(None)
+
+    def test_alternate_shell_binaries_are_scoped_without_replacing_defaults(self):
+        self.check_binary_directory(".build/qa-target/debug")
+
+    def test_missing_required_helpers_abort_before_creating_a_desktop(self):
+        for helper in ("enzui-desktop-frame", "enzui-maximize-preview", "enzui-wallpaper"):
+            with self.subTest(helper=helper), tempfile.TemporaryDirectory() as directory:
+                self.check_binary_directory(None, missing=helper, root=Path(directory))
+
+    def test_frame_requires_four_owned_edge_surfaces_with_complete_geometry(self):
+        binary = self.root / "enzui-desktop-frame"
+        binary.symlink_to("/proc/self/exe")
+        config = {"output": "WAYLAND-1", "unit": "fixture.service", "shell_bin_dir": str(self.root)}
+        monitor = {"name": "WAYLAND-1", "width": 1440, "height": 900, "scale": 1}
+        geometry = [(0, 0, 1440, 116), (0, 784, 1440, 116), (0, 0, 64, 900), (1376, 0, 64, 900)]
+        strips = [dict(zip(("x", "y", "w", "h"), edges), namespace="enzui-display-frame", pid=os.getpid()) for edges in geometry]
+        level = "2"
+        def ready():
+            def control(config, identity, *args):
+                return json.dumps([monitor] if args == ("-j", "monitors") else {"WAYLAND-1": {"levels": {level: strips}}})
+            with mock.patch.object(platform, "control", side_effect=control), mock.patch.object(platform, "member", return_value=True):
+                return platform.frame_strips_ready(config, {}, "WAYLAND-1")
+        self.assertTrue(ready())
+        level = "3"
+        self.assertFalse(ready())
+        level = "2"
+        for index in range(4):
+            removed = strips.pop(index)
+            self.assertFalse(ready())
+            strips.insert(index, removed)
+        strips[1]["y"] = 746
+        self.assertFalse(ready())
+        strips[1]["y"] = 784
+        strips[3]["pid"] = -1
+        self.assertFalse(ready())
+
+    def test_visible_review_preserves_screenshot_destination_and_cleanup_choice(self):
+        self.check_binary_directory(None, headless=False, exit_with_shell=True)
+
+    def check_binary_directory(self, alternate, headless=True, exit_with_shell=False, missing=None, root=None):
+        root = root if root is not None else self.root
+        project = root / "project"
+        build = root / "build"
+        binaries = project / (alternate or "target/debug")
+        default = project / "target/debug/enzui-shell"
+        default.parent.mkdir(parents=True, exist_ok=True)
+        default.write_bytes(b"default fixture")
+        for item in (binaries / "enzui-shell", binaries / "enzui-settings", binaries / "enzui-shell-command", binaries / "enzui-desktop-frame", binaries / "enzui-maximize-preview", binaries / "enzui-wallpaper", build / "hyprland-current-build/Hyprland", build / "hyprland-current-build/hyprctl/hyprctl", build / "shell-plugins/enzui-pointer-events.so", build / "build-revisions"):
+            if item.name == missing:
+                continue
+            item.parent.mkdir(parents=True, exist_ok=True)
+            item.write_bytes(b"fixture")
+            item.chmod(0o700)
+        runtime = root / "runtime"
+        runtime.mkdir(mode=0o700)
+        parent = root / "parent"
+        calls = []
+        def command(arguments, **kwargs):
+            calls.append(arguments)
+            self.assertEqual(arguments[0], "systemd-run")
+            launch = Path(arguments[-2])
+            config = json.loads(platform.read_private(launch))
+            self.assertEqual(config["shell_bin_dir"], str(binaries))
+            self.assertEqual(config["exit_with_shell"], exit_with_shell)
+            self.assertIn("XDG_STATE_HOME=" + str(Path(config["profile"]) / "client-state"), arguments)
+            self.assertNotIn("XDG_STATE_HOME=/foreign/state", arguments)
+            capture = "ENZUI_SCREENSHOT_DIR=" + str(Path(config["settings"]).parent / "screenshots")
+            if headless:
+                self.assertIn(capture, arguments)
+            else:
+                self.assertFalse(any(arg.startswith("ENZUI_SCREENSHOT_DIR=") for arg in arguments))
+            private_runtime = Path(config["xdg_runtime"])
+            self.assertNotEqual(private_runtime, runtime)
+            self.assertEqual(private_runtime.parent, runtime)
+            self.assertEqual(len(private_runtime.name), 9)
+            self.assertEqual(private_runtime.stat().st_mode & 0o777, 0o700)
+            platform.publish(launch.parent / "ready.json", {"pid": 123, "output": config["output"]})
+            return ""
+        with socket.socket(socket.AF_UNIX) as server:
+            server.bind(str(parent))
+            server.listen(4)
+            env = {"HOME": str(root), "XDG_RUNTIME_DIR": str(runtime), "XDG_CONFIG_HOME": str(root / "config"), "WAYLAND_DISPLAY": str(parent), "DO_NOT_FORWARD": "fixture-value", "XDG_SESSION_ID": "graphical-fixture", "XDG_STATE_HOME": "/foreign/state", "DBUS_SESSION_BUS_ADDRESS": "unix:path=/not-the-nested-bus"}
+            with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(platform, "ROOT", project), mock.patch.object(platform, "command", side_effect=command), mock.patch.object(platform, "compositor", return_value={"pid": 123}):
+                args = argparse.Namespace(experimental=True, profile="fixture", build_root=str(build), shell_bin_dir=str(binaries) if alternate else None, headless=[360, 640] if headless else None, memory_mib=1536, exit_with_shell=exit_with_shell)
+                if missing:
+                    with self.assertRaisesRegex(RuntimeError, "bundle is incomplete.*" + missing):
+                        platform.start(args)
+                else:
+                    platform.start(args)
+        if missing:
+            self.assertEqual(calls, [])
+            return
+        self.assertEqual(len(calls), 1)
+        args = calls[0]
+        self.assertIn("KillMode=control-group", args)
+        self.assertIn("TimeoutStopSec=10s", args)
+        self.assertIn("SendSIGKILL=yes", args)
+        self.assertIn("Restart=no", args)
+        self.assertIn("Delegate=yes", args)
+        self.assertIn("DelegateSubgroup=supervisor", args)
+        self.assertIn("MemoryMax=1536M", args)
+        self.assertIn("MemorySwapMax=0", args)
+        self.assertIn("/usr/bin/dbus-run-session", args)
+        self.assertIn("-i", args)
+        self.assertIn("ENZUI_PLUGIN_ISOLATION=delegated", args)
+        self.assertIn("XDG_SESSION_ID=graphical-fixture", args)
+        self.assertIn("ENZUI_SHELL_BIN_DIR=" + str(binaries), args)
+        if alternate:
+            self.assertEqual(default.read_bytes(), b"default fixture")
+        self.assertTrue(any(arg.startswith("WAYLAND_DISPLAY=") and arg.endswith("/wayland-unavailable") for arg in args))
+        self.assertNotIn("WAYLAND_DISPLAY=" + str(parent), args)
+        self.assertIn("ENZUI_HYPR_HOST_WAYLAND=" + str(parent), args)
+        self.assertIn("GDK_BACKEND=wayland", args)
+        self.assertIn("HYPRLAND_NO_SD_VARS=1", args)
+        self.assertIn("PIPEWIRE_REMOTE=" + str(runtime / "pipewire-0"), args)
+        self.assertFalse(any("DO_NOT_FORWARD" in arg or "/not-the-nested-bus" in arg for arg in args))
+        self.assertNotIn("stop", args)
+        self.assertNotIn("cargo", args)
+
+
+
+if __name__ == "__main__":
+    unittest.main()

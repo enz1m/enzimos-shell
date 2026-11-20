@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+BUILD="$ROOT/.build/shell-recorder"
+mkdir -p "$BUILD"
+XML="$ROOT/vendor/Hyprland/protocols/wlr-screencopy-unstable-v1.xml"
+wayland-scanner client-header "$XML" "$BUILD/wlr-screencopy-unstable-v1-client-protocol.h"
+wayland-scanner private-code "$XML" "$BUILD/wlr-screencopy-protocol.c"
+cc -O2 -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -I"$BUILD" \
+    "$ROOT/tools/record-shell-frames.c" "$BUILD/wlr-screencopy-protocol.c" \
+    $(pkg-config --cflags --libs wayland-client) -o "$BUILD/record-shell-frames"
+printf '%s\n' "$BUILD/record-shell-frames"

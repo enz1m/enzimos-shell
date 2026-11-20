@@ -1,0 +1,77 @@
+#!/usr/bin/env lua
+local root=arg[0]:match("^(.*)/").."/.."
+dofile(root.."/config/shell-metrics.lua")
+dofile(root.."/config/sidebar-visibility.lua")
+local context={now=0,occupied=true,fullscreen=false,covered=false,edge_hover=false,body_hover=false,held=false,force=false}
+local state=enzui_sidebar_visibility_step(nil,context)
+assert(state.visible)
+context.covered=true;context.now=1
+state=enzui_sidebar_visibility_step(state,context);assert(state.visible and state.hide_at==1.25)
+context.now=1.24;state=enzui_sidebar_visibility_step(state,context);assert(state.visible)
+context.now=1.26;state=enzui_sidebar_visibility_step(state,context);assert(not state.visible)
+context.edge_hover=true;context.now=2
+state=enzui_sidebar_visibility_step(state,context);assert(not state.visible)
+context.now=2.1;state=enzui_sidebar_visibility_step(state,context);assert(not state.visible)
+context.edge_hover=false;context.now=2.11
+state=enzui_sidebar_visibility_step(state,context);assert(not state.visible and not state.hover_at)
+context.edge_hover=true;context.held=true;context.now=3
+state=enzui_sidebar_visibility_step(state,context);assert(not state.visible and not state.hover_at)
+context.held=false;context.now=4
+state=enzui_sidebar_visibility_step(state,context);assert(not state.visible)
+context.now=4.16;state=enzui_sidebar_visibility_step(state,context);assert(state.visible)
+context.edge_hover=false;context.body_hover=true;context.now=5
+state=enzui_sidebar_visibility_step(state,context);assert(state.visible and not state.hide_at)
+context.body_hover=false;context.held=true;context.now=6
+state=enzui_sidebar_visibility_step(state,context);assert(state.visible and not state.hide_at)
+context.held=false;context.now=7
+state=enzui_sidebar_visibility_step(state,context);assert(state.visible)
+context.now=7.26;state=enzui_sidebar_visibility_step(state,context);assert(not state.visible)
+context.force=true;context.now=8
+state=enzui_sidebar_visibility_step(state,context);assert(state.visible)
+context.force=false;context.fullscreen=true;context.edge_hover=true;context.body_hover=true;context.held=true;context.now=8.1
+state=enzui_sidebar_visibility_step(state,context);assert(not state.visible and not state.hover_at and not state.hide_at)
+context.now=8.5;state=enzui_sidebar_visibility_step(state,context);assert(not state.visible)
+context.force=true;context.now=8.6;state=enzui_sidebar_visibility_step(state,context);assert(state.visible)
+context.force=false;context.now=8.7;state=enzui_sidebar_visibility_step(state,context);assert(not state.visible)
+context.fullscreen=false;context.covered=false;context.now=8.8;state=enzui_sidebar_visibility_step(state,context);assert(state.visible)
+context.occupied=false;context.now=9
+state=enzui_sidebar_visibility_step(state,context);assert(not state.visible)
+context.occupied=true;context.now=8
+state=enzui_sidebar_visibility_step(state,context);assert(not state.visible)
+for _,now in ipairs({-1,math.huge,0/0})do context.now=now;assert(not pcall(enzui_sidebar_visibility_step,state,context)) end
+context.now=10;context.held=nil;assert(not pcall(enzui_sidebar_visibility_step,state,context))
+
+local rail={x=12,y=234,width=40,height=52}
+assert(enzui_sidebar_capsule_overlaps(rail,{x=30,y=250,width=2,height=2}))
+assert(enzui_sidebar_capsule_overlaps(rail,{x=40,y=250,width=20,height=20}))
+assert(not enzui_sidebar_capsule_overlaps(rail,{x=12,y=234,width=1,height=1}))
+assert(not enzui_sidebar_capsule_overlaps(rail,{x=52,y=250,width=20,height=20}))
+assert(not enzui_sidebar_capsule_overlaps(rail,{x=0,y=0,width=10,height=10}))
+assert(not pcall(enzui_sidebar_capsule_overlaps,rail,{x=0,y=0,width=0,height=2}))
+
+local metrics=enzui_resolve_metrics({frame=0,bar=32,radius=16,rail=40,text=13,icon=16,islands={height=32,gap=8,edge_gap=10,side_gap=12,radius=16,rail=40,padding=16}})
+for _,edge in ipairs({"top","bottom"})do
+ for _,side in ipairs({"left","right"})do
+  for _,mode in ipairs({"fullscreen","overlap","reserved"})do
+   for _,occupied in ipairs({false,true})do
+    for padding=0,32 do
+     local normal,fullscreen=enzui_sidebar_reservations(metrics,edge,side,{visibility=mode,fullscreen_padding=padding},occupied)
+     assert(normal[edge]==50 and fullscreen[edge]==50)
+     local other_side=side=="left" and "right" or "left"
+     assert(normal[other_side]==0 and fullscreen[other_side]==padding)
+     assert(normal[side]==(occupied and mode=="reserved" and 60 or 0))
+     assert(fullscreen[side]==math.max(normal[side],padding))
+     local other_edge=edge=="top" and "bottom" or "top"
+     assert(normal[other_edge]==0 and fullscreen[other_edge]==padding)
+    end
+   end
+  end
+ end
+end
+local normal,fullscreen=enzui_sidebar_reservations(enzui_resolve_metrics(),"top","left",{visibility="reserved",fullscreen_padding=32},true)
+assert(normal.left==36 and normal.top==36 and fullscreen.left==36 and fullscreen.top==36)
+normal,fullscreen=enzui_sidebar_reservations(enzui_resolve_metrics(),"top","right",nil,false)
+assert(normal.right==8 and fullscreen.right==8 and normal.left==8)
+assert(not pcall(enzui_sidebar_reservations,metrics,"top","left",{visibility="bad",fullscreen_padding=8},true))
+assert(not pcall(enzui_sidebar_reservations,metrics,"top","left",{visibility="fullscreen",fullscreen_padding=33},true))
+print("Sidebar visibility model: dwell, exit grace, held input, forced reveal, empty state, rounded overlap and 792 reservation cases passed.")

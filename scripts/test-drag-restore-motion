@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$root"
+lua tools/probes/test-drag-maximize.lua
+: "${ENZUI_QA_RUNTIME:?Set ENZUI_QA_RUNTIME to an isolated --exit-with-shell review runtime}"
+mkdir -p .build/drag-maximize-qa
+protocol=.build/shared-desktop/source/protocols/wlr-virtual-pointer-unstable-v1.xml
+wayland-scanner client-header "$protocol" .build/drag-maximize-qa/wlr-virtual-pointer-client.h
+wayland-scanner private-code "$protocol" .build/drag-maximize-qa/wlr-virtual-pointer-client.c
+scripts/with-build-budget cc -O2 -Wall -Wextra -I.build/drag-maximize-qa \
+    tools/probes/virtual-pointer-qa.c .build/drag-maximize-qa/wlr-virtual-pointer-client.c \
+    $(pkg-config --cflags --libs wayland-client) -o .build/drag-maximize-qa/virtual-pointer-qa
+python3 tools/probes/test-drag-restore-motion.py

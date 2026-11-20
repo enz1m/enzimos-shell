@@ -1,0 +1,33 @@
+#!/usr/bin/env python3
+import argparse
+import os
+from pathlib import Path
+import shutil
+
+
+def install(folder):
+    source = Path(__file__).resolve().parent.parent / 'assets/wallpapers'
+    folder.mkdir(parents=True, exist_ok=True)
+    if folder.is_symlink() or not folder.is_dir() or folder.stat().st_uid != os.getuid():
+        raise ValueError('Choose an owned wallpaper directory, not a symlink')
+    installed, preserved = 0, 0
+    for image in sorted(source.glob('enzui-*.jpg')):
+        try:
+            fd = os.open(folder / image.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        except FileExistsError:
+            preserved += 1
+            continue
+        with image.open('rb') as original, os.fdopen(fd, 'wb') as destination:
+            shutil.copyfileobj(original, destination)
+            destination.flush()
+            os.fsync(destination.fileno())
+        installed += 1
+    return installed, preserved
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Add the original enzUI wallpapers without replacing existing files')
+    parser.add_argument('directory', nargs='?', type=Path, default=Path.home() / 'Pictures/Wallpapers')
+    args = parser.parse_args()
+    installed, preserved = install(args.directory)
+    print(f'Added {installed} wallpapers; preserved {preserved} existing names.')

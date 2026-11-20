@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+"""Exercise release staging admission without compiling or touching release bytes."""
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+
+root = Path(__file__).resolve().parent.parent
+(root / '.build').mkdir(exist_ok=True)
+with tempfile.TemporaryDirectory(prefix='release-builder-test-', dir=root / '.build') as directory:
+    fixture = Path(directory)
+    scripts = fixture / 'scripts'
+    scripts.mkdir()
+    shutil.copy2(root / 'scripts/build-release', scripts / 'build-release')
+    setup = scripts / 'setup-sources'
+    setup.write_text('#!/bin/sh\necho admitted\nexit 91\n')
+    setup.chmod(0o755)
+    (fixture / '.build').mkdir()
+
+    def run(arguments, expected):
+        result = subprocess.run([str(scripts / 'build-release'), *arguments], capture_output=True, text=True)
+        assert result.returncode == expected, (arguments, result.returncode, result.stdout, result.stderr)
+        assert ('admitted' in result.stdout) == (expected == 91), result
+
+    run([], 91)
+    run(['--bin-dir', str(fixture / '.build/new/bin')], 91)
+    empty = fixture / '.build/empty'
+    empty.mkdir()
+    run(['--bin-dir', str(empty)], 91)
+    run(['--bin-dir'], 2)
+    run(['--output', str(empty)], 2)
+    run(['--bin-dir', str(empty), 'extra'], 2)
+    run(['--bin-dir', str(fixture / 'outside')], 2)
+    run(['--bin-dir', str(fixture / '.build/../outside')], 2)
+    run(['--bin-dir', str(fixture / '.build')], 2)
+    occupied = fixture / '.build/occupied'
+    occupied.mkdir()
+    original = occupied / 'retained'
+    original.write_bytes(b'preserve this release')
+    run(['--bin-dir', str(occupied)], 2)
+    assert original.read_bytes() == b'preserve this release'
+    run(['--bin-dir', str(original)], 2)
+    outside = fixture / 'outside'
+    outside.mkdir()
+    (fixture / '.build/link').symlink_to(outside, target_is_directory=True)
+    run(['--bin-dir', str(fixture / '.build/link/new')], 2)
+    assert not (outside / 'new').exists()
+
+subprocess.run(['bash', '-n', str(root / 'scripts/build-release')], check=True)
+print('Release destination admission passes')

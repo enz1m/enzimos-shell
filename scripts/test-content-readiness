@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+if [[ ${ENZUI_BUILD_CAPPED:-0} != 1 ]]; then
+    exec "$root/scripts/with-build-budget" "$0" "$@"
+fi
+mkdir -p "$root/.build/content-readiness-tests"
+binary=$(mktemp "$root/.build/content-readiness-tests/check-XXXXXXXX")
+trap 'rm -f "$binary"' EXIT
+for source in test-content-readiness test-committed-geometry test-scene-timing test-restore-picture; do
+    c++ -std=c++20 -Wall -Wextra -Werror -O1 -g0 \
+        "$root/tools/probes/$source.cpp" -o "$binary"
+    "$binary"
+done

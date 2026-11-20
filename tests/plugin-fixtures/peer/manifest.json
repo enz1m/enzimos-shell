@@ -1,0 +1,1 @@
+{"format":1,"id":"peer-fixture","name":"Healthy peer fixture","version":"1","description":"Disposable isolated counter used during owned plugin faults.","permissions":["shell.bar","shell.panels"],"elements":[{"id":"peer","section":"end","before":"builtin.controls"}],"settings":[]}

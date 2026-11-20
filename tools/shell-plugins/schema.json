@@ -1,0 +1,26 @@
+{
+  "builtin_anchors": [
+    "builtin.applications",
+    "builtin.desktops",
+    "builtin.clock",
+    "builtin.controls",
+    "builtin.notifications",
+    "builtin.dock"
+  ],
+  "max_elements": 8,
+  "max_package_bytes": 1048576,
+  "max_program_bytes": 524288,
+  "max_settings": 16,
+  "permissions": [
+    "shell.bar",
+    "shell.panels",
+    "shell.theme",
+    "shell.layout",
+    "shell.behavior",
+    "clipboard.read",
+    "clipboard.write",
+    "storage.persistent",
+    "notifications.read",
+    "applications.surface"
+  ]
+}

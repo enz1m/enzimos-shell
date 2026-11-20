@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+"""Test launcher isolation without starting a compositor or compiler."""
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+
+LAUNCHER = Path(__file__).resolve().parent.parent / 'enzui-hypr'
+
+
+class LauncherTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.build = self.root/'prepared'
+        self.runtime = self.root/'runtime'
+        (self.build/'hyprland-current-build/hyprctl').mkdir(parents=True)
+        self.runtime.mkdir()
+        self.record = self.root/'control-arguments'
+        self.config = self.root/'private.lua'
+        self.config.write_text('-- test config\n')
+        self.script(self.build/'hyprland-current-build/Hyprland',
+                    f'printf "%s\\n" "$*" > "{self.record}"\n')
+        self.script(self.build/'hyprland-current-build/hyprctl/hyprctl',
+                    f'printf "%s\\n" "$*" > "{self.record}"\nprintf "[]"\n')
+        (self.build/'build-revisions').write_text('prepared-pin\n')
+        blockers = self.root/'bin'; blockers.mkdir()
+        for command in ['cargo','cmake','systemd-run','git']:
+            self.script(blockers/command, 'echo "unexpected build tool" >&2\nexit 97\n')
+        self.env = {**os.environ, 'XDG_RUNTIME_DIR':str(self.root),
+                    'ENZUI_HYPR_RUNROOT':str(self.runtime),
+                    'ENZUI_HYPR_BUILDROOT':str(self.build),
+                    'ENZUI_HYPR_CONFIG':str(self.config),
+                    'PATH':str(blockers)+':'+os.environ['PATH']}
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def script(self, path, body):
+        path.write_text('#!/bin/sh\n'+body)
+        path.chmod(0o700)
+
+    def run_launcher(self, *arguments):
+        return subprocess.run([str(LAUNCHER),*arguments],env=self.env,capture_output=True,text=True,timeout=5)
+
+    def test_explicit_prepared_stack_never_rebuilds(self):
+        result = self.run_launcher('config-check')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(self.record.read_text(),f'--verify-config --config {self.config}\n')
+
+    def test_status_scopes_control_to_saved_instance(self):
+        (self.runtime/'hyprland.pid').write_text(str(os.getpid()))
+        start = Path(f'/proc/{os.getpid()}/stat').read_text().rsplit(')',1)[1].split()[19]
+        (self.runtime/'hyprland.pid.start').write_text(start)
+        (self.runtime/'instance').write_text('owned-instance')
+        (self.runtime/'wayland-display').write_text('wayland-test')
+        result = self.run_launcher('status')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertIn('--instance owned-instance clients -j',self.record.read_text())
+
+    def test_app_launch_rejects_unknown_ids_and_foreign_displays(self):
+        launcher = LAUNCHER.parent/'scripts/launch-desktop-app'
+        result = subprocess.run([str(launcher),'../text-app'],env=self.env,capture_output=True,text=True,timeout=5)
+        self.assertEqual(result.returncode,2)
+        (self.runtime/'instance').write_text('owned-instance')
+        (self.runtime/'wayland-display').write_text('wayland-owned')
+        env = {**self.env,'HYPRLAND_INSTANCE_SIGNATURE':'owned-instance','WAYLAND_DISPLAY':'wayland-other'}
+        result = subprocess.run([str(launcher),'text-app'],env=env,capture_output=True,text=True,timeout=5)
+        self.assertEqual(result.returncode,2)
+        self.assertIn('Wrong desktop display',result.stderr)
+
+    def installed_launch(self, extra):
+        fake_root = self.root/'checkout-installed'
+        (fake_root/'scripts').mkdir(parents=True, exist_ok=True)
+        (fake_root/'.build/apps/bin').mkdir(parents=True, exist_ok=True)
+        launcher = fake_root/'scripts/launch-desktop-app'
+        launcher.write_bytes((LAUNCHER.parent/'scripts/launch-desktop-app').read_bytes())
+        launcher.chmod(0o700)
+        self.script(fake_root/'.build/apps/bin/terminal-emulator',
+                    'printf "%s\\n" "${XDG_CONFIG_HOME:-unset}" "${XDG_DATA_HOME:-unset}" "${XDG_STATE_HOME:-unset}" "${XDG_CONFIG_DIRS:-unset}"\n')
+        (self.runtime/'instance').write_text('owned-instance')
+        (self.runtime/'wayland-display').write_text('wayland-owned')
+        home = self.root/'home'
+        home.mkdir(exist_ok=True)
+        env = {**self.env,'HYPRLAND_INSTANCE_SIGNATURE':'owned-instance','WAYLAND_DISPLAY':'wayland-owned',
+               'ENZUI_DESKTOP_SESSION':'installed','HOME':str(home),**extra}
+        for name in ('XDG_CONFIG_HOME','XDG_DATA_HOME','XDG_STATE_HOME','XDG_CONFIG_DIRS'):
+            if name not in extra: env.pop(name,None)
+        result = subprocess.run([str(launcher),'terminal-emulator'],env=env,capture_output=True,text=True,timeout=5)
+        self.assertEqual(result.returncode,0,result.stderr)
+        return home, result
+
+    def test_installed_login_apps_use_the_accounts_own_folders(self):
+        custom = self.root/'custom-data'
+        home, _ = self.installed_launch({'XDG_DATA_HOME':str(custom),'XDG_CONFIG_HOME':'relative/config'})
+        log = home/'.local/state/enzui/apps/terminal-emulator.log'
+        config, data, state, dirs = log.read_text().splitlines()[:4]
+        self.assertEqual((config, data, state, dirs), ('unset', str(custom), 'unset', 'unset'))
+        self.assertFalse((self.runtime/'apps/data').exists())
+        self.assertEqual(log.parent.stat().st_mode & 0o777, 0o700)
+
+    def test_app_launch_keeps_config_private_but_still_finds_the_shared_theme(self):
+        # Use a throwaway launcher root so fixture binaries cannot resolve to checkout builds.
+        fake_root = self.root/'checkout'
+        (fake_root/'scripts').mkdir(parents=True)
+        (fake_root/'.build/apps/bin').mkdir(parents=True)
+        launcher = fake_root/'scripts/launch-desktop-app'
+        launcher.write_bytes((LAUNCHER.parent/'scripts/launch-desktop-app').read_bytes())
+        launcher.chmod(0o700)
+        self.script(fake_root/'.build/apps/bin/text-app',
+                    'printf "%s\\n" "$XDG_CONFIG_HOME" "$XDG_CONFIG_DIRS"\n')
+        (self.runtime/'instance').write_text('owned-instance')
+        (self.runtime/'wayland-display').write_text('wayland-owned')
+        session_config = self.root/'client-config'
+        (session_config/'enzui').mkdir(parents=True)
+        (session_config/'enzui/theme.toml').write_text('version = 1\n')
+        env = {**self.env,'HYPRLAND_INSTANCE_SIGNATURE':'owned-instance',
+               'WAYLAND_DISPLAY':'wayland-owned',
+               'XDG_CONFIG_HOME':str(session_config)}
+        result = subprocess.run([str(launcher),'text-app'],env=env,
+                                capture_output=True,text=True,timeout=5)
+        self.assertEqual(result.returncode,0,result.stderr)
+        home, dirs = (self.runtime/'apps/text-app.log').read_text().splitlines()[:2]
+        self.assertEqual(home,str(self.runtime/'apps/config'))
+        self.assertIn(str(session_config),dirs.split(':'))
+        self.assertTrue((session_config/'enzui/theme.toml').is_file())
+
+    def test_start_never_loads_a_plugin_into_an_existing_desktop(self):
+        (self.runtime/'hyprland.pid').write_text(str(os.getpid()))
+        start = Path(f'/proc/{os.getpid()}/stat').read_text().rsplit(')',1)[1].split()[19]
+        (self.runtime/'hyprland.pid.start').write_text(start)
+        (self.runtime/'instance').write_text('owned-instance')
+        (self.runtime/'wayland-display').write_text('wayland-owned')
+        result = self.run_launcher('start')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Already running', result.stdout)
+        self.assertFalse(self.record.exists())
+
+    def test_stale_pid_identity_is_not_a_live_compositor(self):
+        (self.runtime/'hyprland.pid').write_text(str(os.getpid()))
+        (self.runtime/'hyprland.pid.start').write_text('not-current-start-time')
+        (self.runtime/'instance').write_text('must-not-contact')
+        (self.runtime/'wayland-display').write_text('wayland-test')
+        result = self.run_launcher('status')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertIn('stopped',result.stdout)
+        self.assertFalse(self.record.exists())
+
+
+if __name__ == '__main__':
+    unittest.main()

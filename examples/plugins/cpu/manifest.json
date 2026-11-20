@@ -1,0 +1,12 @@
+{
+  "format": 1,
+  "id": "cpu-meter",
+  "name": "CPU meter",
+  "version": "1.0.1",
+  "description": "Read-only total CPU utilization sampled from /proc/stat. Runs as an isolated, on-demand shell plugin with no host process inspection.",
+  "permissions": ["shell.bar", "shell.panels"],
+  "elements": [{"id": "usage", "section": "end", "before": "builtin.controls"}],
+  "settings": [
+    {"key": "interval_seconds", "label": "Sample every (seconds)", "kind": "integer", "default": 2, "min": 1, "max": 10}
+  ]
+}

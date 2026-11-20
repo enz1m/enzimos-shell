@@ -1,0 +1,94 @@
+[workspace]
+members = ["shell", "lock"]
+exclude = ["vendor/enzui", "vendor/iced", "enzwall", "vendor/phone-link", "vendor/phone-link/**"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+publish = false
+
+[patch.crates-io]
+zbus_macros = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "e182645b56d15e637bb6c8144f99ebfa7f900716" }
+zbus_names = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "e182645b56d15e637bb6c8144f99ebfa7f900716" }
+zvariant = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "e182645b56d15e637bb6c8144f99ebfa7f900716" }
+zvariant_derive = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "e182645b56d15e637bb6c8144f99ebfa7f900716" }
+zvariant_utils = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "e182645b56d15e637bb6c8144f99ebfa7f900716" }
+zbus = { git = "https://github.com/enz1m/enzim-zbus.git", rev = "e182645b56d15e637bb6c8144f99ebfa7f900716" }
+winit = { git = "https://github.com/enz1m/enzim-winit.git", rev = "40eeb41f8637ef1620afa377ba006874224b6d65" }
+
+[profile.dev]
+debug = 0
+incremental = false
+codegen-units = 256
+
+[profile.dev.package."*"]
+opt-level = 2
+debug = 0
+
+# Full-screen preview compositing needs optimization even in development builds.
+[profile.dev.package.enzui-shell]
+opt-level = 2
+incremental = true
+
+[profile.dev.package.enzui-widgets]
+opt-level = 0
+
+[profile.dev.package.enzui-core]
+opt-level = 0
+
+[profile.test]
+debug = 0
+incremental = false
+codegen-units = 256
+
+[profile.test.package.enzui-shell]
+opt-level = 0
+incremental = true
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(docsrs)"] }
+missing_docs = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+print_stdout = "warn"
+mem_forget = "warn"
+undocumented_unsafe_blocks = "warn"
+return_self_not_must_use = "warn"
+clone_on_ref_ptr = "warn"
+redundant_clone = "warn"
+trivially_copy_pass_by_ref = "warn"
+large_stack_arrays = "warn"
+ref_option = "warn"
+implicit_clone = "warn"
+assigning_clones = "warn"
+or_fun_call = "warn"
+cast_lossless = "warn"
+significant_drop_in_scrutinee = "warn"
+manual_let_else = "warn"
+map_unwrap_or = "warn"
+redundant_closure_for_method_calls = "warn"
+semicolon_if_nothing_returned = "warn"
+uninlined_format_args = "warn"
+unnested_or_patterns = "warn"
+explicit_iter_loop = "warn"
+ignored_unit_patterns = "warn"
+unused_async = "warn"
+string_slice = "warn"
+unwrap_in_result = "warn"
+panic = "warn"
+iter_over_hash_type = "warn"
+allow_attributes_without_reason = "warn"
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
+missing_assert_message = "warn"
+str_to_string = "warn"
+format_push_string = "warn"
+redundant_type_annotations = "warn"

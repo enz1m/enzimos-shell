@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+import importlib.util
+import json
+from pathlib import Path
+import unittest
+
+ROOT = Path(__file__).resolve().parent.parent
+SPEC = importlib.util.spec_from_file_location('clipboard_plugin', ROOT / 'examples/plugins/clipboard/main.py')
+MODULE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(MODULE)
+
+
+class ClipboardTest(unittest.TestCase):
+    def setUp(self):
+        self.messages = []
+        self.now = 0
+        self.config = {'collect': True, 'retention_minutes': 1, 'max_mb': 1}
+        self.clipboard = MODULE.Clipboard(dict(self.config), self.messages.append, lambda: self.now)
+
+    def entry(self, index, size=100, image=False):
+        self.clipboard.handle({'type': 'provider', 'data': {
+            'provider': 'clipboard', 'event': 'entry', 'blob': f'{index:032x}',
+            'preview': 'Disposable copied text ' + str(index), 'mime': 'image/png' if image else 'text/plain',
+            'bytes': size, 'image': image, 'fresh': True}})
+
+    def actions(self, action, value=None):
+        self.clipboard.handle({'type': 'action', 'action': action, 'value': value, 'gesture': 'a' * 32})
+
+    def test_placement_and_default_subscription(self):
+        manifest = json.loads((ROOT / 'examples/plugins/clipboard/manifest.json').read_text())
+        self.assertEqual(manifest['elements'], [{'id': 'history', 'section': 'end', 'before': 'builtin.controls'}])
+        self.assertEqual(self.messages[0]['request'], {'operation': 'clipboard.subscribe', 'enabled': True})
+        self.assertEqual(self.messages[-1]['elements'][0]['label'], 'Clipboard')
+
+    def test_shipped_defaults_collect_and_a_paused_history_releases_entries(self):
+        manifest = json.loads((ROOT / 'examples/plugins/clipboard/manifest.json').read_text())
+        defaults = {entry['key']: entry['default'] for entry in manifest['settings']}
+        self.assertTrue(MODULE.Clipboard(defaults, lambda _: None, lambda: 0).collecting)
+        messages = []
+        clipboard = MODULE.Clipboard({**defaults, 'collect': False}, messages.append, lambda: 0)
+        self.assertFalse(clipboard.collecting)
+        self.assertFalse(messages[0]['request']['enabled'])
+        clipboard.handle({'type': 'provider', 'data': {'provider': 'clipboard', 'event': 'entry', 'blob': 'a' * 32}})
+        self.assertFalse(clipboard.entries)
+        self.assertTrue(any(m.get('request', {}).get('blobs') == ['a' * 32] for m in messages))
+        self.assertTrue(any(node.get('text') == 'Nothing is collected while paused.' for node in messages[-1]['elements'][0]['panel']['nodes']))
+
+    def test_runtime_pause_survives_unrelated_configuration_changes(self):
+        self.actions('collect', False)
+        self.clipboard.handle({'type': 'config', 'config': {**self.config, 'max_mb': 2}})
+        self.assertFalse(self.clipboard.collecting)
+        self.clipboard.handle({'type': 'config', 'config': {**self.config, 'collect': False}})
+        self.clipboard.handle({'type': 'config', 'config': {**self.config, 'collect': True}})
+        self.assertTrue(self.clipboard.collecting)
+
+    def test_image_thumbnail_and_restore_use_only_host_handle_and_gesture(self):
+        self.entry(1, image=True)
+        nodes = self.messages[-1]['elements'][0]['panel']['nodes']
+        self.assertTrue(any(n.get('thumbnail') == f'{1:032x}' for n in nodes))
+        self.actions(f'{1:032x}')
+        request = [m for m in self.messages if m.get('request', {}).get('operation') == 'clipboard.restore'][-1]
+        self.assertEqual(request['request'], {'operation': 'clipboard.restore', 'blob': f'{1:032x}', 'gesture': 'a' * 32})
+        self.clipboard.handle({'type': 'response', 'id': request['id'], 'result': {'ok': True, 'error': ''}})
+        self.assertIsNone(self.clipboard.error)
+        self.assertFalse(any(n.get('key') == 'status' for n in self.messages[-1]['elements'][0]['panel']['nodes']))
+
+    def test_expiration_is_not_extended_by_duplicate_entries(self):
+        self.entry(1)
+        self.now = 50
+        self.entry(1)
+        self.now = 61
+        self.clipboard.handle({'type': 'ping', 'sequence': 1})
+        self.assertFalse(self.clipboard.entries)
+        self.assertTrue(any(m.get('request', {}).get('blobs') == [f'{1:032x}'] for m in self.messages))
+        self.assertTrue(any(m.get('type') == 'pong' for m in self.messages))
+
+    def test_size_eviction_and_live_config_reduction_release_oldest(self):
+        self.entry(1, 700000)
+        self.entry(2, 700000)
+        self.assertEqual(list(self.clipboard.entries), [f'{2:032x}'])
+        self.clipboard.handle({'type': 'config', 'config': {**self.config, 'max_mb': 2}})
+        self.entry(3, 700000)
+        self.assertEqual(len(self.clipboard.entries), 2)
+        self.clipboard.handle({'type': 'config', 'config': self.config})
+        self.assertEqual(list(self.clipboard.entries), [f'{3:032x}'])
+
+    def test_pause_keeps_old_history_and_drops_new_entries(self):
+        self.entry(1)
+        self.actions('collect', False)
+        self.entry(2)
+        self.assertEqual(list(self.clipboard.entries), [f'{1:032x}'])
+        self.actions('clear')
+        self.assertFalse(self.clipboard.entries)
+        self.assertFalse(self.clipboard.collecting)
+
+    def test_scrolling_exposes_all_bounded_entries_without_pages(self):
+        for i in range(140):
+            self.entry(i)
+        self.assertEqual(len(self.clipboard.entries), 128)
+        panel = self.messages[-1]['elements'][0]['panel']
+        self.assertTrue(panel['entry_list'])
+        self.assertEqual(len(panel['nodes']), 128)
+        self.assertEqual(panel['nodes'][0]['key'], f'{139:032x}')
+        self.assertEqual(panel['nodes'][-1]['key'], f'{12:032x}')
+        self.assertLessEqual(panel['height'], 440)  # eight 40 px tiles and the chrome
+        self.assertFalse(any(n['key'] == 'pages' for n in panel['nodes']))
+        for _ in range(12):
+            self.actions(f'{139:032x}')
+        self.assertEqual(len(self.clipboard.pending), 8)
+        self.actions('clear')
+        self.assertFalse(self.clipboard.pending)
+        self.assertFalse(self.clipboard.entries)
+
+    def test_bar_label_never_shows_copied_content(self):
+        self.entry(1)
+        self.clipboard.entries[f'{1:032x}']['preview'] = 'my secret token'
+        self.clipboard.snapshot()
+        element = self.messages[-1]['elements'][0]
+        self.assertEqual(element['label'], 'Clipboard')
+        self.assertNotIn('secret', element['label'] + element['tooltip'])
+
+    def test_long_unicode_entry_labels_fit_the_bounded_wire_frame(self):
+        for index in range(128):
+            self.entry(index, image=True)
+            self.clipboard.entries[f'{index:032x}']['preview'] = '😀日本語' * 100
+        self.clipboard.snapshot()
+        snapshot = self.messages[-1]
+        self.assertLess(len(json.dumps(snapshot, ensure_ascii=False, separators=(',', ':')).encode()), 65536)
+        self.assertTrue(all(len(n['label'].encode()) <= 96 for n in snapshot['elements'][0]['panel']['nodes']))
+
+    def test_collection_switch_is_named_and_follows_its_state(self):
+        switch = self.messages[-1]['elements'][0]['panel']['footer'][0]
+        self.assertEqual((switch['label'], switch['value']), ('Save history', True))
+        self.actions('collect', False)
+        switch = self.messages[-1]['elements'][0]['panel']['footer'][0]
+        self.assertEqual((switch['label'], switch['value']), ('Save history', False))
+
+    def test_duplicate_in_flight_after_clear_cannot_resurrect_a_released_handle(self):
+        self.entry(1)
+        self.actions('clear')
+        self.clipboard.handle({'type': 'provider', 'data': {
+            'provider': 'clipboard', 'event': 'entry', 'blob': f'{1:032x}',
+            'preview': 'Stale duplicate', 'mime': 'text/plain', 'bytes': 100,
+            'image': False, 'fresh': False}})
+        self.assertFalse(self.clipboard.entries)
+        self.assertEqual(self.messages[-1]['request'], {'operation': 'blobs.release', 'blobs': [f'{1:032x}']})
+
+    def test_compact_footer_and_content_height(self):
+        empty = self.messages[-1]['elements'][0]['panel']
+        self.assertEqual([n['key'] for n in empty['footer']], ['collect', 'clear'])
+        self.assertEqual(empty['footer'][0]['type'], 'toggle')
+        self.assertEqual(empty['footer'][0]['label'], 'Save history')
+        self.entry(1); self.entry(2)
+        two = self.messages[-1]['elements'][0]['panel']
+        self.entry(3)
+        three = self.messages[-1]['elements'][0]['panel']
+        self.assertLess(two['height'], three['height'])
+        self.assertLess(three['height'], 240)
+        self.assertTrue(all(n['type'] == 'entry' for n in three['nodes']))
+
+    def test_pin_to_top_keeps_retention_and_clear_privacy_limits(self):
+        self.entry(1); self.entry(2)
+        self.actions('pin/' + f'{1:032x}', True)
+        self.assertEqual(self.messages[-1]['elements'][0]['panel']['nodes'][0]['key'], f'{1:032x}')
+        self.entry(1)
+        self.assertTrue(self.clipboard.entries[f'{1:032x}']['pinned'])
+        self.now = 61
+        self.clipboard.handle({'type': 'ping', 'sequence': 3})
+        self.assertFalse(self.clipboard.entries)
+        self.entry(3); self.actions('pin/' + f'{3:032x}', True); self.actions('clear')
+        self.assertFalse(self.clipboard.entries)
+
+    def test_delete_releases_only_the_selected_entry_without_restoring(self):
+        self.entry(1); self.entry(2)
+        self.actions('delete/' + f'{1:032x}')
+        self.assertEqual(list(self.clipboard.entries), [f'{2:032x}'])
+        self.assertTrue(any(m.get('request', {}).get('blobs') == [f'{1:032x}'] for m in self.messages))
+        self.assertFalse(any(m.get('request', {}).get('operation') == 'clipboard.restore' for m in self.messages))
+
+    def test_routine_updates_cannot_erase_an_explicit_error(self):
+        self.clipboard.handle({'type':'provider','data':{'provider':'clipboard','event':'error','message':'Rejected'}})
+        self.entry(1)
+        self.clipboard.handle({'type':'provider','data':{'provider':'clipboard','event':'status','state':'collecting'}})
+        self.assertEqual(self.clipboard.error, 'Rejected')
+        self.actions('dismiss-error')
+        self.assertIsNone(self.clipboard.error)
+
+    def test_unavailable_and_revoked_entries_drop_stale_ui(self):
+        self.entry(1)
+        self.entry(2)
+        self.clipboard.handle({'type': 'provider', 'data': {'provider': 'clipboard', 'event': 'removed', 'blobs': [f'{1:032x}']}})
+        self.assertEqual(len(self.clipboard.entries), 1)
+        self.clipboard.handle({'type': 'provider', 'data': {'provider': 'clipboard', 'event': 'unavailable', 'message': 'Unavailable'}})
+        self.assertFalse(self.clipboard.entries)
+        self.assertEqual(self.clipboard.error, 'Unavailable')
+
+
+if __name__ == '__main__':
+    unittest.main()

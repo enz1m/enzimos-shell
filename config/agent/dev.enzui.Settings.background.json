@@ -1,0 +1,1 @@
+{"activation_sources":["user","agent","search"],"app_id":"dev.enzui.Settings","autostart_supported":false,"executable":"/usr/lib/enzui/bin/enzui-settings","graceful_stop":"application-lifecycle-v1","purpose":"Answers approved agent requests about desktop and computer settings without opening a window.","schema":1,"title":"Settings","unit":"enzui-agent-dev.enzui.Settings.service"}

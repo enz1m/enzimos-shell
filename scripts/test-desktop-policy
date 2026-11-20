@@ -1,0 +1,172 @@
+#!/usr/bin/env lua
+local path = arg[0]:match("^(.*)/") .. "/../config/desktop-policy.lua"
+local windows, rules = {}, {}
+hl = { dsp = { window = {} } }
+local focused_window, config = nil, { no_warps = false }
+function hl.dsp.focus(args) args.kind = "focus"; return args end
+function hl.get_config(key) assert(key == "cursor.no_warps"); return config.no_warps end
+function hl.config(values) config.no_warps = values.cursor.no_warps end
+function hl.window_rule(rule)
+    local target = rules[rule.name] or {}
+    for key, value in pairs(rule) do target[key] = value end
+    rules[rule.name] = target
+end
+function hl.get_windows() return windows end
+function hl.get_workspaces() return { { id = 1 }, { id = 2 } } end
+function hl.get_active_workspace() return { id = 1 } end
+for _, name in ipairs({ "float", "resize", "move", "set_prop", "alter_zorder" }) do
+    hl.dsp.window[name] = function(args) args.kind = name; return args end
+end
+function hl.dispatch(args)
+    local window = args.window
+    if args.kind == "float" then window.floating = args.action == "on"
+    elseif args.kind == "resize" then window.size = { x = args.x, y = args.y }
+    elseif args.kind == "move" then window.at = { x = args.x, y = args.y }
+    elseif args.kind == "set_prop" then window[args.prop] = args.value
+    elseif args.kind == "alter_zorder" then window.raised = args.mode
+    elseif args.kind == "focus" then focused_window = window
+    else error("Unexpected dispatch") end
+    return { ok = true }
+end
+local function window(address, class)
+    return { address = address, class = class or "app", mapped = true, hidden = false,
+        pinned = false, fullscreen = 0, floating = true, at = {x = 30, y = 70}, size = {x = 800, y = 600} }
+end
+local app, panel, launcher, fullscreen, hidden, pinned = window("1"), window("2", "dev.enzui.Desktop"), window("3", "dev.enzui.Launcher"), window("4"), window("5"), window("6")
+fullscreen.fullscreen = 1; hidden.hidden = true; pinned.pinned = true
+local controls = window("9", "dev.enzui.ControlCenter")
+local plugin = window("12", "dev.enzui.PluginPanel")
+local center = window("13", "dev.enzui.NotificationCenter")
+local toasts = window("14", "dev.enzui.NotificationToasts")
+local parked=window("10");parked.tags={"enzui-sidebar-1"}
+local rail=window("11","dev.enzui.Sidebar")
+windows = {app, panel, launcher, fullscreen, hidden, pinned, controls, parked, rail, plugin, center, toasts}
+dofile(path)
+assert(not rules['desktop-floating-default'].enabled)
+assert(rules['desktop-floating-1'].enabled and rules['desktop-floating-10'].enabled and rules['desktop-floating-special'].enabled)
+assert(rules['desktop-floating-2'].match.workspace == "2")
+assert(enzui_set_tiling(true) == "ok")
+assert(not app.floating and not rules['desktop-floating-1'].enabled and enzui_desktop.tiling)
+for _, protected in ipairs({panel, launcher, fullscreen, hidden, pinned, controls, parked, rail, plugin, center, toasts}) do assert(protected.floating) end
+app.at = {x = 0, y = 36}; app.size = {x = 1440, y = 864}
+assert(enzui_set_tiling(true) == "ok")
+assert(enzui_set_tiling(false) == "ok")
+assert(app.floating and app.at.x == 30 and app.at.y == 70 and app.size.x == 800 and app.size.y == 600)
+assert(enzui_set_tiling(true) == "ok")
+app.mapped = false
+local replacement = window("1")
+replacement.at = {x = 400, y = 200}; replacement.size = {x = 900, y = 500}; replacement.floating = false
+windows = {replacement, panel}
+assert(enzui_set_tiling(false) == "ok")
+assert(replacement.at.x == 400 and replacement.size.x == 900 and replacement.floating)
+assert(next(enzui_desktop.saved) == nil)
+assert(not pcall(enzui_set_tiling, "false"))
+local loan, placeholder = window('7'), window('8', 'dev.enzui.RemotePlaceholder')
+windows = {loan}
+enzui_set_tiling(true)
+loan.tags = {'enzremote-guard-abc'}; loan.fullscreen = 1; loan.floating = true
+loan.size = {x = 392, y = 744}
+placeholder.floating = false; placeholder.size = {x = 400, y = 800}
+windows = {loan, placeholder}
+enzui_set_tiling(false)
+assert(placeholder.floating and placeholder.size.x == 800 and placeholder.size.y == 600)
+assert(loan.floating and loan.size.x == 392 and loan.size.y == 744)
+placeholder.at = {x = 50, y = 80}; placeholder.size = {x = 900, y = 650}
+loan.fullscreen = 0
+enzui_set_tiling(true)
+assert(loan.floating and not placeholder.floating)
+loan.tags = {}; loan.floating = false; placeholder.mapped = false
+windows = {loan}
+enzui_set_tiling(false)
+assert(loan.floating and loan.at.x == 50 and loan.at.y == 80 and loan.size.x == 900 and loan.size.y == 650)
+-- Per desktop: the Control Center's choice for one desktop survives a new default.
+local first, second = window('20'), window('21')
+first.workspace = { id = 1 }; second.workspace = { id = 2 }
+windows = { first, second }
+assert(enzui_set_desktop_modes(false, {}) == "ok")
+assert(enzui_set_desktop_modes(false, { [2] = true }) == "ok")
+assert(first.floating and not second.floating and not enzui_desktop.tiling)
+assert(rules['desktop-floating-1'].enabled and not rules['desktop-floating-2'].enabled)
+first.at = { x = 11, y = 22 }; first.size = { x = 333, y = 444 }
+assert(enzui_set_desktop_modes(true, { [2] = true }) == "ok")
+assert(not first.floating and not second.floating and enzui_desktop.tiling)
+assert(not rules['desktop-floating-1'].enabled and not rules['desktop-floating-special'].enabled)
+assert(enzui_set_desktop_modes(false, { [2] = true }) == "ok")
+assert(first.floating and first.at.x == 11 and first.size.y == 444 and not second.floating)
+assert(enzui_desktop_tiling_at(2) and not enzui_desktop_tiling_at(1) and not enzui_desktop_tiling_at(7))
+-- A window moved between desktops takes the mode of the one it lands on.
+enzui_desktop_window_moved(second, { id = 2 })
+assert(enzui_set_desktop_modes(false, { [2] = false }) == "ok")
+assert(second.floating)
+second.at = { x = 5, y = 6 }; second.size = { x = 70, y = 80 }
+assert(enzui_set_desktop_modes(false, { [2] = true }) == "ok")
+assert(not second.floating)
+second.workspace = { id = 1 }
+enzui_desktop_window_moved(second, { id = 1 })
+assert(second.floating and second.at.x == 5 and second.size.y == 80)
+-- Out of a special workspace (the sidebar's), whoever moved it places it.
+first.floating = true
+enzui_desktop.home[first.address] = -98
+first.workspace = { id = 2 }
+enzui_desktop_window_moved(first, { id = 2 })
+assert(first.floating)
+assert(not pcall(enzui_set_desktop_modes, false, { [0] = true }))
+assert(not pcall(enzui_set_desktop_modes, false, { [2] = "yes" }))
+assert(not pcall(enzui_set_desktop_modes, "false", {}))
+-- The window spread hides a floating desktop's windows and brings them back.
+local front, back, elsewhere = window('0x30'), window('0x31'), window('0x32')
+front.workspace = { id = 1 }; back.workspace = { id = 1 }; elsewhere.workspace = { id = 2 }
+windows = { front, back, elsewhere, controls }
+assert(enzui_set_desktop_modes(false, {}) == "ok")
+assert(enzui_spread_hide({ '0x30', '0x31', '0x32', '0x9' }) == "ok")
+assert(front.opacity == "0" and front.opacity_inactive == "0" and back.opacity == "0")
+assert(elsewhere.opacity == nil and controls.opacity == nil, "only this desktop's app windows")
+assert(enzui_spread_restore('0x31') == "ok")
+assert(front.opacity == "1" and back.opacity_inactive == "1" and focused_window == back and back.raised == "top")
+assert(not config.no_warps, "warps restored after focusing")
+assert(next(enzui_desktop.spread) == nil)
+assert(not pcall(enzui_spread_hide, { 'bad' }))
+assert(not pcall(enzui_spread_restore, 'nope'))
+assert(enzui_set_desktop_modes(false, { [1] = true }) == "ok")
+-- A tiling desktop spreads too; its tiles are only made transparent, never moved.
+front.floating = false
+assert(enzui_spread_hide({ '0x30' }) == "ok")
+assert(front.opacity == "0" and front.floating == false)
+assert(enzui_spread_restore(nil) == "ok" and front.opacity == "1")
+-- A new window on a floating desktop opening over another steps aside.
+local screen = { x = 0, y = 0, width = 1440, height = 900, scale = 1, reserved = { top = 36, left = 0, right = 0, bottom = 0 } }
+local older, newer, third = window('0x40'), window('0x41'), window('0x42')
+for _, w in ipairs({ older, newer, third }) do
+    w.workspace = { id = 1 }; w.monitor = screen; w.at = { x = 320, y = 150 }; w.size = { x = 800, y = 600 }
+end
+windows = { older, newer }
+assert(enzui_set_desktop_modes(false, {}) == "ok")
+enzui_desktop_cascade(newer)
+assert(newer.at.x == 360 and newer.at.y == 190, "one step from the window it opened over")
+windows = { older, newer, third }
+enzui_desktop_cascade(third)
+assert(third.at.x == 400 and third.at.y == 230, "past every window it would cover")
+local alone = window('0x43'); alone.workspace = { id = 1 }; alone.monitor = screen; alone.at = { x = 600, y = 100 }
+windows = { older, alone }
+enzui_desktop_cascade(alone)
+assert(alone.at.x == 600 and alone.at.y == 100, "a window opening clear of others stays put")
+-- A smaller window opened centred over a larger one shares its centre, not its corner.
+local big, small = window('0x47'), window('0x48')
+for _, w in ipairs({ big, small }) do w.workspace = { id = 1 }; w.monitor = screen end
+big.at = { x = 220, y = 100 }; big.size = { x = 1000, y = 700 }
+small.at = { x = 570, y = 300 }; small.size = { x = 300, y = 300 }
+windows = { big, small }
+enzui_desktop_cascade(small)
+assert(small.at.x == 610 and small.at.y == 340, "steps away from the window it is centred on")
+local corner = window('0x44'); corner.workspace = { id = 1 }; corner.monitor = screen
+local blocker = window('0x45'); blocker.workspace = { id = 1 }
+corner.at = { x = 620, y = 290 }; blocker.at = { x = 620, y = 290 }
+windows = { blocker, corner }
+enzui_desktop_cascade(corner)
+assert(corner.at.x == 20 and corner.at.y == 56, "past the screen the steps start again at its corner")
+assert(enzui_set_desktop_modes(false, { [1] = true }) == "ok")
+local tiled = window('0x46'); tiled.workspace = { id = 1 }; tiled.monitor = screen; tiled.at = { x = 620, y = 290 }
+windows = { blocker, tiled }
+enzui_desktop_cascade(tiled)
+assert(tiled.at.x == 620, "tiling desktops place their own windows")
+print('Desktop policy: eligibility, geometry, address reuse, loaned slots, per-desktop modes, moves, the window spread, cascading and argument guards passed.')

@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+"""Review the mock greeter in an isolated, GPU-backed CU desktop."""
+import argparse
+import json
+import os
+from pathlib import Path
+import signal
+import resource
+import re
+import subprocess
+import sys
+import time
+
+ROOT = Path(__file__).resolve().parent.parent
+SELF = Path(__file__).resolve()
+UNIT = "enzimos-greeter-cu.service"
+PORT = str(int(os.environ.get("ENZUI_GREETER_PREVIEW_VNC", "5929")))
+RUNTIME = Path(f"/run/user/{os.getuid()}/enzimos-greeter-cu")
+PROFILE = ROOT / ".build/greeter-preview/settings.json"
+
+
+def cu_tool():
+    path = os.environ.get("ENZUI_CU")
+    if not path or not os.path.isfile(path) or not os.access(path, os.X_OK):
+        raise SystemExit("Set ENZUI_CU to the executable computer-use harness")
+    return Path(path).resolve()
+
+
+def run(*args, **kw):
+    return subprocess.run([str(a) for a in args], check=True, **kw)
+
+
+def state():
+    result = subprocess.run(["systemctl", "--user", "show", UNIT, "-p", "MainPID", "-p", "ControlGroup", "-p", "ActiveState"], capture_output=True, text=True)
+    return dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+
+
+def ticks(pid):
+    return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+
+
+def owned_processes(group):
+    path = Path("/sys/fs/cgroup") / group.lstrip("/")
+    processes = {}
+    if group:
+        for f in path.rglob("cgroup.procs"):
+            try:
+                members = f.read_text().split()
+            except FileNotFoundError:
+                continue
+            for p in members:
+                try:
+                    processes[int(p)] = ticks(p)
+                except ProcessLookupError:
+                    pass
+                except FileNotFoundError:
+                    pass
+    return processes
+
+
+def still_alive(pid, start):
+    try:
+        return ticks(pid) == start
+    except (FileNotFoundError, ProcessLookupError):
+        return False
+
+
+def stop():
+    current = state()
+    receipt = RUNTIME / "owner.json"
+    old = json.loads(receipt.read_text()) if receipt.exists() else {}
+    pid = int(current.get("MainPID", "0"))
+    if pid:
+        cmd = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+        if old.get("pid") != pid or old.get("start") != ticks(pid) or str(SELF).encode() not in cmd or b"worker" not in cmd:
+            raise SystemExit("Nested review identity differs; nothing was stopped")
+    group = current.get("ControlGroup") or old.get("cgroup", "")
+    processes = {int(p): start for p, start in old.get("members", {}).items()}
+    processes.update(owned_processes(group))
+    if old.get("pid"):
+        processes[old["pid"]] = old["start"]
+    if pid:
+        print("Closing this nested review and its mock greeter/Settings apps.", flush=True)
+        run("systemctl", "--user", "stop", UNIT)
+    for _ in range(50):
+        if not owned_processes(group):
+            break
+        time.sleep(.1)
+    if owned_processes(group):
+        raise SystemExit("Nested review cgroup is still occupied")
+    for p, start in processes.items():
+        if still_alive(p, start):
+            raise SystemExit("An owned nested review process remains")
+    print("Nested review stopped; recorded processes and recursive cgroup are empty.")
+
+
+def worker(args):
+    tool = cu_tool()
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    children = []
+    logs = []
+    def app(name, command):
+        env = dict(os.environ)
+        env.update(XDG_CONFIG_HOME=str(RUNTIME / "config"), GIO_USE_VFS="local", GVFS_DISABLE_FUSE="1", GIO_USE_VOLUME_MONITOR="unix", WAYLAND_DISPLAY=(RUNTIME / "cu/wl-display").read_text().strip(), ENZUI_DESKTOP_ROOT=str(ROOT), ENZUI_SHELL_BIN_DIR=str(ROOT / "enzwall/target/debug"), ENZUI_SYSTEM_SETTINGS_DEMO="1", ENZUI_SHELL_SETTINGS=str(PROFILE), ENZUI_GREETER_PREVIEW_REPORT=str(RUNTIME / "state.json"), ENZUI_GREETER_PREVIEW_STATE=args.state, ENZUI_GREETER_PREVIEW_SIZE=args.size)
+        for key in ["DISPLAY", "GREETD_SOCK"]:
+            env.pop(key, None)
+        log = (RUNTIME / f"{name}.log").open("w")
+        logs.append(log)
+        child = subprocess.Popen([str(c) for c in command], env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        children.append(child)
+        return child
+    try:
+        run(tool, "start", args.size)
+        greeter = app("greeter", [ROOT / "target/debug/enzui-greeter-preview"])
+        time.sleep(2)
+        if greeter.poll() is not None:
+            raise SystemExit("Greeter startup failed; inspect " + str(RUNTIME / "greeter.log"))
+        (RUNTIME / "ready").write_text("ready")
+        settings = None
+        while greeter.poll() is None:
+            request = RUNTIME / "settings-request"
+            if request.exists():
+                try:
+                    page=json.loads(request.read_text()).get("page","datetime/lock_time")
+                except (ValueError,AttributeError):
+                    page="datetime/lock_time"
+                request.unlink()
+                if not isinstance(page,str) or not re.fullmatch(r"[a-z][a-z0-9_/-]{0,63}",page):
+                    page="datetime/lock_time"
+                if settings is not None and settings.poll() is None:
+                    if os.getpgid(settings.pid)!=settings.pid or UNIT not in Path(f"/proc/{settings.pid}/cgroup").read_text():
+                        raise RuntimeError("Settings review ownership changed")
+                    os.killpg(settings.pid,signal.SIGTERM)
+                    try:
+                        settings.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(settings.pid,signal.SIGKILL); settings.wait()
+                settings = app("settings", ["dbus-run-session", "--", "env", "ENZUI_SETTINGS_PAGE="+page, ROOT / "target/debug/enzui-settings"])
+            time.sleep(.25)
+    finally:
+        receipt_path = RUNTIME / "owner.json"
+        if receipt_path.exists():
+            receipt = json.loads(receipt_path.read_text())
+            if receipt.get("pid") == os.getpid():
+                receipt.setdefault("members", {}).update(owned_processes(receipt["cgroup"]))
+                receipt_path.write_text(json.dumps(receipt))
+        for child in children:
+            if child.poll() is None:
+                child.terminate()
+        run(tool, "stop")
+        for child in children:
+            try:
+                child.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait()
+        for log in logs:
+            log.close()
+
+
+def window_size(value):
+    try:
+        w, h = (int(n) for n in value.split("x"))
+        if not (320 <= w <= 1920 and 320 <= h <= 1080):
+            raise ValueError
+    except ValueError:
+        raise argparse.ArgumentTypeError("Use WIDTHxHEIGHT between 320x320 and 1920x1080")
+    return f"{w}x{h}"
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", nargs="?", default="start", choices=["start", "reload", "stop", "status", "settings", "worker", "cu"])
+    parser.add_argument("--no-build", action="store_true")
+    parser.add_argument("--state", default="idle", choices=["idle", "prompt", "keyboard", "power"])
+    parser.add_argument("--size", type=window_size, default="1100x700")
+    parser.add_argument("--page", default="datetime/lock_time")
+    args, extra = parser.parse_known_args()
+    if args.action == "worker":
+        worker(args); return
+    if args.action == "stop":
+        stop(); return
+    if args.action == "status":
+        print(json.dumps(state(), indent=2)); return
+    if args.action == "settings":
+        if state().get("ActiveState") != "active":
+            raise SystemExit("Start the nested review first")
+        binary = ROOT / "target/debug/enzui-settings"
+        if not binary.is_file():
+            if args.no_build:
+                raise SystemExit("Settings is missing; omit --no-build to build it")
+            run(ROOT / "scripts/shell-iterate", "build", "settings", cwd=ROOT)
+        if not re.fullmatch(r"[a-z][a-z0-9_/-]{0,63}",args.page):
+            raise SystemExit("Invalid Settings page")
+        (RUNTIME / "settings-request").write_text(json.dumps({"page":args.page})); return
+    if args.action == "cu":
+        extra = [a for a in extra if a != "--"]
+        allowed = {"shot", "zoom", "vshot", "move", "click", "tap", "dblclick", "modclick", "scroll", "drag", "mousedown", "mouseup", "type", "key", "hold", "windows", "vnc", "status"}
+        if not extra or extra[0] not in allowed or state().get("ActiveState") != "active":
+            raise SystemExit("Use a capture/input/status CU command with an active nested review")
+        os.environ.update(XDG_RUNTIME_DIR=str(RUNTIME), CU_RUNROOT=str(RUNTIME / "cu"), CU_VNC_PORT=PORT)
+        tool = str(cu_tool())
+        os.execv(tool, [tool, *([a for a in extra if a != "--"])])
+    if args.action == "reload":
+        stop()
+    elif state().get("ActiveState") == "active":
+        print("Nested review already open."); return
+    tool = cu_tool()
+    if not args.no_build:
+        run(ROOT / "scripts/with-build-budget", "cargo", "build", "--offline", "--locked", "-j1", "-p", "enzui-lock", "--features", "greeter-preview", "--bin", "enzui-greeter-preview", cwd=ROOT)
+    parent = Path(os.environ["XDG_RUNTIME_DIR"])
+    display = Path(os.environ.get("WAYLAND_DISPLAY", "wayland-0"))
+    socket = display if display.is_absolute() else parent / display
+    if not socket.is_socket():
+        raise SystemExit("A host Wayland session is required")
+    RUNTIME.mkdir(mode=0o700, exist_ok=True)
+    RUNTIME.chmod(0o700)
+    PROFILE.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    link = RUNTIME / "host-wayland"
+    if link.is_symlink():
+        link.unlink()
+    link.symlink_to(socket)
+    (RUNTIME / "ready").unlink(missing_ok=True)
+    (RUNTIME / "settings-request").unlink(missing_ok=True)
+    # File capabilities must not hide the Sway parent from nested compositor admission.
+    run("systemd-run", "--user", "--collect", "--unit=" + UNIT, "-p", "NoNewPrivileges=yes", "-p", "MemoryMax=1400M", "-p", "MemorySwapMax=0", "-p", "KillMode=mixed", "-p", "TimeoutStopSec=15", "--working-directory=" + str(ROOT), "env", "-u", "DISPLAY", "-u", "HYPRLAND_INSTANCE_SIGNATURE", "-u", "ENZUI_HYPR_RUNROOT", "XDG_RUNTIME_DIR=" + str(RUNTIME), "CU_RUNROOT=" + str(RUNTIME / "cu"), "CU_VNC_PORT=" + PORT, "CU_GPU=1", "CU_HOST_WAYLAND=host-wayland", "ENZUI_CU=" + str(tool), "DBUS_SESSION_BUS_ADDRESS=" + os.environ.get("DBUS_SESSION_BUS_ADDRESS", "unix:path=" + str(parent / "bus")), SELF, "worker", "--size", args.size, "--state", args.state)
+    time.sleep(.2)
+    current = state()
+    pid = int(current.get("MainPID", "0"))
+    if not pid:
+        raise SystemExit("Nested service exited; inspect its journal")
+    (RUNTIME / "owner.json").write_text(json.dumps({"pid": pid, "start": ticks(pid), "cgroup": current["ControlGroup"]}))
+    for _ in range(80):
+        if (RUNTIME / "ready").exists():
+            receipt = json.loads((RUNTIME / "owner.json").read_text())
+            receipt["members"] = owned_processes(receipt["cgroup"])
+            (RUNTIME / "owner.json").write_text(json.dumps(receipt))
+            print("GPU nested review open. Password: preview. Closing the review also closes its Settings app."); return
+        if state().get("ActiveState") != "active":
+            stop(); raise SystemExit("Nested startup failed; inspect journalctl --user -u " + UNIT)
+        time.sleep(.25)
+    stop()
+    raise SystemExit("Nested startup timed out")
+
+
+if __name__ == "__main__":
+    main()

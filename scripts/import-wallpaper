@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import resource
+import stat
+import sys
+import warnings
+from PIL import Image, ImageOps
+
+MAX_BYTES = 32 * 1024 * 1024
+MAX_PIXELS = 16 * 1024 * 1024
+
+
+def import_image(request):
+    source, cache = Path(request["source"]), Path(request["cache"])
+    if not source.is_absolute() or not cache.is_absolute() or len(str(source)) > 4096:
+        raise ValueError("Choose an absolute local image path")
+    # First use can precede the first settings save. Keep the new directory private.
+    cache.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    parent = cache.parent.stat()
+    if cache.parent.resolve() != cache.parent or parent.st_uid != os.getuid() or parent.st_mode & 0o022:
+        raise ValueError("Wallpaper storage is not private")
+    cache.mkdir(mode=0o700, exist_ok=True)
+    info = cache.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise ValueError("Wallpaper storage is not private")
+    descriptor = os.open(source, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= MAX_BYTES:
+            raise ValueError("Choose a PNG, JPEG or WebP image no larger than 32 MiB")
+        data = stream.read(MAX_BYTES + 1)
+    if len(data) > MAX_BYTES:
+        raise ValueError("Image exceeds 32 MiB")
+    if request.get("expected_sha256") is not None and request["expected_sha256"] != hashlib.sha256(data).hexdigest():
+        raise ValueError("Wallpaper changed since the gallery loaded; refresh and choose it again")
+    Image.MAX_IMAGE_PIXELS = MAX_PIXELS
+    warnings.simplefilter("error", Image.DecompressionBombWarning)
+    with Image.open(io.BytesIO(data)) as original:
+        if original.format not in ("PNG", "JPEG", "WEBP") or max(original.size) > 8192 or original.width * original.height > MAX_PIXELS:
+            raise ValueError("Use PNG, JPEG or WebP up to 16 megapixels and 8192 px per edge")
+        image = ImageOps.exif_transpose(original)
+        image.thumbnail((4096, 4096), Image.Resampling.LANCZOS)
+        image = image.convert("RGBA")
+        image.info.clear()
+        encoded = io.BytesIO()
+        image.save(encoded, format="PNG")
+        output = encoded.getvalue()
+    name = hashlib.sha256(output).hexdigest() + ".png"
+    target = cache / name
+    temporary = cache / ("import-" + str(os.getpid()) + ".new")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(output)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return {"path": str(target), "width": image.width, "height": image.height}
+
+
+if __name__ == "__main__":
+    resource.setrlimit(resource.RLIMIT_AS, (768 * 1024 * 1024, 768 * 1024 * 1024))
+    resource.setrlimit(resource.RLIMIT_CPU, (8, 8))
+    try:
+        raw = sys.stdin.buffer.read(8193)
+        if len(raw) > 8192:
+            raise ValueError("Image request is too large")
+        print(json.dumps(import_image(json.loads(raw))))
+    except Exception as error:
+        message = str(error) if isinstance(error, ValueError) else "Cannot import image; use a readable PNG, JPEG or WebP file"
+        print(json.dumps({"error": message}))
+        sys.exit(1)

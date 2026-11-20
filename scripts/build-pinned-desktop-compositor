@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+[[ $# -le 2 ]] || { echo 'Usage: build-pinned-desktop-compositor [build-root] [scene-root]' >&2; exit 2; }
+export ENZUI_HYPR_BUILDROOT=${1:-$root/.build/desktop-unrenamed-compositor}
+export ENZUI_SIDEBAR_BUILDROOT=${2:-${ENZUI_SCENE_BUILDROOT:-$root/.build/desktop-unrenamed}}
+"$root/scripts/build-desktop-compositor" desktop-unrenamed
+"$root/scripts/build-sidebar-scene"
+# Keep the receipt name used by the desktop snapshot assembler.
+legacy=$ENZUI_SIDEBAR_BUILDROOT/pinned-desktop-compositor.json
+if [[ ! -L $legacy || $(readlink -- "$legacy") != desktop-compositor.json ]]; then
+    ln -sT -- desktop-compositor.json "$legacy"
+fi

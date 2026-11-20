@@ -1,0 +1,441 @@
+//! Single-instance Settings runtime with a windowless agent mode.
+//! Desktop launches wake the existing model instead of creating another broker connection.
+
+use super::{Message, SettingsApp, settings_app_center};
+use enzui_agent::center::background::Disposition;
+use enzui_agent::center::installed::{ActivationSource, BackgroundDeclaration, UnitSandbox};
+use enzui_agent::center::task_host::{TaskHost, TaskHostError};
+use enzui_agent_app::{
+    AgentProcess, ApplicationIntent, BackgroundApp, BackgroundExit, DEFAULT_IDLE_EXIT,
+    LifecycleCallers, SearchProvider, SearchRequest, SearchResult,
+};
+use enzui_shell::i18n::tr;
+use enzui_shell::settings::Store;
+use enzui_shell::settings_agent::APP_ID;
+use enzui_shell::settings_catalog::{self, Category as Page};
+use enzui_shell::tr;
+use iced::{Subscription, Task};
+use std::sync::Arc;
+use std::time::Instant;
+
+// The exported executable the generated unit and D-Bus service run.
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "Windowless lifecycle declarations are exercised by the app-scoped tests."
+    )
+)]
+pub(super) const INSTALLED_EXECUTABLE: &str = "/usr/lib/enzui/bin/enzui-settings";
+const URI_SCHEME: &str = "enzui-settings:";
+
+// Settings' window needs the person's ordinary desktop rights (wallpapers,
+// autostart entries, plugins, recovery files), so the unit is a desktop unit.
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "Windowless lifecycle declarations are exercised by the app-scoped tests."
+    )
+)]
+pub(super) fn unit_sandbox() -> UnitSandbox {
+    UnitSandbox {
+        network: true,
+        writable_home: true,
+        own_directories: None,
+        writable: Vec::new(),
+        desktop: true,
+    }
+}
+
+// Append the OS search-activation source absent from the framework enum.
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "Windowless lifecycle declarations are exercised by the app-scoped tests."
+    )
+)]
+pub(super) fn background_json() -> Result<Vec<u8>, String> {
+    let bytes = enzui_agent::center::installed::background_declaration(
+        APP_ID,
+        INSTALLED_EXECUTABLE,
+        &background_declaration(),
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    let sources = value["activation_sources"]
+        .as_array_mut()
+        .ok_or_else(|| tr("shell-no-activation-sources"))?;
+    sources.push(serde_json::Value::from("search"));
+    serde_json::to_vec(&value).map_err(|error| error.to_string())
+}
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "Windowless lifecycle declarations are exercised by the app-scoped tests."
+    )
+)]
+pub(super) fn desktop_entry() -> String {
+    format!(
+        "[Desktop Entry]\nType=Application\nName=Settings\nName[es]=Ajustes\nComment=Desktop and appearance\nComment[es]=Escritorio y apariencia\nIcon=dev.enzui.Settings\n\
+         Exec={INSTALLED_EXECUTABLE}\nDBusActivatable=true\nCategories=Settings;System;\nOnlyShowIn=enzUI;\n"
+    )
+}
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "Windowless lifecycle declarations are exercised by the app-scoped tests."
+    )
+)]
+pub(super) fn unit() -> Result<String, String> {
+    enzui_agent::center::installed::unit(APP_ID, INSTALLED_EXECUTABLE, &unit_sandbox())
+        .map_err(|error| error.to_string())
+}
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "Windowless lifecycle declarations are exercised by the app-scoped tests."
+    )
+)]
+pub(super) fn background_declaration() -> BackgroundDeclaration {
+    enzui_shell::i18n::canonical(|| BackgroundDeclaration {
+        title: tr("shell-settings").into(),
+        purpose: tr(
+            "shell-answers-approved-agent-requests-about-desktop-and-computer-settings-without",
+        )
+        .into(),
+        activation_sources: vec![ActivationSource::User, ActivationSource::Agent],
+        autostart_supported: false,
+        graceful_stop: true,
+        work: false,
+    })
+}
+
+// What a launch asks for, forwarded to a running instance as an `Open` URI.
+pub(super) fn launch_intent(page: Option<&str>, plugin: Option<&str>) -> ApplicationIntent {
+    match page.filter(|route| settings_catalog::valid_route(route)) {
+        Some(route) => ApplicationIntent::Open(vec![match plugin.filter(|id| plugin_id(id)) {
+            Some(id) => format!("{URI_SCHEME}{route}?plugin={id}"),
+            None => format!("{URI_SCHEME}{route}"),
+        }]),
+        None => ApplicationIntent::Activate,
+    }
+}
+
+fn plugin_id(id: &str) -> bool {
+    !id.is_empty() && enzui_shell::bar_layout::Item::new(format!("plugin:{id}/entry"), true).is_ok()
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Target {
+    Entry(&'static str),
+    Page(Page),
+}
+
+// A forwarded `Open` URI: a catalog entry or a whole page, and a plugin to select.
+pub(super) fn opened(uri: &str) -> Option<(Target, Option<String>)> {
+    let rest = uri.strip_prefix(URI_SCHEME)?;
+    let (route, plugin) = rest
+        .split_once("?plugin=")
+        .map_or((rest, None), |(route, id)| (route, Some(id)));
+    let target = match settings_catalog::find(route) {
+        Some(entry) => Target::Entry(entry.route),
+        None => Target::Page(settings_catalog::category(route)?),
+    };
+    Some((target, plugin.filter(|id| plugin_id(id)).map(str::to_owned)))
+}
+
+// Settings' pages for the desktop's Search (dev.enzui.SearchProvider1): the
+// same catalogue the Settings search field uses, never bringing up UI.
+fn search_provider() -> SearchProvider {
+    SearchProvider::blocking(|query| {
+        let platform = enzui_shell::platform::latest();
+        settings_catalog::search(&query.text)
+            .into_iter()
+            .filter(|entry| {
+                enzui_shell::platform::shows(platform.as_ref(), entry.category().page())
+                    && enzui_shell::platform::shows(platform.as_ref(), entry.route)
+            })
+            .take(query.limit)
+            .filter_map(|entry| {
+                SearchResult::new(entry.route, entry.title())
+                    .ok()
+                    .map(|result| result.subtitle(entry.section()).icon("settings"))
+            })
+            .collect()
+    })
+}
+
+impl SettingsApp {
+    pub(super) fn serve_desktop(&mut self) {
+        if let Err(error) = self.process.serve_search(search_provider()) {
+            eprintln!("enzui-settings: search provider not served: {error}");
+        }
+        if let Err(error) = self.process.serve_lifecycle(LifecycleCallers::installed()) {
+            eprintln!("enzui-settings: graceful stop not served: {error}");
+        }
+        // Stopping interrupts nothing a person started: writes are short and
+        // an agent call in flight keeps the process until it ends.
+        self.process.publish_stop_consequences(Vec::new());
+    }
+
+    // Forwarded launches and Search choices: open the requested page and
+    // raise the window. A graceful stop exits once nothing is in flight.
+    pub(super) fn application_wake(&mut self) -> Task<Message> {
+        if self.process.take_stop().is_some() {
+            self.stop_requested = true;
+            if self.window.is_some() {
+                return self.update(Message::Close);
+            }
+        }
+        let mut tasks: Vec<Task<Message>> = self
+            .process
+            .take_searches()
+            .into_iter()
+            .map(|activation| match activation.request {
+                SearchRequest::Open { id, .. } => match settings_catalog::find(&id) {
+                    Some(entry) => self.update(Message::Reveal(entry.route)),
+                    None => Task::none(),
+                },
+                SearchRequest::Search { query } => self.update(Message::Filter(query)),
+            })
+            .collect();
+        let launches = self.process.take_launches();
+        tasks.extend(launches.into_iter().map(|intent| self.open_intent(intent)));
+        if tasks.is_empty() {
+            return Task::none();
+        }
+        Task::batch(tasks).chain(iced::window::latest().and_then(iced::window::gain_focus))
+    }
+
+    fn open_intent(&mut self, intent: ApplicationIntent) -> Task<Message> {
+        let ApplicationIntent::Open(uris) = intent else {
+            return Task::none();
+        };
+        let mut tasks = Vec::new();
+        for (target, plugin) in uris.iter().filter_map(|uri| opened(uri)) {
+            if plugin.is_some() {
+                self.plugins.select_from_launch(plugin);
+            }
+            tasks.push(match target {
+                Target::Entry(route) => self.update(Message::Reveal(route)),
+                Target::Page(page) => self.update(Message::Page(page)),
+            });
+        }
+        Task::batch(tasks)
+    }
+
+    // The window opens over state a windowless worker built: run the work it
+    // deferred, read what only the window shows, and open the requested page.
+    pub(super) fn present(&mut self) -> Task<Message> {
+        let (intent, deferred) = self.process.begin_presenting();
+        let open = intent.map_or_else(Task::none, |intent| self.open_intent(intent));
+        Task::batch([deferred, self.window_boot(), open])
+    }
+}
+
+// SettingsApp as the windowless runtime drives it.
+struct Background(SettingsApp);
+
+impl std::fmt::Debug for Background {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Background")
+    }
+}
+
+impl BackgroundApp for Background {
+    type Message = Message;
+
+    fn update(&mut self, message: Message) -> Task<Message> {
+        self.0.update(message)
+    }
+
+    fn subscription(&self) -> Subscription<Message> {
+        Subscription::batch([self.0.agent.subscription(), self.0.process_subscription()])
+    }
+
+    fn disposition(&self) -> Disposition {
+        let app = &self.0;
+        let busy = app.busy || app.agent.working();
+        if app.stop_requested && !busy {
+            return Disposition::Exit;
+        }
+        if app.agent.host().is_none() && busy {
+            return Disposition::Working;
+        }
+        enzui_agent_app::disposition(app.agent.host(), &app.process, busy)
+    }
+
+    fn wake_at(&self) -> Option<Instant> {
+        self.0
+            .agent
+            .host()
+            .and_then(enzui_agent_app::deadline_instant)
+    }
+
+    fn wake(&mut self) -> Task<Message> {
+        if let Some(host) = self.0.agent.host_mut() {
+            let _ended = host.poll_ended();
+        }
+        Task::none()
+    }
+
+    fn refused(&mut self, error: TaskHostError) -> Task<Message> {
+        self.0
+            .update(Message::BackgroundTaskRefused(error.to_string()))
+    }
+}
+
+pub(super) fn run_background() -> Result<Option<SettingsApp>, String> {
+    let Some(service) = enzui_agent_app::claim_background(APP_ID)? else {
+        return Ok(None);
+    };
+    let store = Store::from_environment()
+        .ok_or_else(|| tr("shell-no-shell-settings-directory-is-configured"))?;
+    let tasks =
+        Arc::new(TaskHost::spawn().map_err(
+            |error| tr!("shell-task-host-did-not-start", "arg0" => format!("{:}", error)),
+        )?);
+    let mut app = SettingsApp::model(store);
+    // Search answers list only the pages this computer can show.
+    let boot = Task::batch([app.read(), app.detect_platform()]);
+    app.process = AgentProcess::windowless(Some(service), Arc::clone(&tasks));
+    app.serve_desktop();
+    match enzui_agent_app::run_background(Background(app), boot, &tasks, DEFAULT_IDLE_EXIT)
+        .map_err(|error| error.to_string())?
+    {
+        BackgroundExit::Present(Background(app)) => Ok(Some(app)),
+        BackgroundExit::Idle(Background(mut app)) | BackgroundExit::Exit(Background(mut app)) => {
+            app.agent.shutdown();
+            Ok(None)
+        }
+    }
+}
+
+// Prints the package catalog for `--export-agent-manifest`.
+pub(super) fn export_manifest() -> std::process::ExitCode {
+    enzui_agent_app::print_manifest(
+        &settings_app_center::registry(),
+        settings_app_center::metadata(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_background_behaviour() {
+        // Launches round trip as open intents.
+        {
+            assert_eq!(launch_intent(None, None), ApplicationIntent::Activate);
+            assert_eq!(
+                launch_intent(Some("no-such-page"), None),
+                ApplicationIntent::Activate
+            );
+            let ApplicationIntent::Open(uris) = launch_intent(Some("agents/assistant"), None)
+            else {
+                panic!("an entry opens")
+            };
+            assert_eq!(
+                opened(&uris[0]),
+                Some((Target::Entry("agents/assistant"), None))
+            );
+            let ApplicationIntent::Open(uris) = launch_intent(Some("appearance"), None) else {
+                panic!("a page opens")
+            };
+            assert_eq!(
+                opened(&uris[0]).map(|(target, _)| target),
+                Some(Target::Page(Page::Appearance))
+            );
+            let ApplicationIntent::Open(uris) =
+                launch_intent(Some("plugins/installed"), Some("clipboard"))
+            else {
+                panic!()
+            };
+            assert_eq!(
+                opened(&uris[0]),
+                Some((Target::Entry("plugins/installed"), Some("clipboard".into())))
+            );
+            assert_eq!(
+                opened("enzui-settings:plugins/installed?plugin=../x"),
+                Some((Target::Entry("plugins/installed"), None))
+            );
+            assert_eq!(opened("file:///etc/passwd"), None);
+            assert_eq!(opened("enzui-settings:nowhere"), None);
+        }
+        // Regenerate with ENZUI_REGENERATE_AGENT_PACKAGING=1 after a registry change.
+        {
+            use enzui_agent::center::installed;
+            let directory =
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../config/agent");
+            let files = [
+                (
+                    "dev.enzui.Settings.json",
+                    installed::manifest(
+                        &settings_app_center::registry(),
+                        settings_app_center::metadata(),
+                    )
+                    .unwrap(),
+                ),
+                (
+                    "enzui-agent-dev.enzui.Settings.service",
+                    unit().unwrap().into_bytes(),
+                ),
+                (
+                    "dev.enzui.Settings.service",
+                    installed::dbus_service(APP_ID, INSTALLED_EXECUTABLE)
+                        .unwrap()
+                        .into_bytes(),
+                ),
+                (
+                    "dev.enzui.Settings.background.json",
+                    background_json().unwrap(),
+                ),
+                (
+                    "dev.enzui.Settings.search-provider.ini",
+                    enzui_agent_app::search_provider_ini(APP_ID, Some(2)).into_bytes(),
+                ),
+                ("dev.enzui.Settings.desktop", desktop_entry().into_bytes()),
+            ];
+            let spanish = enzui_core::localization::Localizer::new(
+                enzui_core::localization::CatalogBuilder::new().build(),
+                vec!["es".parse().unwrap()],
+                Default::default(),
+            );
+            spanish.scope(|| {
+                assert_eq!(
+                    installed::manifest(
+                        &settings_app_center::registry(),
+                        settings_app_center::metadata()
+                    )
+                    .unwrap(),
+                    files[0].1,
+                );
+                assert_eq!(background_json().unwrap(), files[3].1);
+            });
+            let regenerate =
+                std::env::var("ENZUI_REGENERATE_AGENT_PACKAGING").as_deref() == Ok("1");
+            for (name, bytes) in files {
+                let path = directory.join(name);
+                if regenerate {
+                    std::fs::create_dir_all(&directory).unwrap();
+                    std::fs::write(&path, &bytes).unwrap();
+                }
+                assert_eq!(
+                    std::fs::read(&path).unwrap_or_default(),
+                    bytes,
+                    "{name} drifted from the live registry"
+                );
+            }
+        }
+    }
+}

@@ -1,0 +1,352 @@
+use iced::futures::{SinkExt, StreamExt, channel::mpsc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    time::Duration,
+};
+use zbus::{Connection, MatchRule, Message, MessageStream, zvariant::OwnedValue};
+
+const LIMIT: usize = 64;
+const INTERFACE: &str = "com.canonical.Unity.LauncherEntry";
+const COALESCE: Duration = Duration::from_millis(100);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Badge {
+    pub count: u64,
+    pub count_visible: bool,
+    pub urgent: bool,
+}
+impl Badge {
+    pub fn label(self) -> Option<String> {
+        (self.count_visible && self.count > 0).then(|| {
+            if self.count > 99 {
+                "99+".into()
+            } else {
+                self.count.to_string()
+            }
+        })
+    }
+}
+pub type Snapshot = BTreeMap<String, Badge>;
+
+pub fn desktop_id(uri: &str) -> Option<&str> {
+    let id = uri.strip_prefix("application://")?;
+    (id.len() > 8
+        && id.len() <= 255
+        && id.ends_with(".desktop")
+        && id.bytes().next().is_some_and(|b| b.is_ascii_alphanumeric())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)))
+    .then_some(id)
+}
+pub fn group_id(group: &crate::dock::Group) -> Option<String> {
+    if let Some(id) = group.id.strip_prefix("app:desktop/") {
+        return desktop_id(&format!("application://{id}")).map(str::to_owned);
+    }
+    match group.app.as_ref()? {
+        crate::search::AppTarget::Prepared(id) => {
+            crate::catalog::desktop_id(id).map(|id| format!("{id}.desktop"))
+        }
+        _ => None,
+    }
+}
+#[derive(Default)]
+struct State {
+    entries: BTreeMap<(String, String), Badge>,
+}
+#[derive(Default)]
+struct Patch {
+    count: Option<u64>,
+    visible: Option<bool>,
+    urgent: Option<bool>,
+}
+fn patch(properties: &HashMap<String, OwnedValue>) -> Option<Patch> {
+    if properties.len() > 32 {
+        return None;
+    }
+    let count = match properties.get("count") {
+        Some(value) => Some(u64::try_from(i64::try_from(value).ok()?).ok()?),
+        None => None,
+    };
+    let visible = properties
+        .get("count-visible")
+        .map(bool::try_from)
+        .transpose()
+        .ok()?;
+    let urgent = properties
+        .get("urgent")
+        .map(bool::try_from)
+        .transpose()
+        .ok()?;
+    (count.is_some() || visible.is_some() || urgent.is_some()).then_some(Patch {
+        count,
+        visible,
+        urgent,
+    })
+}
+impl State {
+    fn contains_sender(&self, sender: &str) -> bool {
+        self.entries.keys().any(|(owner, _)| owner == sender)
+    }
+    fn update(&mut self, sender: &str, id: &str, patch: Patch) -> bool {
+        let key = (sender.to_owned(), id.to_owned());
+        if !self.entries.contains_key(&key) && self.entries.len() >= LIMIT {
+            return false;
+        }
+        let badge = self.entries.entry(key).or_default();
+        let previous = *badge;
+        if let Some(count) = patch.count {
+            badge.count = count;
+        }
+        if let Some(visible) = patch.visible {
+            badge.count_visible = visible;
+        }
+        if let Some(urgent) = patch.urgent {
+            badge.urgent = urgent;
+        }
+        *badge != previous
+    }
+    fn remove(&mut self, sender: &str) -> bool {
+        let before = self.entries.len();
+        self.entries.retain(|(owner, _), _| owner != sender);
+        self.entries.len() != before
+    }
+    fn snapshot(&self) -> Snapshot {
+        let mut result: Snapshot = BTreeMap::new();
+        for ((_, id), badge) in &self.entries {
+            if !badge.urgent && (!badge.count_visible || badge.count == 0) {
+                continue;
+            }
+            let value = result.entry(id.clone()).or_default();
+            value.urgent |= badge.urgent;
+            if badge.count_visible {
+                value.count = value.count.max(badge.count);
+                value.count_visible = true;
+            }
+        }
+        result
+    }
+}
+async fn apply(state: &mut State, bus: &zbus::fdo::DBusProxy<'_>, message: Message) -> bool {
+    if message.body().len() > 8192 {
+        return false;
+    }
+    let header = message.header();
+    match header.member().map(zbus::names::MemberName::as_str) {
+        Some("NameOwnerChanged") => {
+            let Ok((name, old, new)) = message.body().deserialize::<(String, String, String)>()
+            else {
+                return false;
+            };
+            name.starts_with(':') && name == old && new.is_empty() && state.remove(&name)
+        }
+        Some("Update") => {
+            let Some(sender) = header.sender() else {
+                return false;
+            };
+            let Ok((uri, properties)) = message
+                .body()
+                .deserialize::<(String, HashMap<String, OwnedValue>)>()
+            else {
+                return false;
+            };
+            let Some(id) = desktop_id(&uri) else {
+                return false;
+            };
+            let Some(patch) = patch(&properties) else {
+                return false;
+            };
+            // Independent match streams may deliver a queued update after owner loss.
+            // Check new senders instead of resurrecting their stale state.
+            if !state.contains_sender(sender.as_str())
+                && !bus
+                    .name_has_owner(sender.clone().into())
+                    .await
+                    .unwrap_or(false)
+            {
+                return false;
+            }
+            state.update(sender.as_str(), id, patch)
+        }
+        _ => false,
+    }
+}
+async fn follow(
+    connection: &Connection,
+    generation: u64,
+    output: &mut mpsc::Sender<(u64, Snapshot)>,
+) -> Result<(), zbus::Error> {
+    let updates = MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .interface(INTERFACE)?
+        .member("Update")?
+        .build();
+    let owners = MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .sender("org.freedesktop.DBus")?
+        .interface("org.freedesktop.DBus")?
+        .member("NameOwnerChanged")?
+        .build();
+    let updates = MessageStream::for_match_rule(updates, connection, Some(64)).await?;
+    let owners = MessageStream::for_match_rule(owners, connection, Some(64)).await?;
+    let bus = zbus::fdo::DBusProxy::new(connection).await?;
+    let mut events = iced::futures::stream::select(updates, owners);
+    if output.send((generation, Snapshot::new())).await.is_err() {
+        return Ok(());
+    }
+    let mut state = State::default();
+    let mut published = Snapshot::new();
+    let mut deadline = None;
+    loop {
+        let event = if let Some(at) = deadline {
+            match tokio::time::timeout_at(at, events.next()).await {
+                Ok(event) => event,
+                Err(_) => {
+                    deadline = None;
+                    let snapshot = state.snapshot();
+                    if snapshot != published {
+                        if output.send((generation, snapshot.clone())).await.is_err() {
+                            return Ok(());
+                        }
+                        published = snapshot;
+                    }
+                    continue;
+                }
+            }
+        } else {
+            events.next().await
+        };
+        let Some(event) = event else {
+            return Ok(());
+        };
+        if apply(&mut state, &bus, event?).await && deadline.is_none() {
+            deadline = Some(tokio::time::Instant::now() + COALESCE);
+        }
+    }
+}
+pub fn subscription(generation: u64) -> iced::Subscription<(u64, Snapshot)> {
+    iced::Subscription::run_with(generation, stream)
+}
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "Subscription::run_with borrows the concrete hashed input."
+)]
+fn stream(generation: &u64) -> impl iced::futures::Stream<Item = (u64, Snapshot)> + use<> {
+    let generation = *generation;
+    iced::stream::channel(1, async move |mut output| {
+        loop {
+            if let Ok(connection) = Connection::session().await {
+                let _ = follow(&connection, generation, &mut output).await;
+            }
+            if output.send((generation, Snapshot::new())).await.is_err() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn launcher_badges_behaviour() {
+        // Bounded state and strict known property types.
+        {
+            let mut state = State::default();
+            for n in 0..100 {
+                state.update(
+                    ":1.1",
+                    &format!("App{n}.desktop"),
+                    Patch {
+                        urgent: Some(true),
+                        ..Default::default()
+                    },
+                );
+            }
+            assert_eq!(state.entries.len(), LIMIT);
+            assert!(!state.update(
+                ":1.1",
+                "App0.desktop",
+                Patch {
+                    urgent: Some(true),
+                    ..Default::default()
+                }
+            ));
+            assert!(patch(&HashMap::from([("count".into(), OwnedValue::from(-1i64))])).is_none());
+            assert!(patch(&HashMap::from([("count".into(), OwnedValue::from(1u32))])).is_none());
+            assert!(patch(&HashMap::from([("urgent".into(), OwnedValue::from(1u32))])).is_none());
+            assert!(
+                patch(&HashMap::from([
+                    ("count".into(), OwnedValue::from(3i64)),
+                    ("count-visible".into(), OwnedValue::from(true))
+                ]))
+                .is_some()
+            );
+        }
+
+        let bus = crate::test_bus::Bus::start();
+        let listener = bus.client().await;
+        let producer = bus.client().await;
+        let listener_name = listener.unique_name().unwrap().to_owned();
+        let (mut output, mut input) = mpsc::channel(1);
+        let task = tokio::spawn(async move { follow(&listener, 7, &mut output).await });
+        assert!(
+            tokio::time::timeout(Duration::from_secs(3), input.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .1
+                .is_empty()
+        );
+        for count in 1..=10i64 {
+            producer
+                .emit_signal(
+                    None::<&str>,
+                    "/org/example/Mail",
+                    INTERFACE,
+                    "Update",
+                    &(
+                        "application://Mail.desktop",
+                        HashMap::from([
+                            ("count", OwnedValue::from(count)),
+                            ("count-visible", OwnedValue::from(true)),
+                        ]),
+                    ),
+                )
+                .await
+                .unwrap();
+        }
+        let (generation, snapshot) = tokio::time::timeout(Duration::from_secs(3), input.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(generation, 7);
+        assert_eq!(snapshot["Mail.desktop"].count, 10);
+        drop(producer);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(3), input.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .1
+                .is_empty()
+        );
+        task.abort();
+        let _ = task.await;
+        let observer = bus.client().await;
+        let proxy = zbus::fdo::DBusProxy::new(&observer).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while proxy
+                .name_has_owner(listener_name.clone().into())
+                .await
+                .unwrap()
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+}

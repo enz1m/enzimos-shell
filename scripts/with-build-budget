@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+(( $# )) || { echo 'Pass a build command to with-build-budget.' >&2; exit 2; }
+if [[ ${ENZUI_BUILD_CAPPED:-0} == 1 ]]; then exec "$@"; fi
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+mkdir -p "$root/.build"
+exec 8>"$root/.build/agent-build.lock"
+flock -n 8 || { echo 'Another build is already active in this repository.' >&2; exit 1; }
+export ENZUI_BUILD_CAPPED=1
+if [[ -n ${ENZUI_BUILD_MEMORY_MAX:-} ]]; then
+    exec systemd-run --user --scope --quiet -p "MemoryMax=$ENZUI_BUILD_MEMORY_MAX" -p MemorySwapMax=0 "$@"
+fi
+exec "$@"

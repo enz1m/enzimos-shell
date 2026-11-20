@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import resource
+import stat
+import sys
+import time
+import warnings
+from PIL import Image, ImageOps
+
+MAX_ENTRIES = 48
+MAX_SCAN = 2048
+MAX_BYTES = 32 * 1024 * 1024
+MAX_PIXELS = 16 * 1024 * 1024
+
+
+def gallery(request):
+    folder, cache = Path(request['folder']), Path(request['cache'])
+    if not folder.is_absolute() or not cache.is_absolute():
+        raise ValueError('Choose an absolute wallpaper folder')
+    cache.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    parent = cache.parent.stat()
+    if cache.parent.resolve() != cache.parent or parent.st_uid != os.getuid() or parent.st_mode & 0o077:
+        raise ValueError('Thumbnail storage is not private')
+    cache.mkdir(mode=0o700, exist_ok=True)
+    info = cache.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise ValueError('Thumbnail storage is not private')
+    if not folder.exists():
+        return {'entries': [], 'truncated': False, 'skipped': 0}
+    folder = folder.resolve(strict=True)
+    candidates = []
+    truncated = False
+    started = time.monotonic()
+    with os.scandir(folder) as directory:
+        for index, item in enumerate(directory):
+            if index >= MAX_SCAN or time.monotonic() - started > 4:
+                truncated = True
+                break
+            if item.name.startswith('.') or len(item.name.encode('utf-8')) > 200 or any(ord(c) < 32 or 0x202a <= ord(c) <= 0x202e or 0x2066 <= ord(c) <= 0x2069 for c in item.name):
+                continue
+            if item.is_file(follow_symlinks=False) and Path(item.name).suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp'):
+                candidates.append(Path(item.path))
+    candidates.sort(key=lambda path: (path.name.casefold(), path.name))
+    entries, skipped = [], 0
+    Image.MAX_IMAGE_PIXELS = MAX_PIXELS
+    warnings.simplefilter('error', Image.DecompressionBombWarning)
+    for source in candidates:
+        if len(entries) >= MAX_ENTRIES or time.monotonic() - started > 15:
+            truncated = True
+            break
+        try:
+            fd = os.open(source, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, 'rb') as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= MAX_BYTES:
+                    raise ValueError('Unsupported file size')
+                data = stream.read(MAX_BYTES + 1)
+            if len(data) > MAX_BYTES:
+                raise ValueError('Image too large')
+            key = hashlib.sha256(data).hexdigest()
+            target = cache / (key + '.png')
+            if target.exists():
+                cached = target.lstat()
+                if not stat.S_ISREG(cached.st_mode) or cached.st_uid != os.getuid() or cached.st_mode & 0o077 or not 0 < cached.st_size <= 1024 * 1024:
+                    raise ValueError('Unsafe thumbnail')
+                with Image.open(target) as image:
+                    if image.format != 'PNG' or image.size != (384, 216):
+                        raise ValueError('Invalid thumbnail')
+            else:
+                with Image.open(io.BytesIO(data)) as original:
+                    if original.format not in ('PNG', 'JPEG', 'WEBP') or max(original.size) > 8192 or original.width * original.height > MAX_PIXELS:
+                        raise ValueError('Unsupported image')
+                    image = ImageOps.exif_transpose(original)
+                    image.thumbnail((768, 432), Image.Resampling.LANCZOS)
+                    image = ImageOps.fit(image.convert('RGB'), (384, 216), method=Image.Resampling.LANCZOS)
+                    image.info.clear()
+                    encoded = io.BytesIO()
+                    image.save(encoded, 'PNG')
+                temporary = cache / f'gallery-{os.getpid()}-{len(entries)}.new'
+                descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                try:
+                    with os.fdopen(descriptor, 'wb') as stream:
+                        stream.write(encoded.getvalue())
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    temporary.replace(target)
+                finally:
+                    temporary.unlink(missing_ok=True)
+            identity = hashlib.sha256(str(source).encode('utf-8') + b'\0' + key.encode()).hexdigest()
+            title = source.stem.removeprefix('enzui-').replace('-', ' ').replace('_', ' ')
+            if source.stem.startswith('enzui-'):
+                title = title.title()
+            entries.append({'id': identity, 'source': str(source), 'thumbnail': str(target), 'digest': key,
+                            'title': title})
+        except (OSError, ValueError, Image.DecompressionBombError, Image.DecompressionBombWarning):
+            skipped += 1
+    return {'entries': entries, 'truncated': truncated, 'skipped': skipped}
+
+
+if __name__ == '__main__':
+    resource.setrlimit(resource.RLIMIT_AS, (768 * 1024 * 1024, 768 * 1024 * 1024))
+    resource.setrlimit(resource.RLIMIT_CPU, (16, 16))
+    try:
+        data = sys.stdin.buffer.read(8193)
+        if len(data) > 8192:
+            raise ValueError('Gallery request too large')
+        result = json.dumps(gallery(json.loads(data)), ensure_ascii=False, separators=(',', ':'))
+        if len(result.encode()) > 65536:
+            raise ValueError('Gallery metadata exceeds its bound')
+        print(result)
+    except Exception as error:
+        print(json.dumps({'error': str(error) if isinstance(error, ValueError) else 'Cannot read the wallpaper folder'}))
+        sys.exit(1)

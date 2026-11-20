@@ -1,0 +1,61 @@
+[package]
+name = "enzui-wgsl-glsl"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Translates the framework's material shaders to GLSL ES for the compositor."
+
+[workspace]
+
+[dependencies]
+naga = { version = "=29.0.4", default-features = false, features = ["wgsl-in", "glsl-out"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(docsrs)"] }
+missing_docs = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+print_stdout = "warn"
+mem_forget = "warn"
+undocumented_unsafe_blocks = "warn"
+return_self_not_must_use = "warn"
+clone_on_ref_ptr = "warn"
+redundant_clone = "warn"
+trivially_copy_pass_by_ref = "warn"
+large_stack_arrays = "warn"
+ref_option = "warn"
+implicit_clone = "warn"
+assigning_clones = "warn"
+or_fun_call = "warn"
+cast_lossless = "warn"
+significant_drop_in_scrutinee = "warn"
+manual_let_else = "warn"
+map_unwrap_or = "warn"
+redundant_closure_for_method_calls = "warn"
+semicolon_if_nothing_returned = "warn"
+uninlined_format_args = "warn"
+unnested_or_patterns = "warn"
+explicit_iter_loop = "warn"
+ignored_unit_patterns = "warn"
+unused_async = "warn"
+string_slice = "warn"
+unwrap_in_result = "warn"
+panic = "warn"
+iter_over_hash_type = "warn"
+allow_attributes_without_reason = "warn"
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
+missing_assert_message = "warn"
+str_to_string = "warn"
+format_push_string = "warn"
+redundant_type_annotations = "warn"
+
+[lints]
+workspace = true

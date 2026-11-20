@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+import hashlib
+import importlib.machinery
+import importlib.util
+import os
+from pathlib import Path
+import struct
+import tempfile
+import unittest
+import zlib
+from PIL import Image
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def module(name):
+    loader = importlib.machinery.SourceFileLoader(name.replace("-", "_"), str(ROOT / "scripts" / name))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    value = importlib.util.module_from_spec(spec)
+    loader.exec_module(value)
+    return value
+
+
+importer, worker = module("import-wallpaper"), module("run-wallpaper")
+
+
+class WallpaperTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(prefix="enzui-wallpaper-")
+        self.root = Path(self.directory.name)
+        self.cache = self.root / "wallpapers"
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def picture(self, name="source.png", format="PNG", **options):
+        source = self.root / name
+        Image.new("RGB", (22, 11), (30, 90, 150)).save(source, format=format, **options)
+        return source
+
+    def run_import(self, source):
+        return importer.import_image({"source": str(source), "cache": str(self.cache)})
+
+    def test_decoded_local_images_are_copied_into_private_pngs(self):
+        for format, suffix in [("PNG", "png"), ("JPEG", "jpg"), ("WEBP", "webp")]:
+            with self.subTest(format=format):
+                source = self.picture("source." + suffix, format)
+                result = self.run_import(source)
+                target = Path(result["path"])
+                self.assertEqual(target.parent, self.cache)
+                self.assertEqual(target.name, hashlib.sha256(target.read_bytes()).hexdigest() + ".png")
+                self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+                source.unlink()
+                with Image.open(target) as image:
+                    self.assertEqual(image.format, "PNG")
+                    self.assertEqual(image.size, (22, 11))
+                    self.assertEqual(image.mode, "RGBA")
+
+    def test_renderer_receives_a_private_content_bound_snapshot(self):
+        result = self.run_import(self.picture())
+        path = Path(result["path"])
+        data = path.read_bytes()
+        snapshot = worker.image_snapshot(path, self.root / "settings.json", self.root / "runtime")
+        path.write_bytes(b"changed")
+        self.assertEqual(snapshot.read_bytes(), data)
+        self.assertEqual(snapshot.stat().st_mode & 0o777, 0o400)
+        with self.assertRaises(PermissionError):
+            snapshot.write_bytes(b"x")
+        with self.assertRaises(ValueError):
+            worker.image_snapshot(path, self.root / "settings.json", self.root / "runtime")
+        import gi
+        gi.require_version("GdkPixbuf", "2.0")
+        from gi.repository import GdkPixbuf
+        image = GdkPixbuf.Pixbuf.new_from_file(str(snapshot))
+        self.assertEqual((image.get_width(), image.get_height()), (22, 11))
+
+    def test_renderer_rejects_unimported_paths(self):
+        with self.assertRaises(ValueError):
+            worker.image_snapshot(self.picture(), self.root / "settings.json", self.root / "runtime")
+
+    def test_decoder_failure_is_not_a_successful_color_fallback(self):
+        self.assertTrue(worker.renderer_failed(b"[ERROR] Failed to load image"))
+        self.assertTrue(worker.renderer_failed(b"x" * 16385))
+        self.assertFalse(worker.renderer_failed(b"[DEBUG] Found config for output"))
+
+    def test_exif_orientation_is_applied_before_metadata_is_removed(self):
+        exif = Image.Exif()
+        exif[274] = 6
+        result = self.run_import(self.picture("rotated.jpg", "JPEG", exif=exif))
+        with Image.open(result["path"]) as image:
+            self.assertEqual(image.size, (11, 22))
+            self.assertFalse(image.getexif())
+
+    def test_links_fifos_and_nonimages_are_rejected(self):
+        source = self.picture()
+        link = self.root / "linked.png"
+        link.symlink_to(source)
+        fifo = self.root / "fifo.png"
+        os.mkfifo(fifo)
+        text = self.root / "text.png"
+        text.write_text("not an image")
+        for item in [link, fifo, text]:
+            with self.subTest(path=item.name), self.assertRaises((OSError, ValueError)):
+                self.run_import(item)
+
+    def test_input_size_is_checked_before_reading(self):
+        source = self.root / "large.png"
+        with source.open("wb") as stream:
+            stream.truncate(importer.MAX_BYTES + 1)
+        with self.assertRaises(ValueError):
+            self.run_import(source)
+
+    def test_decompression_dimensions_are_bounded(self):
+        def chunk(kind, data):
+            return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        source = self.root / "dimensions.png"
+        source.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 8192, 8192, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(b"")) + chunk(b"IEND", b""))
+        with self.assertRaises((Image.DecompressionBombError, Image.DecompressionBombWarning, ValueError)):
+            self.run_import(source)
+
+    def test_typical_config_parent_keeps_imported_media_private(self):
+        source = self.picture()
+        original_cache = self.cache
+        self.cache = self.root / "fresh-config" / "enzui-shell" / "wallpapers"
+        fresh = self.run_import(source)
+        self.assertEqual(self.cache.parent.stat().st_mode & 0o777, 0o700)
+        self.assertTrue(Path(fresh["path"]).is_file())
+        self.cache = original_cache
+        self.root.chmod(0o755)
+        result = self.run_import(source)
+        self.assertEqual(self.cache.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(Path(result["path"]).stat().st_mode & 0o777, 0o600)
+        self.root.chmod(0o777)
+        with self.assertRaises(ValueError):
+            self.run_import(source)
+        self.root.chmod(0o700)
+
+    def test_storage_must_be_private(self):
+        self.cache.mkdir(mode=0o755)
+        self.cache.chmod(0o755)
+        with self.assertRaises(ValueError):
+            self.run_import(self.picture())
+
+    def test_preferences_reject_invalid_modes_and_shapes(self):
+        self.assertEqual(worker.preferences({})["revision"], 0)
+        for invalid in [{"kind": "video"}, {"kind": "image"}, {"color": "red"}, {"image": "relative.png"}, {"revision": True}, {"revision": -1}, {"revision": 2**64}, {"fit": "execute"}]:
+            with self.subTest(value=invalid), self.assertRaises(ValueError):
+                worker.preferences(invalid)
+
+    def test_renderer_arguments_are_literal_and_transition_only_when_replacing(self):
+        value = worker.preferences({"kind": "image", "image": "/owned/image with ' quotes.png", "fit": "fit"})
+        binary = ROOT / "target/debug/enzui-wallpaper"
+        args = worker.arguments(value, ROOT / "assets/wallpaper.png", binary, Path("/private/snapshot.png"), True)
+        self.assertEqual(args, [str(binary), "172b40", "fit", "/private/snapshot.png", "fade"])
+        self.assertEqual(worker.arguments(worker.preferences({"kind": "color"}), "default", binary)[3:], ["-", "immediate"])
+        self.assertEqual(worker.arguments(worker.preferences({}), "default", binary)[3:], ["default", "immediate"])
+
+
+if __name__ == "__main__":
+    unittest.main()

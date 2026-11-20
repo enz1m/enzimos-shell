@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Settings
+Name[es]=Ajustes
+Comment=Desktop and appearance
+Comment[es]=Escritorio y apariencia
+Icon=dev.enzui.Settings
+Exec=/usr/lib/enzui/bin/enzui-settings
+DBusActivatable=true
+Categories=Settings;System;
+OnlyShowIn=enzUI;

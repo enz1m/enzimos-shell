@@ -1,0 +1,312 @@
+#!/usr/bin/env python3
+"""A real enzimOS installation, for testing the desktop against its system
+backend (org.enzimos.System1), greetd and polkit.
+
+Install a supplied enzimOS ISO onto a private disk under .build/enzimos-vm.
+The install runs offline with disposable credentials. The installed guest uses
+user-mode networking, QMP controls, and a serial console.
+
+  enzimos-vm install ISO      install from the supplied image and power off
+  enzimos-vm start            boot the installed system under a capped unit
+  enzimos-vm console          once after installing: enable the serial root login
+                              (typed on tty2, since the install has no serial getty)
+  enzimos-vm shot NAME        save the screen as NAME.png in the VM folder
+  enzimos-vm type TEXT        type TEXT ("\\n" for Enter)
+  enzimos-vm key KEY…         press a key combination (QEMU qcodes)
+  enzimos-vm click X Y        click at screen pixel X,Y (1280x800 screen)
+  enzimos-vm drag X Y X2 Y2   press at X,Y, move in steps to X2,Y2 and release
+  enzimos-vm root CMD         run CMD as root on the serial console, print its output
+  enzimos-vm push DIR         offer DIR to the guest as a CD, mounted at /run/enzui-push
+  enzimos-vm stop             power off and verify the unit's cgroup is empty
+"""
+import json, os, re, socket, subprocess, sys, time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+VM = ROOT / ".build" / "enzimos-vm"
+UNIT = "enzui-enzimos-vm.service"
+MEMORY = "2700M"
+OVMF_CODE = "/usr/share/edk2/x64/OVMF_CODE.4m.fd"
+OVMF_VARS = "/usr/share/edk2/x64/OVMF_VARS.4m.fd"
+SCREEN = (1280, 800)
+# Public lab values, as in the enzimOS fixtures; not a real account.
+USER, PASSWORD = "admin", "ENZIMOS-PUBLIC-TEST-ADMIN"
+ANSWERS = f"""ENZIMOS_DISK=/dev/disk/by-id/virtio-enzimos-target
+ENZIMOS_ERASE_CONFIRM=yes
+ENZIMOS_HOSTNAME=enzimos-settings
+ENZIMOS_USER={USER}
+ENZIMOS_FULLNAME=enzimOS Test Admin
+ENZIMOS_PASSWORD={PASSWORD}
+ENZIMOS_ENCRYPT=no
+ENZIMOS_TIMEZONE=Europe/Budapest
+ENZIMOS_FINISH=poweroff
+"""
+
+
+def run(*args, **kw):
+    return subprocess.run(args, check=True, **kw)
+
+
+def active():
+    out = subprocess.run(["systemctl", "--user", "is-active", UNIT], capture_output=True, text=True)
+    return out.stdout.strip() in ("active", "activating")
+
+
+def iso_of(directory, label, target):
+    run("xorriso", "-as", "mkisofs", "-quiet", "-R", "-J", "-V", label, "-o", str(target), str(directory), stdout=subprocess.DEVNULL)
+
+
+def qemu(install_iso):
+    argv = ["qemu-system-x86_64", "-name", "enzui-enzimos-vm", "-no-user-config", "-nodefaults", "-machine", "q35", "-enable-kvm",
+            "-cpu", "host", "-smp", "2", "-m", "2048M",
+            # Installation is offline; the running guest uses isolated user-mode networking.
+            *(["-nic", "none"] if install_iso else ["-nic", "user,model=virtio-net-pci"]), "-display", "none", "-device", "virtio-vga",
+            "-qmp", f"unix:{VM / 'qmp.sock'},server=on,wait=off", "-device", "qemu-xhci", "-device", "usb-kbd", "-device", "usb-tablet",
+            "-chardev", f"socket,id=serial,path={VM / 'serial.sock'},server=on,wait=off,logfile={VM / 'serial.log'}", "-serial", "chardev:serial",
+            "-drive", f"if=none,id=target,format=qcow2,file={VM / 'target.qcow2'}", "-device", "virtio-blk-pci,drive=target,serial=enzimos-target,bootindex=1",
+            "-drive", f"if=pflash,unit=0,format=raw,readonly=on,file={OVMF_CODE}", "-drive", f"if=pflash,unit=1,format=raw,file={VM / 'vars.fd'}",
+            "-drive", "if=none,id=push,media=cdrom,readonly=on", "-device", "ide-cd,drive=push,bus=ide.1"]
+    if install_iso:
+        image = str(install_iso).replace(",", ",,")
+        argv += ["-no-reboot", "-drive", f"if=none,id=install,media=cdrom,readonly=on,format=raw,file={image}", "-device", "ide-cd,drive=install,bus=ide.0,bootindex=0",
+                 "-drive", f"if=none,id=answers,media=cdrom,readonly=on,format=raw,file={VM / 'answers.iso'}", "-device", "ide-cd,drive=answers,bus=ide.2"]
+    return argv
+
+
+def launch(install_iso=None):
+    if active():
+        sys.exit("enzimos-vm: already running")
+    subprocess.run(["systemctl", "--user", "reset-failed", UNIT], capture_output=True)
+    run("systemd-run", "--user", "--unit", UNIT, "--collect", "-p", f"MemoryMax={MEMORY}", "-p", "MemorySwapMax=0", *qemu(install_iso))
+
+
+def install(iso):
+    if not iso.is_file():
+        sys.exit(f"enzimos-vm: {iso} is missing")
+    if active():
+        sys.exit("enzimos-vm: already running")
+    VM.mkdir(parents=True, exist_ok=True)
+    for name in ("target.qcow2", "vars.fd", "serial.log"):
+        (VM / name).unlink(missing_ok=True)
+    run("qemu-img", "create", "-q", "-f", "qcow2", str(VM / "target.qcow2"), "24G")
+    run("cp", OVMF_VARS, str(VM / "vars.fd"))
+    stage = VM / "answers"
+    stage.mkdir(exist_ok=True)
+    (stage / "answers.env").write_text(ANSWERS)
+    iso_of(stage, "ENZIMOS_ANSWERS", VM / "answers.iso")
+    launch(iso)
+    deadline = time.time() + 1800
+    while time.time() < deadline and active():
+        time.sleep(5)
+    log = (VM / "serial.log").read_text(errors="replace") if (VM / "serial.log").exists() else ""
+    if active():
+        sys.exit("enzimos-vm: the installer did not finish in 30 minutes")
+    print("installed" if "ENZIMOS_INSTALL_PASS" in log else "installer ended; check .build/enzimos-vm/serial.log")
+
+
+class Qmp:
+    def __init__(self):
+        self.sock = socket.socket(socket.AF_UNIX)
+        self.sock.connect(str(VM / "qmp.sock"))
+        self.file = self.sock.makefile("rwb")
+        self.file.readline()
+        self.call("qmp_capabilities")
+
+    def call(self, command, **arguments):
+        self.file.write(json.dumps({"execute": command, "arguments": arguments}).encode() + b"\n")
+        self.file.flush()
+        while True:
+            reply = json.loads(self.file.readline())
+            if "return" in reply:
+                return reply["return"]
+            if "error" in reply:
+                raise SystemExit("QMP " + command + ": " + reply["error"].get("desc", ""))
+
+
+QCODES = {"\n": ["ret"], " ": ["spc"], "-": ["minus"], ".": ["dot"], "/": ["slash"], ",": ["comma"], "_": ["shift", "minus"],
+          ":": ["shift", "semicolon"], "@": ["shift", "2"], "=": ["equal"], "'": ["apostrophe"], '"': ["shift", "apostrophe"],
+          "|": ["shift", "backslash"], "(": ["shift", "9"], ")": ["shift", "0"], "{": ["shift", "bracket_left"], "}": ["shift", "bracket_right"],
+          ";": ["semicolon"], "*": ["shift", "8"], "&": ["shift", "7"], "$": ["shift", "4"], ">": ["shift", "dot"], "<": ["shift", "comma"]}
+
+
+def type_text(qmp, text):
+    for char in text:
+        keys = QCODES.get(char) or (["shift", char.lower()] if char.isupper() else [char])
+        qmp.call("send-key", keys=[{"type": "qcode", "data": k} for k in keys])
+        time.sleep(0.06)
+
+
+def shot(name):
+    ppm = VM / (name + ".ppm")
+    Qmp().call("screendump", filename=str(ppm))
+    time.sleep(0.4)
+    data = ppm.read_bytes()
+    parts = data.split(b"\n", 3)
+    width, height = map(int, parts[1].split())
+    import struct, zlib
+    rows = b"".join(b"\x00" + parts[3][y * width * 3:(y + 1) * width * 3] for y in range(height))
+    chunk = lambda kind, body: struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF)
+    (VM / (name + ".png")).write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows, 6)) + chunk(b"IEND", b""))
+    ppm.unlink()
+    print(VM / (name + ".png"))
+
+
+def click(x, y):
+    qmp = Qmp()
+    scale = lambda v, size: int(v * 32767 / (size - 1))
+    qmp.call("input-send-event", events=[{"type": "abs", "data": {"axis": "x", "value": scale(x, SCREEN[0])}}, {"type": "abs", "data": {"axis": "y", "value": scale(y, SCREEN[1])}}])
+    time.sleep(0.15)
+    for down in (True, False):
+        qmp.call("input-send-event", events=[{"type": "btn", "data": {"down": down, "button": "left"}}])
+        time.sleep(0.08)
+
+
+def drag(x, y, x2, y2, steps=24):
+    qmp = Qmp()
+    scale = lambda v, size: int(v * 32767 / (size - 1))
+    move = lambda px, py: qmp.call("input-send-event", events=[{"type": "abs", "data": {"axis": "x", "value": scale(px, SCREEN[0])}},
+                                                            {"type": "abs", "data": {"axis": "y", "value": scale(py, SCREEN[1])}}])
+    move(x, y)
+    time.sleep(0.15)
+    qmp.call("input-send-event", events=[{"type": "btn", "data": {"down": True, "button": "left"}}])
+    time.sleep(0.2)
+    for step in range(1, steps + 1):
+        move(x + (x2 - x) * step // steps, y + (y2 - y) * step // steps)
+        time.sleep(0.03)
+    time.sleep(0.4)
+    qmp.call("input-send-event", events=[{"type": "btn", "data": {"down": False, "button": "left"}}])
+
+
+class Serial:
+    """A root shell on the serial console: logs in as the admin, then sudo."""
+
+    def __init__(self):
+        self.sock = socket.socket(socket.AF_UNIX)
+        self.sock.connect(str(VM / "serial.sock"))
+        self.sock.settimeout(0.5)
+        self.buffer = b""
+
+    def read_until(self, pattern, timeout):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if re.search(pattern, self.buffer):
+                return True
+            try:
+                chunk = self.sock.recv(65536)
+                if chunk:
+                    self.buffer += chunk
+            except socket.timeout:
+                pass
+        return False
+
+    def send(self, text):
+        self.sock.sendall(text.encode())
+
+    def shell(self):
+        self.send("\n")
+        if self.read_until(rb"ENZUI-ROOT# $", 3):
+            return
+        if not self.read_until(rb"login: $|\$ $|# $", 10):
+            self.send("\n")
+            self.read_until(rb"login: $", 20)
+        if re.search(rb"login: $", self.buffer):
+            self.buffer = b""
+            self.send(USER + "\n")
+            self.read_until(rb"Password: ?$", 20)
+            self.send(PASSWORD + "\n")
+            self.read_until(rb"\$ $", 30)
+        self.buffer = b""
+        self.send("sudo -i\n")
+        if self.read_until(rb"password for", 5):
+            self.send(PASSWORD + "\n")
+        self.read_until(rb"# $", 20)
+        self.buffer = b""
+        self.send("export PS1='ENZUI-ROOT# ' TERM=dumb; stty -echo cols 250\n")
+        self.read_until(rb"ENZUI-ROOT# $", 10)
+
+    def root(self, command, timeout=120):
+        self.shell()
+        number = int(time.time() * 1000)
+        marker = f"ENZUI-DONE-{number}"
+        self.buffer = b""
+        # The marker is assembled by printf, so the echoed command never matches it.
+        self.send(f"{command}; printf 'ENZUI-DONE-%s %s\\n' {number} $?\n")
+        self.read_until(marker.encode() + rb" \d+", timeout)
+        text = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", self.buffer.decode(errors="replace").replace("\r", ""))
+        lines = text.split(marker)[0].split("\n")
+        if lines and "ENZUI-DONE-%s" in lines[0]:
+            lines = lines[1:]
+        return "\n".join(lines).strip()
+
+
+def push(directory):
+    target = VM / "push.iso"
+    iso_of(Path(directory), "ENZUI_PUSH", target)
+    Serial().root("umount /run/enzui-push 2>/dev/null; true")
+    Qmp().call("blockdev-change-medium", device="push", filename=str(target), format="raw", force=True)
+    time.sleep(2)
+    print(Serial().root("mkdir -p /run/enzui-push; umount /run/enzui-push 2>/dev/null; for i in $(seq 20); do mount -o ro /dev/disk/by-label/ENZUI_PUSH /run/enzui-push 2>/dev/null && break; sleep 1; done; ls /run/enzui-push"))
+
+
+def console():
+    qmp = Qmp()
+    qmp.call("send-key", keys=[{"type": "qcode", "data": k} for k in ("ctrl", "alt", "f2")])
+    time.sleep(3)
+    for line, pause in ((USER, 3), (PASSWORD, 5), ("sudo systemctl enable --now serial-getty@ttyS0.service", 3), (PASSWORD, 4), ("exit", 1)):
+        type_text(qmp, line + "\n")
+        time.sleep(pause)
+    qmp.call("send-key", keys=[{"type": "qcode", "data": k} for k in ("ctrl", "alt", "f1")])
+
+
+def stop():
+    if active():
+        try:
+            Qmp().call("system_powerdown")
+        except (OSError, SystemExit):
+            pass
+        for _ in range(90):
+            if not active():
+                break
+            time.sleep(1)
+        if active():
+            run("systemctl", "--user", "stop", UNIT)
+    cgroup = Path(f"/sys/fs/cgroup/user.slice/user-{os.getuid()}.slice/user@{os.getuid()}.service/app.slice/{UNIT}")
+    if cgroup.exists() and (cgroup / "cgroup.procs").read_text().strip():
+        sys.exit("enzimos-vm: the VM unit still has processes")
+    print("stopped")
+
+
+def main():
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
+    command, rest = sys.argv[1], sys.argv[2:]
+    if command == "install":
+        if len(rest) != 1:
+            sys.exit("Usage: enzimos-vm install ISO")
+        install(Path(rest[0]).resolve())
+    elif command == "start":
+        launch()
+    elif command == "stop":
+        stop()
+    elif command == "console":
+        console()
+    elif command == "shot":
+        shot(rest[0])
+    elif command == "type":
+        type_text(Qmp(), " ".join(rest).replace("\\n", "\n"))
+    elif command == "key":
+        Qmp().call("send-key", keys=[{"type": "qcode", "data": k} for k in rest])
+    elif command == "click":
+        click(int(rest[0]), int(rest[1]))
+    elif command == "drag":
+        drag(*map(int, rest[:4]))
+    elif command == "root":
+        print(Serial().root(" ".join(rest)))
+    elif command == "push":
+        push(rest[0])
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,8 @@
+#%PAM-1.0
+# Fingerprint unlock of the enzUI lock screen. The lock runs this service
+# beside the password (enzui-lock), so typing a password never waits for the
+# reader. Only the lock screen uses it: signing in after a restart keeps the
+# password, which unlocks the keyring, and sudo and administrator approval
+# keep asking for it too (a background program could otherwise collect a
+# touch meant for something else, CVE-2024-37408).
+auth       required     pam_fprintd.so max-tries=3 timeout=-1

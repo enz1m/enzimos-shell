@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+"""Rebuild bundled rounded recommendations using pinned Google Fonts sources."""
+from urllib.request import urlopen
+from pathlib import Path
+import json,hashlib,io
+from fontTools.ttLib import TTFont
+from fontTools.varLib.instancer import instantiateVariableFont
+from fontTools import subset
+rev='47d54ca1ebb14fd864695f1d39dc734f39017c33'
+faces={'Fredoka':('fredoka','Fredoka[wdth,wght].ttf',range(300,701,100)), 'Nunito':('nunito','Nunito[wght].ttf',range(200,901,100)), 'Quicksand':('quicksand','Quicksand[wght].ttf',range(300,701,100)), 'Rubik':('rubik','Rubik[wght].ttf',range(300,901,100))}
+ROOT=Path(__file__).resolve().parent.parent
+root=ROOT/'shell/assets/lock-fonts'; cache=ROOT/'.build/greeter-fonts'; cache.mkdir(parents=True,exist_ok=True)
+expected={f['family']:f['sha256'] for f in json.loads((root/'sources.json').read_text())}
+manifest=[]
+for family,(directory,file,weights) in faces.items():
+ from urllib.parse import quote
+ url=f'https://raw.githubusercontent.com/google/fonts/{rev}/ofl/{directory}/'+quote(file)
+ cached=cache/(family+'.ttf')
+ if not cached.exists():cached.write_bytes(urlopen(url,timeout=30).read())
+ data=cached.read_bytes()
+ if hashlib.sha256(data).hexdigest()!=expected[family]:raise SystemExit(f'{family}: checksum mismatch')
+ licence=urlopen(f'https://raw.githubusercontent.com/google/fonts/{rev}/ofl/{directory}/OFL.txt',timeout=30).read(); (root/(family+'-OFL.txt')).write_bytes(licence)
+ for w in weights:
+  font=TTFont(io.BytesIO(data));font.recalcTimestamp=False
+  axes={'wght':w}
+  if any(a.axisTag=='wdth' for a in font['fvar'].axes):axes['wdth']=100
+  font=instantiateVariableFont(font,axes,inplace=True)
+  if family=='Quicksand':
+   renamed='Enz Pebble'
+   labels={1:renamed,3:f'{renamed}-{w}',4:f'{renamed} {w}',6:f'EnzPebble-{w}',16:renamed}
+   font['name'].names=[n for n in font['name'].names if n.nameID not in labels]
+   for name_id,label in labels.items():
+    for platform,encoding,language in [(3,1,0x409),(0,3,0),(1,0,0)]:font['name'].setName(label,name_id,platform,encoding,language)
+  opts=subset.Options();opts.recalc_timestamp=False;opts.name_IDs=['*']
+  sub=subset.Subsetter(options=opts);sub.populate(unicodes=list(range(0x20,0x250))+list(range(0x2000,0x2070)));sub.subset(font)
+  # Preserve original family names and static instance weight for fontdb.
+  font.save(root/f'{family}-{w}.ttf')
+ manifest.append({'family':family,'bundled_family':'Enz Pebble' if family=='Quicksand' else family,'source':url,'sha256':hashlib.sha256(data).hexdigest(),'weights':list(weights),'subset':'Latin + punctuation; other scripts use installed fallback fonts','licence':family+'-OFL.txt'})
+ print(family,flush=True)
+(root/'sources.json').write_text(json.dumps(manifest,indent=2)+'\n')

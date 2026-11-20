@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+"""Prepare a clean, detached worktree at a locked vendor revision."""
+import argparse
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def git(repository, *args):
+    return subprocess.check_output(["git", "-C", str(repository), *args], text=True).strip()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("vendor", choices=("hyprland", "aquamarine"))
+    parser.add_argument("variant")
+    parser.add_argument("worktree", type=Path)
+    args = parser.parse_args()
+    pin = json.loads((ROOT / "sources.lock.json").read_text())[args.vendor]
+    revision = pin["revision"] if args.variant == "default" else pin["variants"][args.variant]
+    vendor = ROOT / pin["destination"]
+    source = args.worktree.absolute()
+
+    if not (source.exists() or source.is_symlink()):
+        if subprocess.run(["git", "-C", str(vendor), "cat-file", "-e", f"{revision}^{{commit}}"],
+                          stderr=subprocess.DEVNULL).returncode:
+            git(vendor, "fetch", "--no-tags", pin["url"], revision)
+        git(vendor, "worktree", "prune")
+        git(vendor, "worktree", "add", "--detach", str(source), revision)
+
+    if (source.is_symlink() or not (source / ".git").is_file()
+            or git(source, "rev-parse", "HEAD") != revision
+            or git(source, "status", "--porcelain", "--ignore-submodules=untracked")):
+        sys.exit(f"Prepared {args.vendor} source changed. Choose a fresh build directory.")
+    print(revision)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,337 @@
+#!/usr/bin/env python3
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import resource
+import signal
+import stat
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+
+ROOT = Path(__file__).resolve().parent.parent
+LIVE_SCENES = ROOT / "enzwall/scenes"
+loader = importlib.machinery.SourceFileLoader("wallpaper_platform", str(ROOT / "scripts/start-shell-platform"))
+spec = importlib.util.spec_from_loader(loader.name, loader)
+platform = importlib.util.module_from_spec(spec)
+loader.exec_module(platform)
+
+
+def preferences(value):
+    if not isinstance(value, dict):
+        raise ValueError("Invalid wallpaper preferences")
+    result = {"kind": value.get("kind", "default"), "color": value.get("color", "#172b40"),
+              "image": value.get("image"), "fit": value.get("fit", "fill"), "revision": value.get("revision", 0),
+              "scene": value.get("scene"), "motion": value.get("motion", "auto"),
+              "pause_idle": value.get("pause_idle", False), "hide_clock": value.get("hide_clock",False), "hide_date": value.get("hide_date",False)}
+    if any(type(result[k]) is not bool for k in ("pause_idle","hide_clock","hide_date")):
+        raise ValueError("Invalid wallpaper idle pause")
+    if result["motion"] not in ("auto", "smooth", "balanced"):
+        raise ValueError("Invalid wallpaper motion")
+    if result["kind"] not in ("default", "color", "image", "live") or result["fit"] not in ("fill", "fit", "center", "stretch", "tile"):
+        raise ValueError("Invalid wallpaper mode")
+    scene = result["scene"]
+    if scene is not None and (not isinstance(scene, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", scene)):
+        raise ValueError("Invalid live wallpaper name")
+    if result["kind"] == "live" and (scene is None or not (LIVE_SCENES / scene / "scene.toml").is_file()):
+        raise ValueError("Choose a live wallpaper")
+    if not isinstance(result["color"], str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", result["color"]):
+        raise ValueError("Invalid wallpaper color")
+    if type(result["revision"]) is not int or not 0 <= result["revision"] < 2**64:
+        raise ValueError("Invalid wallpaper revision")
+    image = result["image"]
+    if image is not None and (not isinstance(image, str) or len(image.encode()) > 4096 or not Path(image).is_absolute() or any(ord(c) < 32 or 127 <= ord(c) < 160 for c in image)):
+        raise ValueError("Invalid wallpaper image path")
+    if result["kind"] == "image" and image is None:
+        raise ValueError("Choose a wallpaper image")
+    return result
+
+
+def arguments(value, default, binary, image=None, animate=False):
+    picture = image if image is not None else (default if value["kind"] == "default" else value["image"])
+    return [str(binary), value["color"][1:], value["fit"], str(picture) if value["kind"] != "color" else "-",
+            "fade" if animate else "immediate"]
+
+
+def image_snapshot(path, settings, runtime):
+    path = Path(path)
+    if path.parent != settings.parent / "wallpapers" or not re.fullmatch(r"[0-9a-f]{64}\.png", path.name):
+        raise ValueError("Choose the picture through Settings to create a safe local copy")
+    platform.private_directory(runtime)
+    source = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+    snapshot = None
+    try:
+        descriptor, name = tempfile.mkstemp(prefix="wallpaper-", suffix=".png", dir=runtime)
+        snapshot = Path(name)
+        with os.fdopen(descriptor, "wb") as output:
+            info = os.fstat(source)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or not 33 <= info.st_size <= 68 * 1024 * 1024:
+                raise ValueError("Saved wallpaper is invalid; choose the image again")
+            digest, total, header = hashlib.sha256(), 0, b""
+            while block := os.read(source, 1024 * 1024):
+                total += len(block)
+                if total > 68 * 1024 * 1024:
+                    raise ValueError("Saved wallpaper exceeds its size limit")
+                if not header:
+                    header = block[:33]
+                digest.update(block)
+                output.write(block)
+            if digest.hexdigest() + ".png" != path.name or header[:16] != b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR":
+                raise ValueError("Saved wallpaper changed; choose the image again")
+            width, height = struct.unpack(">II", header[16:24])
+            if not 0 < width <= 4096 or not 0 < height <= 4096 or width * height > 16 * 1024 * 1024:
+                raise ValueError("Saved wallpaper dimensions exceed their bounds")
+            output.flush()
+            os.fchmod(output.fileno(), 0o400)
+        return snapshot
+    except Exception:
+        if snapshot is not None:
+            snapshot.unlink(missing_ok=True)
+        raise
+    finally:
+        os.close(source)
+
+
+def renderer_failed(log):
+    return len(log) > 16384 or b"[ERROR]" in log or b"Failed to" in log
+
+
+def child_limits(address_space=768):
+    resource.setrlimit(resource.RLIMIT_AS, (address_space * 1024 * 1024, address_space * 1024 * 1024))
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+
+
+def live_limits():
+    # GPU virtual reservations exceed resident use; the session cgroup bounds resident memory.
+    child_limits(8192)
+
+
+def live_request(path, line):
+    import socket
+    with socket.socket(socket.AF_UNIX) as connection:
+        connection.settimeout(3)
+        connection.connect(str(path))
+        connection.sendall(line.encode() + b"\n")
+        reply = b""
+        while not reply.endswith(b"\n") and len(reply) < 65536:
+            chunk = connection.recv(4096)
+            if not chunk:
+                break
+            reply += chunk
+    return json.loads(reply or b"{}")
+
+
+def live_arguments(value, config, identity, socket_path):
+    return [str(Path(config["shell_bin_dir"]) / "enzwall"), "run", str(LIVE_SCENES / value["scene"]),
+            "--output", platform.desktop_output(config), "--namespace", "enzui-live-wallpaper", "--smooth", value["motion"],
+            "--socket", str(socket_path),
+            *([] if value["pause_idle"] else ["--idle-timeout", "0"]),
+            "--hyprland", str(Path(config["xdg_runtime"]) / "hypr" / identity["instance"]), "--ready"] + (["--hide-clock"] if value["hide_clock"] else []) + (["--hide-date"] if value["hide_date"] else [])
+
+
+def run():
+    runtime = Path(os.environ["ENZUI_HYPR_RUNROOT"])
+    config = json.loads(platform.read_private(runtime / "launch.json"))
+    identity = platform.compositor(config)
+    if os.environ.get("WAYLAND_DISPLAY") != identity["display"] or platform.desktop_output(config).startswith("ENZREMOTE-"):
+        raise RuntimeError("Wallpaper requires its owned desktop output")
+    settings = Path(config["settings"])
+    status_path = settings.with_name("wallpaper-status.json")
+    stopping = False
+    current = None
+    requested = None
+    unreadable = False
+    parsed = None
+    last_status = None
+    snapshots, logs = {}, {}
+    # Use per-renderer control sockets to avoid collisions during replacement.
+    sockets = {}
+    shown_scene = {}
+    shown_idle = {}
+    serial = [0]
+
+    def stop(signum, frame):
+        nonlocal stopping
+        stopping = True
+
+    def retire(child):
+        if child is None:
+            return
+        if child.poll() is None:
+            child.terminate()
+            try:
+                child.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait()
+        child.stderr.close()
+        child.stdout.close()
+        logs.pop(child.pid, None)
+        shown_scene.pop(child.pid, None)
+        shown_idle.pop(child.pid, None)
+        live_socket = sockets.pop(child.pid, None)
+        if live_socket is not None:
+            live_socket.unlink(missing_ok=True)
+        image = snapshots.pop(child.pid, None)
+        if image is not None:
+            image.unlink(missing_ok=True)
+
+    def failed(child):
+        log = logs[child.pid]
+        try:
+            while len(log) <= 16384:
+                data = os.read(child.stderr.fileno(), 4096)
+                if not data:
+                    break
+                log.extend(data)
+        except BlockingIOError:
+            pass
+        return renderer_failed(log)
+
+    def status(request, error):
+        nonlocal last_status
+        published = {key: value for key, value in request.items() if key != "language"} if isinstance(request, dict) else request
+        value = {"request": published, "error": error, "pid": current.pid if current is not None else None,
+                 "language": request.get("language", "auto") if isinstance(request, dict) else "auto"}
+        live_socket = sockets.get(current.pid) if current is not None else None
+        if live_socket is not None:
+            value["socket"] = str(live_socket)
+        if value != last_status:
+            platform.publish(status_path, value)
+            last_status = value
+
+    def start(value):
+        identity_now = platform.compositor(config)
+        live = value["kind"] == "live"
+        if live and current is not None and current.poll() is None and current.pid in sockets:
+            # Reuse a live renderer for scene crossfades and motion-only changes.
+            try:
+                same = shown_scene.get(current.pid) == value["scene"]
+                # The idle timeout is fixed when a renderer starts.
+                if shown_idle.get(current.pid) != (value["pause_idle"],value["hide_clock"],value["hide_date"],value.get("language", "auto")):
+                    raise ValueError("idle pause changed")
+                if same or live_request(sockets[current.pid], "load " + str(LIVE_SCENES / value["scene"])).get("ok") is True:
+                    shown_scene[current.pid] = value["scene"]
+                    if live_request(sockets[current.pid], "smooth " + value["motion"]).get("ok") is True:
+                        return current
+            except (OSError, ValueError):
+                pass
+        image = image_snapshot(value["image"], settings, runtime / "wallpaper-images") if value["kind"] == "image" else None
+        animate = current is not None and current.poll() is None
+        if live:
+            serial[0] += 1
+            live_socket = runtime / f"enzwall-{serial[0]}.sock"
+            args = live_arguments(value, config, identity_now, live_socket)
+        else:
+            args = arguments(value, ROOT / "assets/wallpaper.png", Path(config["shell_bin_dir"]) / "enzui-wallpaper", image, animate)
+        try:
+            locale_env = dict(os.environ)
+            if value.get("language", "auto") != "auto":
+                locale_env["ENZUI_LOCALE"] = value["language"]
+            candidate = subprocess.Popen(args, env=locale_env, preexec_fn=live_limits if live else child_limits, stdin=subprocess.DEVNULL,
+                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except Exception:
+            if image is not None:
+                image.unlink(missing_ok=True)
+            raise
+        snapshots[candidate.pid] = image
+        if live:
+            sockets[candidate.pid] = live_socket
+            shown_scene[candidate.pid] = value["scene"]
+            shown_idle[candidate.pid] = (value["pause_idle"],value["hide_clock"],value["hide_date"],value.get("language", "auto"))
+        logs[candidate.pid] = bytearray()
+        os.set_blocking(candidate.stderr.fileno(), False)
+        os.set_blocking(candidate.stdout.fileno(), False)
+        until = time.monotonic() + 5
+        ready = False
+        try:
+            while not stopping and time.monotonic() < until and candidate.poll() is None:
+                platform.compositor(config)
+                if failed(candidate):
+                    raise RuntimeError("Wallpaper could not be decoded; the previous background is retained")
+                if not ready:
+                    try:
+                        response = os.read(candidate.stdout.fileno(), 64)
+                        if response and response != b"ready\n":
+                            raise RuntimeError("Wallpaper renderer sent an invalid presentation acknowledgement")
+                        ready = response == b"ready\n"
+                    except BlockingIOError:
+                        pass
+                layers = json.loads(platform.control(config, identity, "-j", "layers"))
+                levels = layers.get(platform.desktop_output(config), {}).get("levels", {})
+                mapped = any(layer.get("pid") == candidate.pid and layer.get("w", 0) > 0 and layer.get("h", 0) > 0 for group in levels.values() for layer in group)
+                if mapped and ready and not failed(candidate):
+                    return candidate
+                time.sleep(.025)
+        except Exception:
+            retire(candidate)
+            raise
+        retire(candidate)
+        raise RuntimeError("Wallpaper could not be displayed; the previous background is retained")
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    changed_at = time.monotonic()
+    try:
+        while not stopping and platform.live(identity["pid"], identity["start"]):
+            try:
+                try:
+                    info = settings.stat()
+                    seen = (info.st_ino, info.st_mtime_ns, info.st_size, info.st_mode)
+                except FileNotFoundError:
+                    seen = None
+                if seen == parsed and not unreadable and current is not None and current.poll() is None:
+                    if failed(current):
+                        status(requested, "Wallpaper rendering failed; choose the image again or retry")
+                    time.sleep(.1 if time.monotonic() - changed_at < 5 else .5)
+                    continue
+                changed_at = time.monotonic()
+                document = json.loads(platform.read_private(settings, 65536)) if seen is not None else {}
+                wanted = preferences(document.get("wallpaper", {}))
+                language = document.get("language", "auto")
+                if language not in ("auto", "es", "en-US"):
+                    raise ValueError("Invalid desktop language")
+                wanted["language"] = language
+                parsed = seen
+                if unreadable and wanted == requested and current is not None and current.poll() is None:
+                    status(wanted, None)
+                unreadable = False
+                if wanted != requested or current is None or current.poll() is not None:
+                    requested = wanted
+                    try:
+                        candidate = start(wanted)
+                        previous, current = current, candidate
+                        if previous is not candidate:
+                            retire(previous)
+                        status(wanted, None)
+                    except Exception as error:
+                        if current is None:
+                            current = start(preferences({}))
+                        status(wanted, str(error))
+                elif failed(current):
+                    status(wanted, "Wallpaper rendering failed; choose the image again or retry")
+            except (OSError, ValueError, RuntimeError):
+                if current is None:
+                    try:
+                        current = start(preferences({}))
+                    except Exception:
+                        pass
+                unreadable = True
+                status(None, "Cannot read wallpaper settings; the previous background is retained")
+            time.sleep(.1)
+    finally:
+        retire(current)
+
+
+if __name__ == "__main__":
+    try:
+        run()
+    except Exception:
+        print("Wallpaper worker stopped; inspect the owned desktop session", file=sys.stderr)
+        sys.exit(1)

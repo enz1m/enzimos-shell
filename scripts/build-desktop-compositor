@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+if [[ ${ENZUI_BUILD_CAPPED:-0} != 1 ]]; then exec "$ROOT/scripts/with-build-budget" "$0" "$@"; fi
+variant=${1:-desktop}
+[[ $# -le 1 ]] || { echo 'Expected one compositor variant.' >&2; exit 2; }
+hyprland=default
+aquamarine=default
+compositor=Hyprland
+control=hyprctl
+launcher_pidfd=false
+extra_cmake=()
+case $variant in
+    desktop) compositor=enz-hyprland; control=enz-hyprctl; launcher_pidfd=true ;;
+    desktop-unrenamed) hyprland=desktop-unrenamed; launcher_pidfd=true ;;
+    scoped-eis) hyprland=scoped-eis ;;
+    shared-desktop) hyprland=shared-desktop; extra_cmake=(-DENZREMOTE_SOURCE_DIR="$ROOT/compositor") ;;
+    remote-session) hyprland=desktop-unrenamed; aquamarine=headless-render-node; launcher_pidfd=true ;;
+    *) echo "Unknown compositor variant: $variant" >&2; exit 2 ;;
+esac
+BUILDROOT=${ENZUI_HYPR_BUILDROOT:?set ENZUI_HYPR_BUILDROOT to an absolute build directory}
+[[ "$BUILDROOT" = /* ]] || { echo 'ENZUI_HYPR_BUILDROOT must be absolute.' >&2; exit 1; }
+"$ROOT/scripts/setup-sources"
+PREFIX=$BUILDROOT/prefix
+SOURCE=$BUILDROOT/source
+AQUAMARINE_SOURCE=$BUILDROOT/aquamarine-source
+install -d -m 700 "$BUILDROOT" "$BUILDROOT/compiler-tmp"
+export TMPDIR=$BUILDROOT/compiler-tmp
+# Plain compilers: meson would wrap a found sccache, whose socket path under
+# this temporary directory is too long.
+export CC=cc CXX=c++
+export CMAKE_BUILD_PARALLEL_LEVEL=${CMAKE_BUILD_PARALLEL_LEVEL:-1}
+export PATH="$PREFIX/bin:$PATH"
+export LD_LIBRARY_PATH="$PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/share/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+export CMAKE_PREFIX_PATH="$PREFIX${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"
+exec 9>"$BUILDROOT/build.lock"
+flock -n 9 || { echo 'This compositor build root is already building.' >&2; exit 1; }
+if [[ -e "$BUILDROOT/build-revisions" && (! -f "$SOURCE/.git" || ! -f "$AQUAMARINE_SOURCE/.git") ]]; then
+    echo 'Choose a fresh directory for this compositor build.' >&2
+    exit 1
+fi
+revision=$("$ROOT/scripts/prepare-vendor-source" hyprland "$hyprland" "$SOURCE")
+aquamarine_revision=$("$ROOT/scripts/prepare-vendor-source" aquamarine "$aquamarine" "$AQUAMARINE_SOURCE")
+git -C "$SOURCE" submodule update --init --recursive
+stamp=$({
+    printf '%s\n' compositor-v3 "$variant" "$revision" "$aquamarine_revision"
+    for name in wayland-protocols hyprutils hyprgraphics hyprlang hyprcursor hyprwayland-scanner hyprwire; do
+        git -C "$ROOT/vendor/$name" rev-parse HEAD
+    done
+    if [[ $variant == shared-desktop ]]; then
+        git -C "$ROOT/vendor/json" rev-parse HEAD
+        (cd "$ROOT/compositor" && sha256sum -- *.hpp *.cpp)
+    fi
+} | sha256sum | cut -d ' ' -f1)
+BIN=$BUILDROOT/hyprland-current-build/$compositor
+CTL=$BUILDROOT/hyprland-current-build/hyprctl/$control
+record() {
+    python3 - "$1" "$BUILDROOT" "$revision" "$aquamarine_revision" "$variant" "$stamp" "$BIN" "$CTL" <<'PYTHON'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+mode, directory, revision, aquamarine, variant, fingerprint, binary, control = sys.argv[1:]
+
+def digest(path):
+    with open(path, 'rb') as source:
+        return hashlib.file_digest(source, 'sha256').hexdigest()
+
+receipt = {'complete': True, 'revision': revision, 'aquamarine_revision': aquamarine,
+           'variant': variant, 'fingerprint': fingerprint, 'binary_sha256': digest(binary),
+           'control_sha256': digest(control)}
+destination = Path(directory) / 'desktop-compositor.json'
+if mode == 'check':
+    if json.loads(destination.read_text()) != receipt:
+        raise SystemExit('Completed compositor build changed. Choose a fresh build directory.')
+    sys.exit(0)
+pending = destination.with_suffix('.pending')
+pending.write_text(json.dumps(receipt, indent=2) + '\n')
+pending.replace(destination)
+PYTHON
+}
+if [[ -x $BIN && -x $CTL && -s "$BUILDROOT/desktop-compositor.json" &&
+      -s "$BUILDROOT/build-revisions" && $(head -n 1 "$BUILDROOT/build-revisions") == "$stamp" ]]; then
+    record check
+    echo 'Pinned compositor already built.'; exit 0
+fi
+mode=()
+[[ -f "$BUILDROOT/wayland-protocols-build/build.ninja" ]] && mode=(--reconfigure)
+meson setup "$BUILDROOT/wayland-protocols-build" "$ROOT/vendor/wayland-protocols" \
+    --prefix "$PREFIX" --buildtype release --wrap-mode nodownload -Dtests=false "${mode[@]}"
+meson install -C "$BUILDROOT/wayland-protocols-build"
+component() {
+    local name=$1
+    shift
+    local source=$ROOT/vendor/$name build=$BUILDROOT/$name-build
+    if [[ "$name" == aquamarine ]]; then
+        source=$AQUAMARINE_SOURCE
+        build=$BUILDROOT/aquamarine-wayland-build
+    fi
+    cmake -S "$source" -B "$build" -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS_RELEASE='-O2 -DNDEBUG' \
+        -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+        -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_TESTING=OFF
+    cmake --build "$build" --target "$@"
+    cmake --install "$build"
+}
+component hyprwayland-scanner hyprwayland-scanner
+component hyprutils hyprutils
+component hyprlang hyprlang
+component hyprcursor hyprcursor hyprcursor-util
+component hyprgraphics hyprgraphics
+component aquamarine aquamarine
+component hyprwire hyprwire hyprwire-scanner
+cmake -S "$SOURCE" -B "$BUILDROOT/hyprland-current-build" -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS_RELEASE='-O2 -DNDEBUG' \
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_TESTING=OFF \
+    -DNO_HYPRPM=ON -DNO_UWSM=ON -DNO_RTKIT=ON "${extra_cmake[@]}"
+cmake --build "$BUILDROOT/hyprland-current-build" --target Hyprland hyprctl
+[[ -x $BIN && -x $CTL ]] || { echo 'The compositor or its control tool is missing.' >&2; exit 1; }
+record write
+{
+    printf '%s\n' "$stamp"
+    if [[ $launcher_pidfd == true ]]; then
+        printf 'privileged-launcher-child-pidfd-v2 %s\n' "$revision"
+    fi
+} > "$BUILDROOT/build-revisions.pending"
+mv -- "$BUILDROOT/build-revisions.pending" "$BUILDROOT/build-revisions"
+printf 'Built %s %s at %s\n' "$compositor" "$revision" "$BUILDROOT"

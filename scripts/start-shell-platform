@@ -1,0 +1,1119 @@
+#!/usr/bin/env python3
+import argparse
+import ctypes
+import fcntl
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import re
+import secrets
+import select
+import shutil
+import signal
+import socket
+import stat
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+from urllib.parse import unquote
+
+ROOT = Path(__file__).resolve().parent.parent
+OWNED_SHELL = None
+
+
+def private_directory(path):
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise RuntimeError("Platform directories must be private, owned and not symlinks")
+
+
+def private_file(path, create=False):
+    flags = os.O_RDWR if create else os.O_RDONLY
+    fd = os.open(path, flags | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK | (os.O_CREAT if create else 0), 0o600)
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        os.close(fd)
+        raise RuntimeError("Platform metadata must be a private, owned regular file")
+    return os.fdopen(fd, "r+b" if create else "rb")
+
+
+def read_private(path, limit=32768):
+    with private_file(path) as source:
+        data = source.read(limit + 1)
+    if len(data) > limit:
+        raise RuntimeError("Platform metadata exceeds its bound")
+    return data
+
+
+def publish(path, value):
+    data = json.dumps(value, separators=(",", ":")).encode()
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as out:
+            temporary = Path(out.name)
+            out.write(data)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def start_ticks(pid):
+    tail = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+    return int(tail[19])
+
+
+def peer(path, executable=True):
+    with socket.socket(socket.AF_UNIX) as connection:
+        connection.settimeout(2)
+        connection.connect(str(path))
+        pid, uid, _ = struct.unpack("3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+    if uid != os.getuid():
+        raise RuntimeError("Wayland peer is not owned by this user")
+    if not executable:
+        return {"pid": pid, "start": start_ticks(pid), "device": 0, "inode": 0}
+    info = os.stat(f"/proc/{pid}/exe")
+    return {"pid": pid, "start": start_ticks(pid), "device": info.st_dev, "inode": info.st_ino}
+
+
+def parent_peer(path):
+    """The parent compositor's identity. One started with file capabilities
+    (sway, some gnome-shell packages) hides its executable from its own user;
+    its PID and start time still identify it."""
+    try:
+        return peer(path)
+    except PermissionError:
+        return peer(path, executable=False)
+
+
+def member(pid, unit):
+    paths = [line[3:] for line in Path(f"/proc/{pid}/cgroup").read_text().splitlines() if line.startswith("0::")]
+    return len(paths) == 1 and paths[0].endswith("/" + unit + "/supervisor")
+
+
+def delegated_root(unit):
+    paths = [line[3:] for line in Path("/proc/self/cgroup").read_text().splitlines() if line.startswith("0::")]
+    if len(paths) != 1 or not paths[0].endswith("/" + unit + "/supervisor"):
+        raise RuntimeError("Managed startup requires its own delegated supervisor leaf")
+    root = (Path("/sys/fs/cgroup") / paths[0].lstrip("/")).parent
+    if root.stat().st_uid != os.getuid() or not (root / "cgroup.kill").is_file() or (root / "cgroup.procs").read_text().strip() or not {"cpu", "memory", "pids"}.issubset((root / "cgroup.controllers").read_text().split()):
+        raise RuntimeError("CPU, memory and process controllers must be privately delegated")
+    return root
+
+
+def private_bus(address, unit):
+    if not address.startswith("unix:") or ";" in address:
+        raise RuntimeError("Only the new private Unix session bus is supported")
+    fields = {}
+    for item in address[5:].split(","):
+        key, value = item.split("=", 1)
+        if key in fields:
+            raise RuntimeError("Ambiguous private bus address")
+        fields[key] = unquote(value)
+    if ("path" in fields) == ("abstract" in fields):
+        raise RuntimeError("Private session bus has no unique Unix endpoint")
+    endpoint = fields["path"] if "path" in fields else "\0" + fields["abstract"]
+    identity = peer(endpoint)
+    if not member(identity["pid"], unit):
+        raise RuntimeError("Session bus does not belong to this managed desktop")
+    return identity
+
+
+def user_bus(address, xdg):
+    # Installed session-bus ownership belongs to the user manager at the fixed runtime path.
+    if address != f"unix:path={xdg}/bus":
+        raise RuntimeError("An installed desktop uses the user's session bus at XDG_RUNTIME_DIR/bus")
+    # Identify the user-manager socket by path, UID and start time; its executable is not
+    # readable.
+    return peer(xdg / "bus", executable=False)
+
+
+def session_bus(config):
+    address = os.environ.get("DBUS_SESSION_BUS_ADDRESS", "")
+    if config.get("session_bus") == "user":
+        return address, user_bus(address, Path(config["xdg_runtime"]))
+    return address, private_bus(address, config["unit"])
+
+
+def live(pid, ticks):
+    try:
+        tail = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        return int(tail[19]) == ticks and tail[0] not in ("Z", "X")
+    except (FileNotFoundError, ProcessLookupError):
+        return False
+
+
+def dimensions(value):
+    if not re.fullmatch(r"[0-9]{3,4}x[0-9]{3,4}", value):
+        raise argparse.ArgumentTypeError("Use WIDTHxHEIGHT")
+    width, height = map(int, value.split("x"))
+    if min(width, height) < 240 or max(width, height) > 4096 or width * height > 4096 * 2160:
+        raise argparse.ArgumentTypeError("Output dimensions exceed the supported preview range")
+    return [width, height]
+
+
+def remote_id(value):
+    if not re.fullmatch(r"[a-z0-9]{1,16}", value):
+        raise argparse.ArgumentTypeError("1-16 lowercase letters or digits")
+    return value
+
+def profile_name(value):
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,31}", value):
+        raise argparse.ArgumentTypeError("Profile must be a lowercase name of at most 32 characters")
+    return value
+
+
+def command(arguments, env=None, timeout=10, pass_fds=()):
+    result = subprocess.run(arguments, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, pass_fds=pass_fds)
+    if result.returncode:
+        reason = next((line.strip() for line in (result.stdout + result.stderr).decode(errors="replace").splitlines() if line.strip()), "")
+        print("Platform child failed:", Path(arguments[0]).name, *(a for a in arguments[1:3] if len(a) < 40), "-", "".join(c for c in reason if c.isprintable())[:200], file=sys.stderr, flush=True)
+        raise RuntimeError("Platform child command failed; inspect the private startup log")
+    if len(result.stdout) > 2 * 1024 * 1024:
+        raise RuntimeError("Platform child response exceeds its bound")
+    return result.stdout.decode()
+
+
+def launch_shell(config, identity):
+    global OWNED_SHELL
+    if OWNED_SHELL is not None and OWNED_SHELL.poll() is None:
+        raise RuntimeError("This supervisor already owns a live shell")
+    runtime = Path(config["runtime"])
+    executable = Path(config["shell_bin_dir"]) / "enzui-shell"
+    env = dict(os.environ, WAYLAND_DISPLAY=identity["display"], HYPRLAND_INSTANCE_SIGNATURE=identity["instance"],
+               ENZUI_HYPR_CONTROL_BIN=str(control_binary(config)), ENZUI_DESKTOP_ROOT=str(ROOT),
+               MALLOC_ARENA_MAX="2", QT_QPA_PLATFORM="wayland", WINIT_UNIX_BACKEND="wayland")
+    prefix = Path(config["build"]) / "prefix"
+    env["PATH"] = str(prefix / "bin") + ":" + env.get("PATH", "/usr/bin:/bin")
+    env["LD_LIBRARY_PATH"] = str(prefix / "lib") + (":" + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else "")
+    if config.get("output") or config.get("installed"):
+        try:
+            size = logical_output_size(config, identity, desktop_output(config))
+            if size and 240 <= size[0] <= 16384:
+                env["ENZUI_SHELL_BAR_WIDTH"] = str(size[0])
+        except (OSError, RuntimeError, ValueError, OverflowError, KeyError, TypeError, subprocess.SubprocessError):
+            pass
+    env.pop("DISPLAY", None)
+    env.pop("ENZUI_SHELL_LAUNCHER_FD", None)
+    # Admission requires the direct supervisor/child relationship; detached wrappers lose
+    # provenance.
+    with private_file(runtime / "shell.log", create=True) as log:
+        log.seek(0, os.SEEK_END)
+        OWNED_SHELL = subprocess.Popen([str(executable)], env=env, stdin=subprocess.DEVNULL,
+                                       stdout=log, stderr=log, start_new_session=True)
+    pid = OWNED_SHELL.pid
+    try:
+        ticks = start_ticks(pid)
+        publish(runtime / "shell.pid", pid)
+        publish(runtime / "shell.pid.start", ticks)
+    except Exception:
+        OWNED_SHELL.terminate()
+        OWNED_SHELL.wait(timeout=5)
+        raise
+    return pid, ticks
+
+
+def compositor(config):
+    runtime = Path(config["runtime"])
+    pid = int(read_private(runtime / "hyprland.pid", 32))
+    ticks = int(read_private(runtime / "hyprland.pid.start", 32))
+    if not live(pid, ticks) or not member(pid, config["unit"]):
+        raise RuntimeError("Compositor process identity changed")
+    executable = compositor_binary(config["build"])
+    actual, expected = os.stat(f"/proc/{pid}/exe"), executable.stat()
+    if (actual.st_dev, actual.st_ino) != (expected.st_dev, expected.st_ino):
+        raise RuntimeError("Compositor executable does not match the selected stack")
+    instance = read_private(runtime / "instance", 200).decode().strip()
+    display = read_private(runtime / "wayland-display", 100).decode().strip()
+    if not re.fullmatch(r"[a-zA-Z0-9._-]{1,180}", instance) or not re.fullmatch(r"wayland-[0-9]+", display):
+        raise RuntimeError("Invalid compositor endpoint names")
+    xdg = Path(config["xdg_runtime"])
+    for endpoint in (xdg / display, xdg / "hypr" / instance / ".socket.sock"):
+        identity = peer(endpoint)
+        if identity["pid"] != pid or identity["start"] != ticks:
+            raise RuntimeError("Compositor socket does not belong to the selected process")
+    return {"pid": pid, "start": ticks, "instance": instance, "display": display}
+
+
+def control(config, identity, *arguments):
+    executable = str(control_path(config["build"]))
+    return command([executable, "-i", identity["instance"], *arguments])
+
+
+def prepare_standalone(config, identity):
+    """A remote session's only output: a headless canvas at the origin, on a
+    compositor that has no display output."""
+    output = config["output"]
+    width, height = config["headless"]
+    control(config, identity, "eval", f'hl.monitor({{output={json.dumps(output)},mode="{width}x{height}@60",position="0x0",scale=1}})')
+    control(config, identity, "output", "create", "headless", output)
+    deadline = time.monotonic() + 3
+    while True:
+        monitors = [m for m in json.loads(control(config, identity, "-j", "monitors")) if m["name"] != "FALLBACK"]
+        if [(m["name"], m["width"], m["height"], m["scale"], m["transform"], m["x"], m["y"]) for m in monitors] == [(output, width, height, 1, 0, 0, 0)]:
+            return {**identity, "standalone": True, "final": {"name": output, "width": width, "height": height}}
+        if time.monotonic() >= deadline:
+            if any(m["name"] == output and (m["width"], m["height"]) == (0, 0) for m in monitors):
+                raise RuntimeError("The render node cannot allocate the session's framebuffers; a remote login needs a GPU render node")
+            raise RuntimeError("Remote session canvas did not match its requested geometry")
+        time.sleep(.05)
+
+
+def prepare_headless(config, identity):
+    if config.get("standalone"):
+        return prepare_standalone(config, identity)
+    monitors = json.loads(control(config, identity, "-j", "monitors"))
+    if monitors == []:
+        return prepare_standalone(config, identity)
+    if len(monitors) != 1 or monitors[0]["name"] != "WAYLAND-1":
+        raise RuntimeError("Unexpected initial nested output")
+    parent = monitors[0]
+    values = [parent.get(key) for key in ("x", "y", "width", "height", "scale")]
+    if any(type(value) not in (int, float) or not math.isfinite(value) for value in values):
+        raise RuntimeError("Invalid initial nested output geometry")
+    x, y, parent_width, parent_height, scale = values
+    if not (-100000 <= x <= 100000 and -100000 <= y <= 100000 and 0 < parent_width <= 32768 and 0 < parent_height <= 32768 and .25 <= scale <= 8) or parent.get("transform") != 0:
+        raise RuntimeError("Unsupported initial nested output geometry")
+    temporary_x, temporary_y = math.ceil(x + parent_width / scale) + 16, math.floor(y)
+    output = config["output"]
+    width, height = config["headless"]
+    rule = f'hl.monitor({{output={json.dumps(output)},mode="{width}x{height}@60",position="{temporary_x}x{temporary_y}",scale=1}})'
+    control(config, identity, "eval", rule)
+    control(config, identity, "output", "create", "headless", output)
+    monitors = json.loads(control(config, identity, "-j", "monitors"))
+    target = [m for m in monitors if m["name"] == output]
+    parents = [m for m in monitors if m["name"] == "WAYLAND-1"]
+    if len(monitors) != 2 or len(parents) != 1 or len(target) != 1 or any(parents[0].get(key) != parent.get(key) for key in ("width", "height", "scale", "transform", "x", "y")) or any(target[0].get(key) != value for key, value in {"width": width, "height": height, "scale": 1, "transform": 0, "x": temporary_x, "y": temporary_y}.items()):
+        raise RuntimeError("Temporary headless output did not match its nonoverlapping rule")
+    control(config, identity, "output", "remove", "WAYLAND-1")
+    control(config, identity, "eval", f'hl.monitor({{output={json.dumps(output)},mode="{width}x{height}@60",position="0x0",scale=1}})')
+    deadline = time.monotonic() + 3
+    while True:
+        monitors = json.loads(control(config, identity, "-j", "monitors"))
+        if [(m["name"], m["width"], m["height"], m["scale"], m["transform"], m["x"], m["y"]) for m in monitors] == [(output, width, height, 1, 0, 0, 0)]:
+            keys = ("name", "width", "height", "scale", "transform", "x", "y")
+            return {**identity, "sampled_stages_only": True,
+                    "parent": {key: parent[key] for key in keys},
+                    "temporary": {key: target[0][key] for key in keys},
+                    "final": {key: monitors[0][key] for key in keys}}
+        if len(monitors) != 1 or monitors[0]["name"] != output or time.monotonic() >= deadline:
+            raise RuntimeError("Headless canvas did not match its requested geometry")
+        time.sleep(.05)
+
+
+def bind_activation_environment(config, identity):
+    runtime = Path(config["runtime"])
+    bus = read_private(runtime / "session-bus").decode()
+    saved = json.loads(read_private(runtime / "session-bus-peer.json"))
+    if session_bus(config) != (bus, saved):
+        raise RuntimeError("Activation requires this desktop's session bus")
+    if compositor(config) != identity:
+        raise RuntimeError("Compositor changed before activation binding")
+    values = {"WAYLAND_DISPLAY": identity["display"], "XDG_RUNTIME_DIR": config["xdg_runtime"],
+              "HYPRLAND_INSTANCE_SIGNATURE": identity["instance"], "ENZUI_DESKTOP_ROOT": str(ROOT),
+              "XDG_CURRENT_DESKTOP": "Hyprland", "XDG_SESSION_DESKTOP": "Hyprland", "XDG_SESSION_TYPE": "wayland",
+              "GDK_BACKEND": "wayland", "QT_QPA_PLATFORM": "wayland", "WINIT_UNIX_BACKEND": "wayland",
+              "DISPLAY": "", "GIO_USE_VFS": "local"}
+    if config.get("portal_data"):
+        values.update({"XDG_CURRENT_DESKTOP": "enzUI:Hyprland", "XDG_DATA_DIRS": preview_data_dirs(config["portal_data"])})
+    if config.get("installed"):
+        values.update({"XDG_CURRENT_DESKTOP": "enzUI:Hyprland", "XDG_SESSION_DESKTOP": "enzUI"})
+        # Publish the desktop environment for D-Bus-activated Settings.
+        values.update({"ENZUI_DESKTOP_SESSION": "installed", "ENZUI_PLUGIN_ISOLATION": "delegated", "ENZUI_ALLOW_SYSTEM_POWER": "1", "ENZUI_HYPR_CONTROL_BIN": str(control_binary(config)),
+                       "ENZUI_HYPR_RUNROOT": str(runtime), "ENZUI_SHELL_SETTINGS": config["settings"],
+                       "ENZUI_SHELL_BIN_DIR": config["shell_bin_dir"]})
+        values.pop("GIO_USE_VFS")
+        values.update({key: os.environ[key] for key in (*INPUT_METHOD_ENVIRONMENT, "XDG_SESSION_ID") if os.environ.get(key)})
+    systemd = ["--systemd"] if config.get("installed") else []
+    command(["/usr/bin/dbus-update-activation-environment", *systemd, *(f"{key}={value}" for key, value in sorted(values.items()))])
+    if session_bus(config) != (bus, saved) or compositor(config) != identity:
+        raise RuntimeError("Desktop authority changed during activation binding")
+    os.environ.update(values)
+    publish(runtime / "activation-environment.json", {**identity, "bus_peer": saved,
+            "systemd_environment_updated": False, "gui_services_observed": False})
+
+
+def launcher_pidfd_supported(build):
+    """Read launcher admission support from the build record or a legacy receipt."""
+    with (Path(build) / "build-revisions").open("rb") as source:
+        revisions = source.read(65537)
+    if len(revisions) > 65536:
+        raise RuntimeError("Prepared compositor provenance exceeds its bound")
+    if any(line.startswith(b"privileged-launcher-child-pidfd-v2 ") for line in revisions.splitlines()):
+        return True
+    try:
+        with (Path(build) / "desktop-compositor.json").open("rb") as source:
+            receipt = source.read(65537)
+    except FileNotFoundError:
+        return False
+    if len(receipt) > 65536:
+        raise RuntimeError("Prepared compositor receipt exceeds its bound")
+    receipt = json.loads(receipt)
+    return (isinstance(receipt, dict) and receipt.get("complete") is True
+            and isinstance(receipt.get("patches"), dict) and "privileged-clients.patch" in receipt["patches"])
+
+
+def start_compositor(config):
+    if launcher_pidfd_supported(config["build"]):
+        subreaper = ctypes.c_int()
+        if ctypes.CDLL(None, use_errno=True).prctl(37, ctypes.byref(subreaper), 0, 0, 0) != 0 or subreaper.value:
+            raise RuntimeError("Shell admission requires a supervisor that cannot adopt orphan processes")
+        launcher_fd = os.pidfd_open(os.getpid())
+        try:
+            env = dict(os.environ, ENZUI_SHELL_LAUNCHER_FD=str(launcher_fd))
+            command([str(ROOT / "enzui-hypr"), "start"], env=env, timeout=40, pass_fds=(launcher_fd,))
+        finally:
+            os.close(launcher_fd)
+    else:
+        command([str(ROOT / "enzui-hypr"), "start"], timeout=40)
+
+
+def prepare_desktop(config):
+    runtime = Path(config["runtime"])
+    start_compositor(config)
+    identity = compositor(config)
+    if json.loads(control(config, identity, "-j", "clients")):
+        raise RuntimeError("New compositor already has clients; output setup refused")
+    output = config["output"]
+    if config.get("installed"):
+        output = primary_output(config, identity)
+        publish(runtime / "output.json", {"output": output})
+    if config["headless"]:
+        publish(runtime / "headless-bootstrap.json", prepare_headless(config, identity))
+    bind_activation_environment(config, identity)
+    command([str(ROOT / "enzui-hypr"), "app", "wallpaper", "--", str(ROOT / "scripts/run-wallpaper")])
+    binaries = Path(config.get("shell_bin_dir", str(ROOT / "target/debug")))
+    if config.get("installed"):
+        # Enrollment may activate the broker on a first login; put the wallpaper up first.
+        enroll_components(Path(config["profile"]).parent)
+        command([str(ROOT / "enzui-hypr"), "app", "idle-inhibit", "--", str(binaries / "enzui-idle-inhibit")])
+    launch_shell(config, identity)
+    shell = int(read_private(runtime / "shell.pid", 32))
+    ticks = int(read_private(runtime / "shell.pid.start", 32))
+    # A first installed login can spend longer probing a graphics adapter.
+    startup_deadline = time.monotonic() + (30 if config.get("installed") else 10)
+    while time.monotonic() < startup_deadline:
+        if not live(shell, ticks) or not member(shell, config["unit"]):
+            raise RuntimeError("Shell exited during startup")
+        actual, expected = os.stat(f"/proc/{shell}/exe"), (binaries / "enzui-shell").stat()
+        clients = json.loads(control(config, identity, "-j", "clients"))
+        if (actual.st_dev, actual.st_ino) == (expected.st_dev, expected.st_ino) and any(c["pid"] == shell and c["class"] == "dev.enzui.Desktop" for c in clients):
+            break
+        time.sleep(.1)
+    else:
+        raise RuntimeError("Shell startup is incomplete; session retained for inspection")
+    for _ in range(100):
+        if not live(shell, ticks) or not member(shell, config["unit"]):
+            raise RuntimeError("Shell exited before its desktop frame was ready")
+        if frame_strips_ready(config, identity, output):
+            ready = {**identity, "shell_pid": shell, "shell_start": ticks, "unit": config["unit"], "runtime": config["runtime"], "settings": config["settings"], "output": output, "xdg_runtime": config["xdg_runtime"],
+                     "cgroup": next((line[3:] for line in Path(f"/proc/{identity['pid']}/cgroup").read_text().splitlines() if line.startswith("0::")), "")}
+            if config.get("remote_session"):
+                ready.update({"remote_session": config["remote_session"], "render_node": config["render_node"]})
+            publish(runtime / "ready.json", ready)
+            if config.get("installed"):
+                # Start generated XDG autostart units only after the desktop is ready.
+                subprocess.run(["systemctl", "--user", "start", "--no-block", "xdg-desktop-autostart.target"], capture_output=True, timeout=10)
+            return identity
+        time.sleep(.1)
+    raise RuntimeError("Desktop frame is incomplete; session is not ready")
+
+
+def desktop_output(config):
+    # Preview outputs are fixed at launch; installed outputs require compositor discovery.
+    if config.get("output"):
+        return config["output"]
+    return json.loads(read_private(Path(config["runtime"]) / "output.json"))["output"]
+
+
+def primary_output(config, identity):
+    # Match Compositor::desktop_output: top-left physical output, excluding ENZREMOTE loans.
+    monitors = [m for m in json.loads(control(config, identity, "-j", "monitors")) if not str(m.get("name", "")).startswith("ENZREMOTE-")]
+    if not monitors:
+        raise RuntimeError("No display output is connected")
+    chosen = min(monitors, key=lambda m: (m.get("y", 0), m.get("x", 0), m.get("id", 0)))
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", str(chosen["name"])):
+        raise RuntimeError("Invalid output name")
+    return chosen["name"]
+
+
+def logical_output_size(config, identity, output_name):
+    monitors = json.loads(control(config, identity, "-j", "monitors"))
+    output = next((m for m in monitors if m["name"] == output_name), None)
+    if output is None or output["scale"] <= 0:
+        return None
+    return round(output["width"] / output["scale"]), round(output["height"] / output["scale"])
+
+
+def frame_strips_ready(config, identity, output_name):
+    size = logical_output_size(config, identity, output_name)
+    if size is None:
+        return False
+    width, height = size
+    expected = {(0, 0, width, 116), (0, height - 116, width, 116),
+                (0, 0, 64, height), (width - 64, 0, 64, height)}
+    if len(expected) != 4 or width <= 128 or height <= 232:
+        return False
+    layers = json.loads(control(config, identity, "-j", "layers"))
+    strips = [layer for layer in layers.get(output_name, {}).get("levels", {}).get("2", [])
+              if layer.get("namespace") == "enzui-display-frame"]
+    if len(strips) != 4:
+        return False
+    executable = Path(config["shell_bin_dir"]) / "enzui-desktop-frame"
+    expected_exe = executable.stat()
+    for layer in strips:
+        pid = layer.get("pid")
+        if not isinstance(pid, int):
+            return False
+        try:
+            if not live(pid, start_ticks(pid)) or not member(pid, config["unit"]):
+                return False
+            actual = os.stat(f"/proc/{pid}/exe")
+        except (FileNotFoundError, ProcessLookupError):
+            return False
+        if (actual.st_dev, actual.st_ino) != (expected_exe.st_dev, expected_exe.st_ino):
+            return False
+    return {(layer["x"], layer["y"], layer["w"], layer["h"]) for layer in strips} == expected
+
+
+SYSTEM_KEYBOARD_LUA = b'''
+do
+    local file=io.open("/etc/X11/xorg.conf.d/00-keyboard.conf","r")
+    if file then
+        local text=file:read(65536) or ""
+        file:close()
+        local function option(name) return text:match('Option%s+"'..name..'"%s+"([^"]*)"') end
+        local input={}
+        local layout,variant,options=option("XkbLayout"),option("XkbVariant"),option("XkbOptions")
+        if layout and layout:match("^[a-z0-9_,]+$") then input.kb_layout=layout end
+        if input.kb_layout and variant and variant:match("^[a-z0-9_,-]*$") and variant~="" then input.kb_variant=variant end
+        if options and options:match("^[a-z0-9:_,-]*$") and options~="" then input.kb_options=options end
+        if next(input) then hl.config({ input=input }) end
+    end
+end
+'''
+
+
+def compositor_state_homes(environ=None):
+    """ENZUI_HYPR_DATA_HOME and ENZUI_HYPR_CACHE_HOME under the user's data
+    and cache homes, created private. A directory that cannot be made is left
+    out; the compositor then uses Hyprland's defaults."""
+    environ = os.environ if environ is None else environ
+    home = Path(environ.get("HOME", str(Path.home())))
+    def base(name, default):
+        value = environ.get(name, "")
+        return Path(value) if value.startswith("/") else home / default
+    homes = {}
+    for key, xdg, default in (("ENZUI_HYPR_DATA_HOME", "XDG_DATA_HOME", ".local/share"),
+                              ("ENZUI_HYPR_CACHE_HOME", "XDG_CACHE_HOME", ".cache")):
+        directory = base(xdg, default) / "enzui/compositor"
+        try:
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError:
+            continue
+        homes[key] = str(directory)
+    return homes
+
+
+def runtime_config(source, headless, installed=False):
+    content = source.read_bytes()
+    if installed and source.name == "hyprland.lua":
+        # Start at scale 1; pixel-only output policy and saved settings select the final scale.
+        content += b'\nhl.monitor({ output = "", mode = "preferred", position = "auto", scale = 1, reserved = { top = 36 } })\n'
+        # Apply system keyboard settings before the first frame; account overrides follow shell
+        # startup.
+        content += SYSTEM_KEYBOARD_LUA
+    if headless and source.name == "hyprland.lua":
+        content += (b'\nhl.device({name="wl_keyboard",enabled=false})\n'
+                    b'hl.device({name="wl_pointer",enabled=false})\n')
+    return content
+
+
+def inner(path, digest):
+    os.umask(0o077)
+    data = read_private(Path(path))
+    if hashlib.sha256(data).hexdigest() != digest:
+        raise RuntimeError("Launch configuration changed")
+    config = json.loads(data)
+    if not re.fullmatch(r"enzui-platform-[a-z0-9-]{1,32}-[0-9a-f]{16}\.service", config["unit"]) or not member(os.getpid(), config["unit"]):
+        raise RuntimeError("Managed startup requires its own delegated supervisor leaf")
+    delegated_root(config["unit"])
+    profile = Path(config["profile"])
+    private_directory(profile)
+    with private_file(profile / "session.lock", create=True) as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError("This profile is already in use; no existing session was changed") from error
+        if not config.get("installed") and config.get("parent_socket") and parent_peer(Path(config["parent_socket"])) != config["parent_peer"]:
+            raise RuntimeError("Parent Wayland process identity changed")
+        runtime = Path(config["runtime"])
+        private_directory(runtime / "config")
+        for source in (ROOT / "config").glob("*.lua"):
+            destination = runtime / "config" / source.name
+            with destination.open("xb") as out:
+                out.write(runtime_config(source, bool(config.get("headless")), bool(config.get("installed"))))
+        bus, bus_identity = session_bus(config)
+        with (runtime / "session-bus").open("xb") as out:
+            out.write(bus.encode())
+        publish(runtime / "session-bus-peer.json", bus_identity)
+        publish(profile / "active.json", {"unit": config["unit"], "runtime": config["runtime"], "supervisor": os.getpid(), "start": start_ticks(os.getpid())})
+        os.environ.update(ENZUI_SHELL_LAUNCHER_PID=str(os.getpid()), ENZUI_SHELL_LAUNCHER_START=str(start_ticks(os.getpid())))
+        try:
+            identity = prepare_desktop(config)
+        except Exception as error:
+            retain = not config.get("exit_with_shell", False)
+            publish(runtime / "failed.json", {"message": "Startup failed; inspect private startup, compositor and shell logs.", "retain_compositor": retain,
+                                              "error": "".join(c for c in str(error) if c.isprintable())[:300]})
+            if not retain:
+                raise
+            identity = compositor(config)
+        supervise(config, identity)
+
+
+def supervise(config, identity):
+    runtime = Path(config["runtime"])
+    if config.get("installed"):
+        return supervise_installed(config, identity)
+    shell = json.loads(read_private(runtime / "ready.json")) if (runtime / "ready.json").exists() else None
+    restarts = []
+    restart_paused = False
+    while live(identity["pid"], identity["start"]):
+        if OWNED_SHELL is not None:
+            OWNED_SHELL.poll()
+        if config.get("exit_with_shell", False) and shell and not live(shell["shell_pid"], shell["shell_start"]):
+            publish(runtime / "ended.json", {"reason": "shell-exited", "whole_session_cleanup": True})
+            return
+        if not config.get("exit_with_shell", False) and shell and not restart_paused and OWNED_SHELL is not None and OWNED_SHELL.returncode is not None:
+            now = time.monotonic()
+            restarts = [at for at in restarts if now - at < 60] + [now]
+            if len(restarts) > 3:
+                restart_paused = True
+                publish(runtime / "failed.json", {"message": "Shell restart paused after repeated failures; compositor and apps retained.", "retain_compositor": True})
+            else:
+                time.sleep(1)
+                try:
+                    pid, ticks = launch_shell(config, identity)
+                    shell = {**shell, "shell_pid": pid, "shell_start": ticks}
+                    publish(runtime / "ready.json", shell)
+                except (OSError, RuntimeError, subprocess.TimeoutExpired):
+                    publish(runtime / "failed.json", {"message": "Shell restart did not complete; compositor and apps retained.", "retain_compositor": True})
+        time.sleep(.5)
+
+
+def supervise_installed(config, identity):
+    # Compositor exit ends the login; shell crashes restart with bounded retries while retaining
+    # apps.
+    runtime = Path(config["runtime"])
+    binaries = Path(config["shell_bin_dir"])
+    restarts = []
+    while live(identity["pid"], identity["start"]):
+        if OWNED_SHELL is not None:
+            OWNED_SHELL.poll()
+        ready = json.loads(read_private(runtime / "ready.json"))
+        if not live(ready["shell_pid"], ready["shell_start"]):
+            now = time.monotonic()
+            # Output-change markers request relocation without consuming the crash retry budget.
+            moved = runtime / "outputs-changed"
+            if moved.exists():
+                moved.unlink()
+                try:
+                    publish(runtime / "output.json", {"output": primary_output(config, identity)})
+                except RuntimeError:
+                    pass
+            else:
+                restarts = [at for at in restarts if now - at < 60] + [now]
+            if len(restarts) > 3:
+                publish(runtime / "ended.json", {"reason": "shell-keeps-exiting"})
+                command([str(control_binary(config)), "-i", identity["instance"], "dispatch", "hl.dsp.exit()"])
+                return
+            time.sleep(1)
+            launch_shell(config, identity)
+            shell = int(read_private(runtime / "shell.pid", 32))
+            ticks = int(read_private(runtime / "shell.pid.start", 32))
+            publish(runtime / "ready.json", {**ready, "shell_pid": shell, "shell_start": ticks})
+        time.sleep(.5)
+    publish(runtime / "ended.json", {"reason": "compositor-exited"})
+
+
+def compositor_binary(build):
+    """enz-hyprland in a build root; Hyprland in roots built before the rename."""
+    renamed = Path(build) / "hyprland-current-build/enz-hyprland"
+    return renamed if renamed.exists() else Path(build) / "hyprland-current-build/Hyprland"
+
+
+def control_path(build):
+    renamed = Path(build) / "hyprland-current-build/hyprctl/enz-hyprctl"
+    return renamed if renamed.exists() else Path(build) / "hyprland-current-build/hyprctl/hyprctl"
+
+
+def control_binary(config):
+    return control_path(config["build"])
+
+
+def privileged_clients(binaries, dev_tools=None):
+    """The compositor's capture and virtual-input admission (a pinned root
+    without it ignores these): the shell this launcher starts, the portals
+    that ask before sharing (the system's for screenshots, with the grim and
+    hyprpicker it starts itself; enzUI's for screen sharing and, after its
+    own dialog, remote control), and for disposable dev previews only, tools
+    named explicitly."""
+    remote = str((binaries / "xdg-desktop-portal-enzui-remote").resolve())
+    values = {"ENZUI_PRIVILEGED_CLIENTS": "enforce", "ENZUI_SHELL_EXE": str((binaries / "enzui-shell").resolve()),
+              "ENZUI_PORTAL_EXES": f"/usr/lib/xdg-desktop-portal-hyprland:{remote}",
+              "ENZUI_PORTAL_INPUT_EXES": remote,
+              "ENZUI_PORTAL_HELPER_EXES": "/usr/bin/grim:/usr/bin/hyprpicker"}
+    if dev_tools:
+        values["ENZUI_DEV_PRIVILEGED_EXES"] = dev_tools
+    return values
+
+def portal_registration(runtime, binaries):
+    """A preview's own registration of the enzUI portal backend (file
+    chooser, Access, Settings, Background) for its private session bus: the
+    portal file, the routing for XDG_CURRENT_DESKTOP=enzUI and a D-Bus
+    service that starts this preview's enzui-portal. Returns the data
+    directory to put first on XDG_DATA_DIRS, or None without the binary."""
+    portal = (binaries / "enzui-portal").resolve()
+    if not portal.is_file() or not os.access(portal, os.X_OK):
+        return None
+    data = runtime / "portal-data"
+    (data / "xdg-desktop-portal/portals").mkdir(parents=True, mode=0o700)
+    (data / "dbus-1/services").mkdir(parents=True, mode=0o700)
+    (data / "xdg-desktop-portal/portals/enzui.portal").write_bytes((ROOT / "config/portal/enzui.portal").read_bytes())
+    (data / "xdg-desktop-portal/enzui-portals.conf").write_bytes((ROOT / "config/portal/enzui-portals.conf").read_bytes())
+    (data / "dbus-1/services/org.freedesktop.impl.portal.desktop.enzui.service").write_text(
+        f"[D-BUS Service]\nName=org.freedesktop.impl.portal.desktop.enzui\nExec={portal}\n")
+    return data
+
+def preview_data_dirs(portal_data):
+    # Keep preview portals first and include exported Flatpak app/icon directories.
+    dirs = [str(portal_data), "/usr/local/share", "/usr/share"]
+    dirs += [d for d in ("/var/lib/flatpak/exports/share",) if Path(d).is_dir()]
+    return ":".join(dirs)
+
+def permissions_worker(value):
+    path = Path(value)
+    if not path.is_absolute() or not path.is_file() or not os.access(path, os.X_OK):
+        raise argparse.ArgumentTypeError("choose an absolute path to an executable worker")
+    return str(path.resolve())
+
+
+def dev_tool_list(value):
+    paths = value.split(":")
+    if not paths or len(paths) > 8 or any(not p.startswith("/") or not Path(p).is_file() or any(c.isspace() for c in p) for p in paths):
+        raise argparse.ArgumentTypeError("absolute paths of existing programs, separated by ':'")
+    return ":".join(str(Path(p).resolve()) for p in paths)
+
+SESSION_ENVIRONMENT = ("HOME", "USER", "LOGNAME", "SHELL", "PATH", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_MESSAGES",
+                       "LC_NUMERIC", "LC_TIME", "LC_COLLATE", "LC_MONETARY", "LC_PAPER", "LC_NAME", "LC_ADDRESS",
+                       "LC_TELEPHONE", "LC_MEASUREMENT", "LC_IDENTIFICATION", "XDG_SESSION_ID", "XDG_SEAT", "XDG_VTNR",
+                       "XDG_SESSION_CLASS", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
+                       "XDG_CONFIG_DIRS", "XDG_DATA_DIRS", "TZ", "MAIL", "ENZUI_TERMINAL",
+                       "XMODIFIERS", "QT_IM_MODULE", "SDL_IM_MODULE", "GTK_IM_MODULE")
+INPUT_METHOD_ENVIRONMENT = ("XMODIFIERS", "QT_IM_MODULE", "SDL_IM_MODULE", "GTK_IM_MODULE")
+# The enzimOS unit, and the transient one Settings starts fcitx5 in elsewhere.
+INPUT_METHOD_UNITS = ("enzimos-input-method.service", "enzui-input-method.service")
+
+
+def installed_layout():
+    # Installed binary paths come from the exported manifest, never inherited environment
+    # overrides.
+    manifest = json.loads((ROOT / "installed.json").read_text())
+    build, binaries = Path(manifest["compositor"]), Path(manifest["bin"])
+    if not build.is_absolute() or not binaries.is_absolute():
+        raise RuntimeError("Installed component paths must be absolute")
+    return build, binaries
+
+
+def installed_terminal():
+    # The login's explicit ENZUI_TERMINAL takes precedence over the exported app.
+    apps = json.loads((ROOT / "installed.json").read_text()).get("apps")
+    terminal = Path(apps) / "terminal-emulator" if apps else None
+    if terminal and terminal.is_absolute() and terminal.is_file() and os.access(terminal, os.X_OK):
+        return str(terminal)
+    return None
+
+
+def enroll(config_home, kind, identity, name, folder):
+    """Gives one component its own MCP Center identity, once per account.
+
+    Enrolled the first time the account logs in with the broker installed, so
+    no identity is baked into an image or shared. An existing credential file
+    is never replaced: a revocation in Settings stays revoked. Failure only
+    leaves the component unregistered."""
+    center = shutil.which("enzui-center", path="/usr/bin:/usr/local/bin")
+    if center is None:
+        return
+    directory = config_home / "enzui" / folder
+    target = directory / f"{identity}.credential.json"
+    try:
+        if target.exists() or target.is_symlink():
+            return
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        info = directory.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            return
+        subprocess.run([center, "enroll", kind, "--id", identity, "--name", name, "--output", str(target)],
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def enroll_components(config_home):
+    # Calendar reads use the enrolled desktop agent and its broker permission.
+    enroll(config_home, "app", "dev.enzui.Settings", "Settings", "apps")
+    enroll(config_home, "app", "io.github.enzui.Calendar", "Calendar", "apps")
+    enroll(config_home, "app", "io.github.enzui.Files", "Files", "apps")
+    enroll(config_home, "agent", "dev.enzui.Desktop", "Desktop clock", "agents")
+    start_session_target()
+
+
+SESSION_TARGET = "enzui-session.target"
+
+
+def start_session_target():
+    """Starts enzui-session.target, which brings up the user services that
+    belong to enzUI alone (MCP Center, on-device AI). They are PartOf it, so
+    `stop_session_target` ends them with the session and another desktop of
+    the same account never runs them."""
+    try:
+        subprocess.run(["systemctl", "--user", "start", "--no-block", SESSION_TARGET], capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def stop_session_target():
+    try:
+        subprocess.run(["systemctl", "--user", "stop", SESSION_TARGET], capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+def installed_waiter(unit):
+    """A sleep for wait_installed_unit that wakes early when the unit's main
+    process exits or a signal arrives, and the interval it can afford while
+    the unit is settled: without either, the waiter polled the user manager
+    twice a second for the whole login."""
+    signal_read, signal_write = os.pipe()
+    os.set_blocking(signal_read, False)
+    os.set_blocking(signal_write, False)
+    signal.set_wakeup_fd(signal_write)
+    process = None
+    try:
+        main = subprocess.run(["systemctl", "--user", "show", unit, "-p", "MainPID", "--value"], capture_output=True, text=True, timeout=2).stdout.strip()
+        if main.isdigit() and int(main) > 0:
+            process = os.pidfd_open(int(main))
+    except (OSError, subprocess.TimeoutExpired, AttributeError):
+        process = None
+
+    def wait(seconds):
+        watched = [signal_read] + ([process] if process is not None else [])
+        select.select(watched, [], [], seconds)
+        try:
+            while os.read(signal_read, 64):
+                pass
+        except BlockingIOError:
+            pass
+
+    return wait, (30 if process is not None else 2)
+
+
+def wait_installed_unit(unit, stopping, query=subprocess.run, clock=time.monotonic, sleep=time.sleep, settled=.5):
+    """Returns when the delegated desktop unit has ended or a stop was
+    requested; raises when the user manager stays unreachable for 10 s.
+    While the unit is active it is checked every `settled` seconds."""
+    unavailable_since = None
+    while not stopping:
+        try:
+            result = query(["systemctl", "--user", "show", unit, "-p", "ActiveState", "--value"], capture_output=True, text=True, timeout=2)
+            state = result.stdout.strip() if result.returncode == 0 else None
+        except (OSError, subprocess.TimeoutExpired):
+            state = None
+        if state in ("inactive", "failed"):
+            return
+        if state in ("active", "activating", "deactivating", "reloading", "refreshing"):
+            unavailable_since = None
+            if state == "active":
+                sleep(settled)
+                continue
+        else:
+            # User-manager reexec can briefly close the bus without ending the login.
+            now = clock()
+            if unavailable_since is None:
+                unavailable_since = now
+            elif now - unavailable_since >= 10:
+                raise RuntimeError("User manager unavailable while supervising installed desktop")
+        sleep(.5)
+
+def installed(args):
+    """The desktop for a real login, started from the greeter's session entry.
+
+    Runs the same managed desktop as the preview, in its own delegated user
+    unit, on the machine's outputs and the user's session bus; this process
+    stays in the login session until the desktop ends and then returns, so
+    greetd shows the greeter again."""
+    os.umask(0o077)
+    if os.environ.get("WAYLAND_DISPLAY"):
+        raise RuntimeError("Already inside a Wayland desktop; enzui-session starts a login's own desktop")
+    if not os.environ.get("XDG_SESSION_ID"):
+        raise RuntimeError("enzui-session must run in a login session")
+    xdg = Path(os.environ["XDG_RUNTIME_DIR"])
+    if not xdg.is_absolute():
+        raise RuntimeError("XDG_RUNTIME_DIR must be absolute")
+    private_directory(xdg)
+    address = os.environ.get("DBUS_SESSION_BUS_ADDRESS") or f"unix:path={xdg}/bus"
+    os.environ["DBUS_SESSION_BUS_ADDRESS"] = address
+    user_bus(address, xdg)
+    build, binaries = installed_layout()
+    for item in [compositor_binary(build), control_path(build), binaries / "enzui-shell", binaries / "enzui-settings", binaries / "enzui-shell-command", binaries / "enzui-desktop-frame", binaries / "enzui-wallpaper", binaries / "enzui-idle-inhibit", Path("/usr/bin/bwrap"), Path("/usr/bin/dbus-update-activation-environment")]:
+        if not item.is_file() or not os.access(item, os.X_OK):
+            raise RuntimeError(f"Installed desktop is incomplete ({item})")
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+    profile = config_home / "enzui-shell"
+    private_directory(profile)
+    lock = private_file(profile / "session.lock", create=True)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        raise RuntimeError("This account already has an enzUI desktop running") from error
+    lock.close()
+    nonce = secrets.token_hex(8)
+    runtime_parent = xdg / "enzui-shell-platform"
+    private_directory(runtime_parent)
+    runtime = runtime_parent / f"desktop-{nonce}"
+    runtime.mkdir(mode=0o700)
+    unit = f"enzui-platform-desktop-{nonce}.service"
+    config = {"unit": unit, "profile": str(profile), "runtime": str(runtime), "settings": str(profile / "settings.json"),
+              "build": str(build), "xdg_runtime": str(xdg), "installed": True, "session_bus": "user", "headless": False,
+              "output": None, "wallpaper_version": 1, "shell_bin_dir": str(binaries), "exit_with_shell": False}
+    path = runtime / "launch.json"
+    publish(path, config)
+    digest = hashlib.sha256(read_private(path)).hexdigest()
+    clean = {key: os.environ[key] for key in SESSION_ENVIRONMENT if key in os.environ}
+    # Preserve enzUI:Hyprland for consistent portal and app desktop identification.
+    clean.update({"XDG_RUNTIME_DIR": str(xdg), "XDG_SESSION_TYPE": "wayland", "DBUS_SESSION_BUS_ADDRESS": address,
+                  "XDG_CURRENT_DESKTOP": "enzUI:Hyprland", "XDG_SESSION_DESKTOP": "enzUI",
+                  "ENZUI_DESKTOP_SESSION": "installed", "ENZUI_PLUGIN_ISOLATION": "delegated", "ENZUI_ALLOW_SYSTEM_POWER": "1",
+                  "ENZUI_HYPR_RUNROOT": str(runtime), "ENZUI_HYPR_BUILDROOT": str(build), "ENZUI_HYPR_CONFIG": str(runtime / "config/hyprland.lua"),
+                  "ENZUI_SHELL_SETTINGS": config["settings"], "ENZUI_SHELL_BIN_DIR": str(binaries), "ENZUI_DESKTOP_ROOT": str(ROOT),
+                  "GDK_BACKEND": "wayland", **privileged_clients(binaries)})
+    if (build / "prefix/lib").is_dir():
+        clean["LD_LIBRARY_PATH"] = str(build / "prefix/lib")
+    # Keep enzUI state separate from other Hyprland sessions.
+    clean.update(compositor_state_homes())
+    if not clean.get("ENZUI_TERMINAL") and installed_terminal():
+        clean["ENZUI_TERMINAL"] = installed_terminal()
+    options = ["systemd-run", "--user", "--collect", "--unit=" + unit, "-p", "Delegate=yes", "-p", "DelegateSubgroup=supervisor", "-p", "LimitCORE=0",
+               "-p", "StandardOutput=append:" + str(runtime / "startup.log"), "-p", "StandardError=append:" + str(runtime / "startup.log"),
+               "--working-directory=" + str(Path.home()), "-p", "KillMode=control-group", "-p", "SendSIGKILL=yes", "-p", "TimeoutStopSec=10s", "-p", "Restart=no",
+               "/usr/bin/env", "-i", *(f"{key}={value}" for key, value in clean.items()), sys.executable, str(Path(__file__).resolve()), "--inner", str(path), digest]
+    command(options)
+    stopping = []
+    def stop(*_):
+        stopping.append(True)
+    for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(signum, stop)
+    try:
+        wait, settled = installed_waiter(unit)
+        wait_installed_unit(unit, stopping, sleep=wait, settled=settled)
+    finally:
+        subprocess.run(["systemctl", "--user", "stop", unit], capture_output=True)
+        subprocess.run(["systemctl", "--user", "stop", *INPUT_METHOD_UNITS], capture_output=True)
+        if config.get("installed"):
+            stop_session_target()
+    ended = runtime / "ended.json"
+    compositor_exited = ended.exists() and json.loads(read_private(ended)).get("reason") == "compositor-exited"
+    started = (runtime / "ready.json").exists()
+    # Retain only the last log after retiring display-specific descriptors.
+    state = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "enzui"
+    state.mkdir(mode=0o700, parents=True, exist_ok=True)
+    log = state / "last-desktop.log"
+    try:
+        shutil.copyfile(runtime / "startup.log", log)
+    except FileNotFoundError:
+        pass
+    shutil.rmtree(runtime, ignore_errors=True)
+    if not compositor_exited and not started:
+        raise RuntimeError("The desktop did not start; see " + str(log))
+
+
+def retire_previous(profile, xdg):
+    """A preview leaves its private runtime directories for inspection; the
+    profile's next start removes them, keeping the startup log. Called with the
+    profile's lock held, so that session has ended."""
+    try:
+        active = json.loads(read_private(profile / "active.json"))
+    except (OSError, RuntimeError, ValueError):
+        return
+    runtime = Path(str(active.get("runtime", "")))
+    nonce = runtime.name.removeprefix(profile.name + "-")
+    if runtime.parent != xdg / "enzui-shell-platform" or not re.fullmatch(r"[0-9a-f]{16}", nonce):
+        return
+    log = runtime / "startup.log"
+    if log.is_file() and not log.is_symlink():
+        shutil.copyfile(log, profile / "last-startup.log")
+    shutil.rmtree(runtime, ignore_errors=True)
+    shutil.rmtree(xdg / ("e" + nonce[:8]), ignore_errors=True)
+
+
+def start(args):
+    remote = getattr(args, "remote_session", None)
+    if remote:
+        if not args.headless:
+            raise RuntimeError("A remote session needs --headless WIDTHxHEIGHT")
+        if args.profile:
+            raise RuntimeError("A remote session's profile is remote-ID")
+        if getattr(args, "dev_capture_tools", None):
+            raise RuntimeError("Capture tools are a preview QA option, never part of a login")
+        args.profile = "remote-" + remote
+    elif not args.experimental:
+        raise RuntimeError("This unfinished platform requires explicit --experimental opt-in")
+    elif not args.profile:
+        raise RuntimeError("Choose a --profile")
+    os.umask(0o077)
+    xdg = Path(os.environ["XDG_RUNTIME_DIR"])
+    if not xdg.is_absolute():
+        raise RuntimeError("XDG_RUNTIME_DIR must be absolute")
+    private_directory(xdg)
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+    if not config_home.is_absolute():
+        raise RuntimeError("XDG_CONFIG_HOME must be absolute")
+    profile = config_home / "enzui-shell/profiles" / args.profile
+    private_directory(profile)
+    with private_file(profile / "session.lock", create=True) as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError("This profile is already in use; no existing session was changed") from error
+        retire_previous(profile, xdg)
+    if remote and (ROOT / "installed.json").is_file():
+        build, binaries = installed_layout()
+    else:
+        build = Path(args.build_root).resolve()
+        binaries = Path(getattr(args, "shell_bin_dir", None) or ROOT / "target/debug").resolve()
+        if not binaries.is_relative_to(ROOT):
+            raise RuntimeError("Shell binaries must belong to this prepared repository")
+    for item in [compositor_binary(build), control_path(build), binaries / "enzui-shell", binaries / "enzui-settings", binaries / "enzui-shell-command", binaries / "enzui-desktop-frame", binaries / "enzui-maximize-preview", binaries / "enzui-wallpaper", Path("/usr/bin/bwrap"), Path("/usr/bin/dbus-run-session"), Path("/usr/bin/dbus-update-activation-environment")]:
+        if not item.is_file() or not os.access(item, os.X_OK):
+            raise RuntimeError(f"Prepared shell bundle is incomplete ({item.name}); compositor, Settings and sandbox tools are required")
+    if not (build / "build-revisions").is_file() or not (build / "shell-plugins/enzui-pointer-events.so").is_file():
+        raise RuntimeError("Prepared stack provenance and startup pointer bridge are required")
+    if remote:
+        # Remote logins have no seat or parent compositor and render only on their selected
+        # render node.
+        node = Path(getattr(args, "render_node", None) or next(iter(sorted(Path("/dev/dri").glob("renderD*"))), Path("/dev/dri/renderD128")))
+        if not str(node).startswith("/dev/dri/renderD") or not os.access(node, os.R_OK | os.W_OK):
+            raise RuntimeError("No usable render node for the remote session")
+        parent = parent_identity = None
+    else:
+        host = os.environ.get("ENZUI_HYPR_HOST_WAYLAND", os.environ.get("WAYLAND_DISPLAY", ""))
+        if not host:
+            raise RuntimeError("Select a parent Wayland session explicitly")
+        parent = Path(host) if host.startswith("/") else xdg / host
+        parent_identity = parent_peer(parent)
+    nonce = secrets.token_hex(8)
+    runtime_parent = xdg / "enzui-shell-platform"
+    private_directory(runtime_parent)
+    runtime = runtime_parent / f"{args.profile}-{nonce}"
+    runtime.mkdir(mode=0o700)
+    client_runtime = xdg / ("e" + nonce[:8])
+    client_runtime.mkdir(mode=0o700)
+    unit = f"enzui-platform-{args.profile}-{nonce}.service"
+    output = "ENZUI-" + args.profile.upper() + "-" + nonce[:8] if args.headless else "WAYLAND-1"
+    config = {"unit": unit, "profile": str(profile), "runtime": str(runtime), "settings": str(profile / "settings.json"), "build": str(build), "xdg_runtime": str(client_runtime), "parent_socket": str(parent) if parent else None, "parent_peer": parent_identity, "headless": args.headless, "output": output, "wallpaper_version": 1}
+    if remote:
+        config.update({"standalone": True, "remote_session": remote, "render_node": str(node)})
+    config["shell_bin_dir"] = str(binaries)
+    config["exit_with_shell"] = bool(getattr(args, "exit_with_shell", False))
+    portal_data = None if remote else portal_registration(runtime, binaries)
+    config["portal_data"] = str(portal_data) if portal_data else None
+    path = runtime / "launch.json"
+    publish(path, config)
+    digest = hashlib.sha256(read_private(path)).hexdigest()
+    clean = {"HOME": str(Path.home()), "USER": os.environ.get("USER", str(os.getuid())), "PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "XDG_RUNTIME_DIR": str(client_runtime), "XDG_CONFIG_HOME": str(profile / "client-config"), "XDG_DATA_HOME": str(profile / "client-data"), "XDG_CACHE_HOME": str(profile / "client-cache"), "ENZUI_HYPR_RUNROOT": str(runtime), "ENZUI_HYPR_BUILDROOT": str(build), "ENZUI_HYPR_CONFIG": str(runtime / "config/hyprland.lua"), "ENZUI_HYPR_HOST_WAYLAND": str(parent), "WAYLAND_DISPLAY": str(runtime / "wayland-unavailable"), "ENZUI_SHELL_SETTINGS": config["settings"], "ENZUI_SHELL_PLATFORM_PREVIEW": "1", "ENZUI_DESKTOP_SESSION": "preview", "ENZUI_PLUGIN_ISOLATION": "delegated", "LD_LIBRARY_PATH": str(build / "prefix/lib")}
+    clean["XDG_STATE_HOME"] = str(profile / "client-state")
+    if not remote and os.environ.get("XDG_SESSION_ID"):
+        clean["XDG_SESSION_ID"] = os.environ["XDG_SESSION_ID"]
+    clean["ENZUI_SHELL_BIN_DIR"] = str(binaries)
+    clean["ENZUI_DESKTOP_ROOT"] = str(ROOT)
+    if portal_data:
+        clean["XDG_DATA_DIRS"] = preview_data_dirs(portal_data)
+    if not remote and (worker := getattr(args, "dev_permissions_worker", None)):
+        clean["ENZUI_APP_PERMISSIONS_WORKER"] = worker
+    clean.update(privileged_clients(binaries, getattr(args, "dev_capture_tools", None)))
+    if args.headless:
+        clean["ENZUI_SCREENSHOT_DIR"] = str(profile / "screenshots")
+    if getattr(args, "agent_mock", False):
+        if remote:
+            raise RuntimeError("The scripted agent is a preview review option, never part of a login")
+        clean["ENZUI_AGENT_MOCK"] = "1"
+    clean.update({"GDK_BACKEND": "wayland", "HYPRLAND_NO_SD_VARS": "1", "HYPRLAND_NO_SD_TARGET": "1",
+                  "PIPEWIRE_REMOTE": str(xdg / "pipewire-0"), "PULSE_SERVER": "unix:" + str(xdg / "pulse/native")})
+    if remote:
+        # Remote logins use account data independently of the physical session's preview
+        # environment.
+        for key in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "ENZUI_HYPR_HOST_WAYLAND", "ENZUI_SHELL_PLATFORM_PREVIEW"):
+            clean.pop(key, None)
+        clean.update({"ENZUI_DESKTOP_SESSION": "installed", "ENZUI_REMOTE_SESSION": "1", "ENZUI_COMPOSITOR_BACKEND": "headless-only",
+                      "ENZUI_RENDER_NODE": str(node), "ENZUI_SCREENSHOT_DIR": str(profile / "screenshots")})
+    options = ["systemd-run", "--user", "--collect", "--unit=" + unit, "-p", "Delegate=yes", "-p", "DelegateSubgroup=supervisor", "-p", "LimitCORE=0", "-p", "StandardOutput=append:" + str(runtime / "startup.log"), "-p", "StandardError=append:" + str(runtime / "startup.log"), "--working-directory=" + str(ROOT)]
+    options += ["-p", "KillMode=control-group", "-p", "SendSIGKILL=yes", "-p", "TimeoutStopSec=10s", "-p", "Restart=no"]
+    if args.memory_mib is not None:
+        options += ["-p", f"MemoryMax={args.memory_mib}M", "-p", "MemorySwapMax=0"]
+    options += ["/usr/bin/env", "-i", *(f"{key}={value}" for key, value in clean.items()), "/usr/bin/dbus-run-session", "--", str(Path(__file__).resolve()), "--inner", str(path), digest]
+    command(options)
+    print("Unit:", unit, "\nRuntime:", runtime, flush=True)
+    for _ in range(160):
+        if (runtime / "ready.json").exists():
+            identity = json.loads(read_private(runtime / "ready.json"))
+            if compositor(config)["pid"] != identity["pid"]:
+                raise RuntimeError("Ready compositor changed")
+            print("Ready:", identity["output"], "\nSettings:", config["settings"])
+            return
+        if (runtime / "failed.json").exists():
+            raise RuntimeError("Startup failed; session retained if its compositor is alive. Inspect private logs before stopping anything")
+        state = command(["systemctl", "--user", "show", unit, "-p", "ActiveState", "--value"]).strip()
+        if state not in ("active", "activating"):
+            raise RuntimeError("Managed service exited; inspect its private startup log")
+        time.sleep(.25)
+    raise RuntimeError("Startup is still pending; no running process was stopped")
+
+
+def main():
+    if len(sys.argv) == 4 and sys.argv[1] == "--inner":
+        inner(sys.argv[2], sys.argv[3])
+        return
+    if sys.argv[1:] in (["--installed"], ["--installed", "--wayland"]):
+        installed(None)
+        return
+    parser = argparse.ArgumentParser(description="Start a NEW experimental shell profile with a private bus and delegated plugin isolation. Never replaces a running profile.")
+    parser.add_argument("--experimental", action="store_true")
+    parser.add_argument("--profile", type=profile_name)
+    parser.add_argument("--remote-session", type=remote_id, help="Start a separate remote login's desktop (no seat, no parent compositor) with this ID; needs --headless")
+    parser.add_argument("--render-node", help="With --remote-session: the /dev/dri/renderD* it renders on")
+    parser.add_argument("--build-root", default=os.environ.get("ENZUI_HYPR_BUILDROOT", str(ROOT / ".build/desktop")))
+    parser.add_argument("--shell-bin-dir", help="Prepared shell/Settings binaries under this repository; defaults to target/debug")
+    parser.add_argument("--headless", type=dimensions)
+    parser.add_argument("--dev-capture-tools", type=dev_tool_list, help="With --experimental: programs allowed to capture the screen and inject input in this preview (QA tools)")
+    worker = parser.add_mutually_exclusive_group()
+    worker.add_argument("--dev-permissions-worker", type=permissions_worker,
+                        help="Use an explicitly selected app permissions executable in this preview")
+    worker.add_argument("--no-dev-permissions-worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--exit-with-shell", action="store_true", help="Stop the entire new session, including its apps, when the shell exits; also clean up failed startup")
+    parser.add_argument("--agent-mock", action="store_true", help="With --experimental: the assistant panel talks to the scripted enzui-agent-mock instead of the agent harness (design reviews without a harness)")
+    parser.add_argument("--memory-mib", type=int, choices=range(512, 3073), metavar="512..3072", help="Optional whole-session budget for disposable tests; plugin workers always have their own limits")
+    start(parser.parse_args())
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as error:
+        print("Platform startup:", error, file=sys.stderr)
+        sys.exit(1)

@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""Exercise failed/stalled/null GPU fences and delayed region/resize/lifetime changes.
+Build the scene separately with ENZUI_MATERIAL_READBACK_TEST=1, then select it
+with --build-root. Fault controls are not compiled into production plugins.
+"""
+import argparse, json, os, re, subprocess, time
+from pathlib import Path
+root = Path(__file__).resolve().parent.parent
+parser = argparse.ArgumentParser()
+parser.add_argument('--build-root', default=str(root / '.build/readback-instrumented-qa'))
+parser.add_argument('--shell-bin-dir', default=str(root / '.build/release/bin'))
+args = parser.parse_args()
+scratch = root / '.build/material-readback-tests'
+scratch.mkdir(exist_ok=True)
+build = Path(args.build_root).resolve()
+assert b'MATERIAL_READBACK' in (build / 'shell-plugins/enzui-pointer-events.so').read_bytes(), 'select an instrumented QA build root'
+subprocess.run([str(root / 'scripts/with-build-budget'), str(root / 'scripts/build-glass-demo')], check=True, stdout=subprocess.DEVNULL)
+subprocess.run([str(root / 'scripts/with-build-budget'), 'cc', '-O2', '-Wall', '-Wextra', '-I' + str(root / '.build/material'),
+    '-o', str(root / '.build/material/readback-probe'), str(root / 'tools/glass-demo/readback-probe.c'),
+    str(root / '.build/material/xdg-shell-protocol.c'), str(root / '.build/material/enzui-material-v1-client.c'), '-lwayland-client', '-lm'], check=True)
+profile = 'pi-readback-qa'
+unit = None
+run = None
+reports = []
+try:
+    launch = subprocess.run([str(root / 'scripts/start-shell-platform'), '--experimental', '--profile', profile,
+        '--build-root', str(build), '--shell-bin-dir', str(Path(args.shell_bin_dir).resolve()), '--headless', '1440x900', '--exit-with-shell', '--memory-mib', '1400'],
+        capture_output=True, text=True, timeout=120)
+    (scratch / 'readback-start.log').write_text(launch.stdout + launch.stderr)
+    match = re.search(r'^Runtime: (\S+)', launch.stdout, re.M)
+    if match:
+        run = Path(match.group(1)); config = json.loads((run / 'launch.json').read_text())
+        assert config['profile'].endswith('/' + profile) and config['runtime'] == str(run) and config['build'] == str(build)
+        unit = config['unit']
+    assert launch.returncode == 0 and unit, launch.stdout + launch.stderr
+    instance = (run / 'instance').read_text().strip()
+    env = dict(os.environ, XDG_RUNTIME_DIR=config['xdg_runtime'], WAYLAND_DISPLAY=(run / 'wayland-display').read_text().strip())
+    henv = dict(env, LD_LIBRARY_PATH=str(build / 'prefix/lib'))
+    def hypr(*args):
+        result = subprocess.run([str(build / 'hyprland-current-build/hyprctl/hyprctl'), '-i', instance, *args], env=henv, capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+    cg = Path(f'/sys/fs/cgroup/user.slice/user-{os.getuid()}.slice/user@{os.getuid()}.service/app.slice/{unit}')
+    def procs():
+        return [int(pid) for file in cg.rglob('cgroup.procs') for pid in file.read_text().split()]
+    compositor = next(pid for pid in procs() if Path(f'/proc/{pid}/exe').resolve().name == 'Hyprland')
+    def ticks():
+        fields = Path(f'/proc/{compositor}/stat').read_text().rsplit(')', 1)[1].split()
+        return int(fields[11]) + int(fields[12])
+    def memory():
+        return int((cg / 'memory.current').read_text())
+    hypr('dispatch', f"hl.dsp.exec_cmd('{root / '.build/material/glass-demo'} pattern')")
+    time.sleep(2)
+    print('Logs:', [str(p) for p in run.glob('*.log')])
+    def logs():
+        return '\n'.join(p.read_text(errors='replace') for p in run.glob('*.log'))
+    for mode, action in [('normal', 'plain'), ('failed', 'plain'), ('stalled', 'plain'), ('null', 'plain'), ('delayed', 'replace'), ('delayed', 'resize'), ('delayed', 'destroy')]:
+        beforelog = logs()
+        (run / 'readback-test-mode').write_text(mode)
+        path = run / f'probe-{mode}-{action}.txt'
+        command = f"{root / '.build/material/readback-probe'} {action} > {path}"
+        hypr('dispatch', f"hl.dsp.exec_cmd('{command}')")
+        time.sleep(1.2)
+        text = path.read_text()
+        start = ticks(); mem0 = memory(); t0 = time.monotonic()
+        time.sleep(3)
+        used = (ticks() - start) / os.sysconf('SC_CLK_TCK') / (time.monotonic() - t0) * 100
+        mem1 = memory()
+        tail = logs()
+        old_events = [line for line in beforelog.splitlines() if 'MATERIAL_READBACK ' in line]
+        all_events = [line for line in tail.splitlines() if 'MATERIAL_READBACK ' in line]
+        events = all_events[len(old_events):]
+        report = {'mode': mode, 'action': action, 'client': text, 'events': events, 'cpu_percent': round(used, 2), 'memory_delta': mem1 - mem0}
+        print(f'{mode}/{action}: events={len(events)}, CPU={used:.2f}%, memory delta={(mem1 - mem0) / 1048576:.1f} MiB', flush=True)
+        reports.append(report)
+        if mode in ('failed', 'stalled', 'null'):
+            assert len([line for line in logs().splitlines() if 'MATERIAL_READBACK ' in line]) == len(all_events), 'idle polling created further samples'
+        (scratch / 'readback-live.json').write_text(json.dumps(reports, indent=2))
+        if mode in ('failed', 'stalled', 'null'):
+            assert 'TOTAL 0' in text, report
+            assert used < 5, report
+            assert mem1 - mem0 < 8 * 1048576, report
+            if mode == 'null': assert any('null-fence' in event for event in events), report
+            else: assert any('decision=3' in event for event in events), report
+        else:
+            assert re.search(r'TOTAL [1-9]', text), report
+            if action != 'plain': assert any('decision=2' in event for event in events), report
+        deadline = time.monotonic() + 8
+        while any(c['class'] == 'dev.enzui.ReadbackProbe' for c in json.loads(hypr('-j', 'clients'))) and time.monotonic() < deadline:
+            time.sleep(.2)
+        assert not any(c['class'] == 'dev.enzui.ReadbackProbe' for c in json.loads(hypr('-j', 'clients'))), 'probe should finish itself'
+        time.sleep(.8)
+    (scratch / 'readback-live.json').write_text(json.dumps(reports, indent=2))
+finally:
+    if unit:
+        subprocess.run(['systemctl', '--user', 'stop', unit], check=True, timeout=60)
+        cg = Path(f'/sys/fs/cgroup/user.slice/user-{os.getuid()}.slice/user@{os.getuid()}.service/app.slice/{unit}')
+        processes = []
+        if cg.exists():
+            for file in cg.rglob('cgroup.procs'): processes.extend(file.read_text().split())
+        assert not processes, (unit, processes)
+        (scratch / 'readback-cleanup.json').write_text(json.dumps({'unit': unit, 'runtime': str(run), 'processes': processes, 'cgroup_exists': cg.exists()}, indent=2))
+        print('Owned preview stopped; recursive cgroup empty:', unit)

@@ -1,0 +1,302 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+: "${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR is required}"
+if [[ ${1:-} == platform ]]; then shift; exec "$ROOT/scripts/start-shell-platform" "$@"; fi
+CONFIG=${ENZUI_HYPR_CONFIG:-$ROOT/config/hyprland.lua}
+RUNROOT=${ENZUI_HYPR_RUNROOT:-$XDG_RUNTIME_DIR/enzui-desktop}
+BUILDROOT=${ENZUI_HYPR_BUILDROOT:-$ROOT/.build/desktop}
+BUILD_PREFIX=$BUILDROOT/prefix
+HYPR_BUILD=$BUILDROOT/hyprland-current-build
+# enz-hyprland; build roots from before the rename still hold Hyprland.
+HYPR_BIN=$HYPR_BUILD/enz-hyprland
+[[ -e $HYPR_BIN ]] || HYPR_BIN=$HYPR_BUILD/Hyprland
+HYPRCTL_BIN=$HYPR_BUILD/hyprctl/enz-hyprctl
+[[ -e $HYPRCTL_BIN ]] || HYPRCTL_BIN=$HYPR_BUILD/hyprctl/hyprctl
+HYPR_PID=$RUNROOT/hyprland.pid
+HYPR_LOG=$RUNROOT/hyprland.log
+INSTANCE_FILE=$RUNROOT/instance
+DISPLAY_FILE=$RUNROOT/wayland-display
+HOST_DISPLAY_FILE=$RUNROOT/host-wayland-display
+SHELL_BIN=$ROOT/target/debug/enzui-shell
+install -d -m 700 "$RUNROOT"
+
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+require() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
+valid_name() { [[ "$1" =~ ^[A-Za-z0-9._-]{1,80}$ ]]; }
+pid_start() {
+    local stat
+    local -a fields
+    stat=$(<"/proc/$1/stat") || return 1
+    stat=${stat##*) }
+    read -r -a fields <<<"$stat"
+    printf '%s\n' "${fields[19]}"
+}
+pid_alive() {
+    local file=$1 pid actual
+    [[ -s "$file" ]] || return 1
+    pid=$(<"$file")
+    [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null || return 1
+    [[ -s "$file.start" ]] || return 1
+    actual=$(pid_start "$pid" 2>/dev/null) || return 1
+    [[ "$actual" == "$(<"$file.start")" ]]
+}
+record_pid() { printf '%s\n' "$2" > "$1"; pid_start "$2" > "$1.start"; }
+terminate_pid() {
+    local file=$1 pid target
+    if pid_alive "$file"; then
+        pid=$(<"$file"); target=$pid
+        [[ ${2:-0} == 1 ]] && target=-$pid
+        kill -TERM -- "$target" 2>/dev/null || true
+        for _ in {1..20}; do kill -0 "$pid" 2>/dev/null || break; sleep .1; done
+        if pid_alive "$file"; then kill -KILL -- "$target" 2>/dev/null || true; fi
+    fi
+    rm -f "$file" "$file.start"
+}
+running() { pid_alive "$HYPR_PID" && [[ -s "$INSTANCE_FILE" && -s "$DISPLAY_FILE" ]]; }
+instance() { [[ -s "$INSTANCE_FILE" ]] || die 'compositor is not running'; printf '%s\n' "$(<"$INSTANCE_FILE")"; }
+# An installed login names itself enzUI, so portals and applications pick
+# the enzUI backends; a preview keeps Hyprland's own name.
+if [[ ${ENZUI_DESKTOP_SESSION:-} == installed ]]; then
+    DESKTOP_NAMES=enzUI:Hyprland SESSION_DESKTOP=enzUI
+else
+    DESKTOP_NAMES=Hyprland SESSION_DESKTOP=Hyprland
+fi
+nested_display() { [[ -s "$DISPLAY_FILE" ]] || die 'compositor is not running'; printf '%s\n' "$(<"$DISPLAY_FILE")"; }
+private_env() {
+    env PATH="$BUILD_PREFIX/bin:$PATH" \
+        LD_LIBRARY_PATH="$BUILD_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+        "$@"
+}
+hypr() { private_env "$HYPRCTL_BIN" --instance "$(instance)" "$@"; }
+nested_env() {
+    private_env env -u DISPLAY WAYLAND_DISPLAY="$(nested_display)" \
+        HYPRLAND_INSTANCE_SIGNATURE="$(instance)" ENZUI_HYPR_CONTROL_BIN="$HYPRCTL_BIN" \
+        XDG_CURRENT_DESKTOP="$DESKTOP_NAMES" XDG_SESSION_DESKTOP="$SESSION_DESKTOP" XDG_SESSION_TYPE=wayland \
+        GDK_BACKEND=wayland QT_QPA_PLATFORM=wayland WINIT_UNIX_BACKEND=wayland "$@"
+}
+ensure_hyprland() {
+    # An explicit prepared root is an immutable stack selection for existing sessions.
+    if [[ -n ${ENZUI_HYPR_BUILDROOT:-} && -x "$HYPR_BIN" && -x "$HYPRCTL_BIN" && -s "$BUILDROOT/build-revisions" ]]; then return; fi
+    ENZUI_HYPR_BUILDROOT="$BUILDROOT" "$ROOT/scripts/build-compositor"
+}
+config_check() {
+    ensure_hyprland
+    [[ -f "$CONFIG" ]] || die "config not found: $CONFIG"
+    private_env "$HYPR_BIN" --verify-config --config "$CONFIG"
+}
+start() {
+    local host_display host_socket pid row signature wl_socket
+    require python3
+    if running; then printf 'Already running: pid=%s display=%s\n' "$(<"$HYPR_PID")" "$(nested_display)"; return; fi
+    pid_alive "$HYPR_PID" && die 'running compositor has incomplete metadata; stop it explicitly first'
+    config_check
+    rm -f "$INSTANCE_FILE" "$DISPLAY_FILE" "$HOST_DISPLAY_FILE"
+    if [[ ${ENZUI_COMPOSITOR_BACKEND:-} == headless-only ]]; then
+        # A remote login's compositor: headless outputs only, no seat and
+        # no host compositor.
+        host_display=''
+        printf 'Starting headless Hyprland with %s\n' "$CONFIG"
+    elif [[ ${ENZUI_DESKTOP_SESSION:-} == installed ]]; then
+        # An installed login drives the machine's own outputs through its
+        # logind seat; there is no host compositor.
+        host_display=''
+        printf 'Starting Hyprland on this seat with %s\n' "$CONFIG"
+    else
+        host_display=${ENZUI_HYPR_HOST_WAYLAND:-${WAYLAND_DISPLAY:-}}
+        [[ -n "$host_display" ]] || die 'start from a Wayland session'
+        host_socket=$host_display
+        [[ "$host_display" = /* ]] || host_socket=$XDG_RUNTIME_DIR/$host_display
+        [[ -S "$host_socket" ]] || die "host Wayland socket not found: $host_socket"
+        printf '%s\n' "$host_display" > "$HOST_DISPLAY_FILE"
+        printf 'Starting nested Hyprland with %s\n' "$CONFIG"
+    fi
+    local display_env=(-u WAYLAND_DISPLAY)
+    [[ -n "$host_display" ]] && display_env=(WAYLAND_DISPLAY="$host_display")
+    nohup setsid env -u HYPRLAND_INSTANCE_SIGNATURE "${display_env[@]}" \
+        XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+        PATH="$BUILD_PREFIX/bin:$PATH" LD_LIBRARY_PATH="$BUILD_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+        XDG_CURRENT_DESKTOP="$DESKTOP_NAMES" XDG_SESSION_DESKTOP="$SESSION_DESKTOP" XDG_SESSION_TYPE=wayland \
+        "$HYPR_BIN" --config "$CONFIG" > "$HYPR_LOG" 2>&1 </dev/null &
+    pid=$!; record_pid "$HYPR_PID" "$pid"
+    row=''
+    for _ in {1..80}; do
+        if ! pid_alive "$HYPR_PID"; then tail -n 40 "$HYPR_LOG" >&2; die 'compositor exited during startup'; fi
+        row=$(private_env "$HYPRCTL_BIN" instances -j 2>/dev/null | python3 -c '
+import json, sys
+pid = int(sys.argv[1])
+for i in json.load(sys.stdin):
+    if int(i.get("pid", 0)) == pid:
+        print(i.get("instance") or i.get("signature") or "", i.get("wl_socket") or i.get("wlSocket") or "", sep="\t")
+        break
+' "$pid" 2>/dev/null || true)
+        [[ -n "$row" ]] && break
+        sleep .25
+    done
+    if [[ -z "$row" ]]; then terminate_pid "$HYPR_PID" 1; die 'could not discover nested instance'; fi
+    IFS=$'\t' read -r signature wl_socket <<<"$row"
+    [[ -n "$signature" && -n "$wl_socket" ]] || die 'incomplete instance metadata'
+    printf '%s\n' "$signature" > "$INSTANCE_FILE"
+    printf '%s\n' "$wl_socket" > "$DISPLAY_FILE"
+    hypr monitors -j >/dev/null
+    hypr dismissnotify >/dev/null 2>&1 || true
+    if [[ -f "$BUILDROOT/shell-plugins/enzui-pointer-events.so" ]]; then
+        local plugin bridge_ready=false
+        plugin=$(realpath "$BUILDROOT/shell-plugins/enzui-pointer-events.so")
+        hypr plugin load "$plugin" > "$RUNROOT/pointer-plugin.log" 2>&1 || die 'pointer event plugin failed to load'
+        for _ in {1..100}; do
+            if [[ $(hypr --batch 'repl return (hl.plugin and hl.plugin.enzui_pointer_events and hl.plugin.enzui_pointer_events.version and hl.plugin.enzui_pointer_events.version()) or 0' 2>/dev/null) == 1 ]]; then bridge_ready=true;break;fi
+            sleep .05
+        done
+        [[ $bridge_ready == true ]] || die 'pointer event plugin did not finish native configuration'
+    fi
+    printf 'Ready: pid=%s display=%s instance=%s\n' "$pid" "$wl_socket" "$signature"
+}
+# Whether the prepared compositor admits its shell through the launcher pidfd: older
+# builds name it in build-revisions, desktop-compositor builds list the patch in their receipt.
+launcher_pidfd_build() {
+    /usr/bin/grep -q '^privileged-launcher-child-pidfd-v2 ' "$BUILDROOT/build-revisions" && return 0
+    [[ -s "$BUILDROOT/desktop-compositor.json" ]] || return 1
+    /usr/bin/python3 -I -c 'import json,sys; r=json.load(open(sys.argv[1])); sys.exit(0 if isinstance(r,dict) and r.get("complete") is True and isinstance(r.get("patches"),dict) and "privileged-clients.patch" in r["patches"] else 1)' "$BUILDROOT/desktop-compositor.json"
+}
+
+launch_app() {
+    local name=${1:-} pid_file
+    shift || true
+    [[ ${1:-} == -- ]] && shift
+    valid_name "$name" || die 'invalid app name'
+    (( $# > 0 )) || die 'usage: app NAME -- COMMAND [ARGS...]'
+    running || die 'start the compositor first'
+    pid_file=$RUNROOT/$name.pid
+    if [[ $name == shell && -s "$RUNROOT/launch.json" ]] && launcher_pidfd_build; then
+        # A managed shell must remain its supervisor's direct child.
+        for _ in {1..80}; do
+            if pid_alive "$pid_file"; then printf 'Managed shell is running: pid=%s\n' "$(<"$pid_file")"; return; fi
+            sleep .1
+        done
+        die 'managed shell did not relaunch; inspect its private startup log'
+    fi
+    pid_alive "$pid_file" && die "app '$name' is already running"
+    nohup setsid env -u DISPLAY XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+        XDG_CURRENT_DESKTOP="$DESKTOP_NAMES" XDG_SESSION_DESKTOP="$SESSION_DESKTOP" XDG_SESSION_TYPE=wayland \
+        WAYLAND_DISPLAY="$(nested_display)" HYPRLAND_INSTANCE_SIGNATURE="$(instance)" \
+        ENZUI_HYPR_CONTROL_BIN="$HYPRCTL_BIN" ENZUI_DESKTOP_ROOT="$ROOT" \
+        PATH="$BUILD_PREFIX/bin:$PATH" LD_LIBRARY_PATH="$BUILD_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+        GDK_BACKEND=wayland QT_QPA_PLATFORM=wayland WINIT_UNIX_BACKEND=wayland \
+        "$@" > "$RUNROOT/$name.log" 2>&1 </dev/null &
+    record_pid "$pid_file" "$!"
+    printf 'Launched %s: pid=%s\n' "$name" "$(<"$pid_file")"
+}
+ensure_shell() {
+    "$ROOT/scripts/setup-sources"
+    if [[ -s "$HYPR_BUILD/compile_commands.json" ]]; then
+        ENZUI_HYPR_BUILDROOT="$BUILDROOT" "$ROOT/scripts/build-pointer-events"
+    fi
+    printf 'Building ICED shell; log: %s\n' "$BUILDROOT/shell-build.log"
+    "$ROOT/scripts/with-build-budget" env CARGO_TARGET_DIR="$ROOT/target" \
+        cargo build --locked --manifest-path "$ROOT/Cargo.toml" -p enzui-shell \
+        > "$BUILDROOT/shell-build.log" 2>&1 || { tail -n 50 "$BUILDROOT/shell-build.log" >&2; die 'shell build failed'; }
+}
+shell_bar() {
+    require foot
+    ensure_hyprland
+    ensure_shell
+    start
+    if ! pid_alive "$RUNROOT/wallpaper.pid"; then
+        require swaybg
+        launch_app wallpaper -- swaybg -i "$ROOT/assets/wallpaper.png" -m fill
+    fi
+    if pid_alive "$RUNROOT/shell.pid"; then printf 'Shell already running.\n'; return; fi
+    launch_app shell -- "$SHELL_BIN"
+}
+windows() { running || die 'compositor is not running'; hypr clients -j | jq -r '.[] | "\(.class) | \(.title) | at \(.at[0]),\(.at[1]) size \(.size[0])x\(.size[1]) floating=\(.floating)"'; }
+gpu_check() {
+    running || die 'compositor is not running'; require eglinfo
+    nested_env eglinfo -B -p wayland > "$RUNROOT/eglinfo.log" 2>&1
+    grep -q 'Wayland platform:' "$RUNROOT/eglinfo.log" || die 'missing Wayland EGL report'
+    if grep -qi 'renderer:.*llvmpipe' "$RUNROOT/eglinfo.log"; then die 'software renderer detected'; fi
+    grep -E 'EGL vendor string|OpenGL (core|compatibility|ES) profile (vendor|renderer)' "$RUNROOT/eglinfo.log" || true
+    if pid_alive "$RUNROOT/shell.pid"; then
+        local report
+        report=$(grep '^renderer:' "$RUNROOT/shell.log" | tail -1) || die 'shell renderer report is not ready'
+        printf '%s\n' "$report"
+        if grep -Eqi 'tiny.?skia|llvmpipe|lavapipe|swiftshader|software' <<<"$report"; then die 'shell uses a software renderer'; fi
+    fi
+}
+shot() { running || die 'compositor is not running'; require grim; nested_env grim "${1:-$RUNROOT/manual.png}"; }
+status() {
+    if ! running; then printf 'Hyprland: stopped\n'; return; fi
+    printf 'Hyprland: pid=%s display=%s\nConfig: %s\nBuild: %s\nRuntime: %s\n' "$(<"$HYPR_PID")" "$(nested_display)" "$CONFIG" "$BUILDROOT" "$RUNROOT"
+    windows
+}
+stop() {
+    local file
+    for file in "$RUNROOT"/*.pid; do
+        [[ -e "$file" && "$file" != "$HYPR_PID" ]] || continue
+        terminate_pid "$file" 1
+    done
+    terminate_pid "$HYPR_PID" 1
+    rm -f "$INSTANCE_FILE" "$DISPLAY_FILE" "$HOST_DISPLAY_FILE"
+    printf 'Stopped.\n'
+}
+resize_monitor() {
+    local mode=${1:?usage: resize WIDTHxHEIGHT [SCALE]} scale=${2:-1}
+    [[ "$mode" =~ ^[0-9]+x[0-9]+$ && "$scale" =~ ^[0-9]+([.][0-9]+)?$ ]] || die 'invalid mode or scale'
+    local width=${mode%%x*} height=${mode##*x}
+    (( width >= 240 && width <= 8192 && height >= 240 && height <= 8192 )) || die 'dimensions must be 240..8192'
+    running || die 'compositor is not running'
+    hypr eval "hl.monitor({ output = \"\", mode = \"$mode\", position = \"0x0\", scale = $scale })"
+    hypr monitors -j
+}
+mobile_mode() {
+    resize_monitor "${1:-432x960}" "${2:-1}"
+    hypr eval 'hl.config({ general = { gaps_in = 0, gaps_out = 0, border_size = 0 }, decoration = { rounding = 0, shadow = { enabled = false } }, animations = { enabled = false } })'
+    hypr eval 'local d = hl.dsp and hl.dsp.window or hl.window; return hl.dispatch(d.fullscreen_state({ internal = 1, client = 2, action = "set" }))'
+}
+display_info() {
+    running || die 'compositor is not running'
+    printf 'display=%s\ninstance=%s\npid=%s\n' "$(nested_display)" "$(instance)" "$(<"$HYPR_PID")"
+    hypr monitors -j | jq -r '.[] | "monitor=\(.name) width=\(.width) height=\(.height) scale=\(.scale) refresh=\(.refreshRate)"'
+}
+smoke() {
+    shell_bar
+    local errors
+    errors=$(hypr configerrors)
+    [[ -z "$errors" ]] || die "$errors"
+    gpu_check
+    sleep 1
+    hypr clients -j | jq -e 'any(.[]; .class == "dev.enzui.Desktop")' >/dev/null || die 'shell window missing'
+    shot "$RUNROOT/smoke.png"
+    printf 'Smoke passed: %s\n' "$RUNROOT/smoke.png"
+}
+usage() {
+    printf '%s\n' 'Usage: enzui-hypr COMMAND' \
+        '  shell / demo       Build and start the nested ICED desktop' \
+        '  platform --experimental --profile NAME   Start a new managed plugin preview' \
+        '  build              Build the pinned compositor stack' \
+        '  build-shell        Build the ICED shell only' \
+        '  start              Start only the nested compositor' \
+        '  app NAME -- CMD    Launch a Wayland app inside it' \
+        '  status / windows   Inspect the private session' \
+        '  gpu / shot [FILE]  Verify rendering or take a screenshot' \
+        '  config-check       Validate the selected config' \
+        '  smoke              Check config, shell and GPU rendering' \
+        '  stop / restart     Stop owned processes / restart compositor' \
+        '  resize WxH [SCALE] Resize its output' \
+        '  mobile [WxH] [SCALE] Minimal remote-app geometry' \
+        '  display-info       Print machine-readable display metadata' \
+        '  logs [NAME]        Tail compositor or named app log'
+}
+command=${1:-shell}; shift || true
+case "$command" in
+    start) start "$@";;
+    shell|demo) shell_bar "$@";;
+    build) ENZUI_HYPR_BUILDROOT="$BUILDROOT" "$ROOT/scripts/build-compositor";;
+    build-shell) ensure_shell;;
+    app) launch_app "$@";;
+    windows) windows;; gpu) gpu_check;; shot) shot "$@";; status) status;;
+    stop) stop;; restart) stop; start;; config-check) config_check;; smoke) smoke;;
+    resize) resize_monitor "$@";; mobile) mobile_mode "$@";; display-info) display_info;;
+    logs) name=${1:-hyprland}; valid_name "$name" || die 'invalid log name'; tail -n 100 "$RUNROOT/$name.log";;
+    help|-h|--help) usage;; *) usage; die "unknown command: $command";;
+esac

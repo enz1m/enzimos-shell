@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""Open the real greeter UI in a normal window with mock accounts and inert actions."""
+import argparse
+import json
+import os
+from pathlib import Path
+import subprocess
+import time
+
+ROOT = Path(__file__).resolve().parent.parent
+UNIT = "enzui-greeter-design-preview.service"
+BINARY = ROOT / "target/debug/enzui-greeter-preview"
+PROFILE = ROOT / ".build/greeter-preview/settings.json"
+RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "enzui-greeter-design-preview"
+
+
+def run(*args, **kwargs):
+    return subprocess.run(args, check=True, **kwargs)
+
+
+def status():
+    result = subprocess.run(["systemctl", "--user", "show", UNIT, "-p", "ActiveState", "-p", "MainPID", "-p", "ControlGroup"], capture_output=True, text=True)
+    return dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+
+
+def ticks(pid):
+    return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+
+
+def stop():
+    state = status()
+    receipt = RUNTIME / "owner.json"
+    old = json.loads(receipt.read_text()) if receipt.exists() else None
+    if state.get("MainPID", "0") != "0":
+        pid = int(state["MainPID"])
+        if not old or old["pid"] != pid or old["start"] != ticks(pid) or Path(f"/proc/{pid}/exe").resolve() != BINARY:
+            raise SystemExit("Preview identity differs from its ownership receipt; no process was stopped")
+        print("Closing only the mock login preview window.", flush=True)
+        run("systemctl", "--user", "stop", UNIT)
+    group = old.get("cgroup", "") if old else state.get("ControlGroup", "")
+    if group:
+        root = Path("/sys/fs/cgroup") / group.lstrip("/")
+        remaining = [pid for path in root.rglob("cgroup.procs") for pid in path.read_text().split()] if root.exists() else []
+        if remaining:
+            raise SystemExit("Preview cgroup still contains processes")
+    if old and Path(f"/proc/{old['pid']}").exists() and ticks(old["pid"]) == old["start"]:
+        raise SystemExit("Recorded preview process remains alive")
+    print("Preview stopped; owned process and recursive cgroup are empty.")
+
+
+def window_size(value):
+    try:
+        w, h = (int(part) for part in value.split("x"))
+        if not (320 <= w <= 1920 and 320 <= h <= 1080):
+            raise ValueError
+    except ValueError:
+        raise argparse.ArgumentTypeError("Use WIDTHxHEIGHT between 320x320 and 1920x1080")
+    return f"{w}x{h}"
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", nargs="?", choices=["start", "reload", "stop", "status", "settings"], default="start")
+    parser.add_argument("--no-build", action="store_true", help="Reuse the existing preview binary")
+    parser.add_argument("--capture", action="store_true", help="Save the initial window image under .build/greeter-preview/")
+    parser.add_argument("--state", choices=["idle", "prompt", "keyboard", "power"], default="idle")
+    parser.add_argument("--size", type=window_size, default="1100x700", help="Initial preview window size, e.g. 800x600")
+    args = parser.parse_args()
+    if args.action == "settings":
+        PROFILE.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        active = subprocess.run(["systemctl", "--user", "is-active", "enzui-greeter-clock-settings.scope"], capture_output=True, text=True)
+        if active.stdout.strip() == "active":
+            print("Clock Settings is already open."); return
+        if not args.no_build:
+            run(str(ROOT / "scripts/shell-iterate"), "build", "settings")
+        os.execvp("systemd-run", ["systemd-run", "--user", "--scope", "--quiet", "--unit=enzui-greeter-clock-settings", "-p", "MemoryMax=1100M", "-p", "MemorySwapMax=0", "dbus-run-session", "--", "env", "ENZUI_SHELL_SETTINGS=" + str(PROFILE), "ENZUI_SETTINGS_PAGE=datetime", "ENZUI_SYSTEM_SETTINGS_DEMO=1", "XDG_CONFIG_HOME=" + str(RUNTIME / "config"), "ENZUI_DESKTOP_ROOT=" + str(ROOT), str(ROOT / "target/debug/enzui-settings")])
+    if args.action == "status":
+        print(json.dumps(status(), indent=2)); return
+    if args.action == "stop":
+        stop(); return
+    if args.action == "reload":
+        stop()
+    elif status().get("ActiveState") == "active":
+        print("Login preview is already open. Use reload after editing lock/src/ui.rs."); return
+    if not args.no_build:
+        run(str(ROOT / "scripts/with-build-budget"), "cargo", "build", "--offline", "--locked", "-j1", "-p", "enzui-lock", "--features", "greeter-preview", "--bin", "enzui-greeter-preview", cwd=ROOT)
+    if not BINARY.is_file():
+        raise SystemExit("Preview binary is missing; omit --no-build")
+    display = os.environ.get("WAYLAND_DISPLAY", "")
+    parent_runtime = Path(os.environ["XDG_RUNTIME_DIR"])
+    socket = Path(display) if display.startswith("/") else parent_runtime / display
+    if not display or not socket.is_socket():
+        raise SystemExit("Run this command in your graphical Wayland session")
+    RUNTIME.mkdir(mode=0o700, exist_ok=True)
+    RUNTIME.chmod(0o700)
+    run("systemd-run", "--user", "--collect", "--unit=" + UNIT,
+        "-p", "MemoryMax=1100M", "-p", "MemorySwapMax=0", "-p", "KillMode=control-group",
+        "--working-directory=" + str(ROOT),
+        "env", "-u", "DISPLAY", "-u", "GREETD_SOCK", "-u", "HYPRLAND_INSTANCE_SIGNATURE", "-u", "ENZUI_HYPR_RUNROOT",
+        "WAYLAND_DISPLAY=" + str(socket), "XDG_RUNTIME_DIR=" + str(RUNTIME),
+        "DBUS_SESSION_BUS_ADDRESS=" + os.environ.get("DBUS_SESSION_BUS_ADDRESS", "unix:path=" + str(parent_runtime / "bus")),
+        "ENZUI_SHELL_SETTINGS=" + str(PROFILE), "ENZUI_DESKTOP_ROOT=" + str(ROOT), "ENZUI_GREETER_PREVIEW_CAPTURE=" + ("1" if args.capture else "0"), "ENZUI_GREETER_PREVIEW_STATE=" + args.state, "ENZUI_GREETER_PREVIEW_SIZE=" + args.size, str(BINARY))
+    time.sleep(.4)
+    state = status()
+    pid = int(state.get("MainPID", "0"))
+    if not pid:
+        raise SystemExit("Preview exited; inspect journalctl --user -u " + UNIT)
+    receipt = {"pid": pid, "start": ticks(pid), "cgroup": state["ControlGroup"]}
+    path = RUNTIME / "owner.json"
+    path.write_text(json.dumps(receipt)); path.chmod(0o600)
+    print("Login preview open. Password: preview. F1 idle, F2 prompt, F3 error, F4 success, F5 reset.")
+    print("Close its window normally, or run scripts/preview-greeter stop.")
+
+
+if __name__ == "__main__":
+    main()

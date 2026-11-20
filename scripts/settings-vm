@@ -1,0 +1,335 @@
+#!/usr/bin/env python3
+"""A small Arch VM with virtual hardware for testing Settings backends.
+
+The guest runs the enzimOS service stack (NetworkManager, BlueZ, PipeWire,
+UPower, power-profiles-daemon, CUPS, chrony, firewalld) against virtual
+devices: mac80211_hwsim Wi-Fi with a hostapd access point, btvirt Bluetooth
+controllers, a test_power battery, an ippeveprinter IPP Everywhere printer
+and an emulated HD audio card. A headless sway session hosts the shell's
+apps, so Settings can be driven and screenshotted over SSH.
+
+  settings-vm create     build the disk and cloud-init seed (first boot installs)
+  settings-vm start      boot under a memory-capped user unit
+  settings-vm ssh CMD    run a command in the guest
+  settings-vm sync       rewrite the guest's setup files and rerun them
+  settings-vm push FILE… copy files into /home/enz/bin
+  settings-vm session    start the headless sway session Settings runs in
+  settings-vm greeter    install greetd with enzui-greeter (from target/release)
+                         on the guest's VT1; sway stands in for the greeter
+                         compositor because the guest has no GL
+  settings-vm stop       power off and verify the unit's cgroup is empty
+"""
+import json, os, shutil, subprocess, sys, time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+VM = ROOT / ".build" / "vm"
+UNIT = "enzui-settings-vm.service"
+PORT = 2229
+MEMORY = "1536M"
+KEY = VM / "id_ed25519"
+USER = "enz"
+
+PACKAGES = """networkmanager wpa_supplicant hostapd iw bluez bluez-utils pipewire
+wireplumber pipewire-pulse pipewire-alsa alsa-utils upower power-profiles-daemon
+cups cups-filters avahi nss-mdns chrony polkit firewalld sway grim wtype foot
+mesa vulkan-swrast xkeyboard-config ttf-dejavu noto-fonts pciutils usbutils
+python rsync dnsmasq""".split()
+
+GUEST_SETUP = r"""#!/bin/bash
+set -u
+if [ "$(ls /sys/class/net | grep -c '^wlan')" -lt 3 ] && lsmod | grep -q '^mac80211_hwsim'; then
+  pkill -x hostapd; sleep 1; rmmod mac80211_hwsim || true
+fi
+modprobe mac80211_hwsim radios=3 || true
+modprobe test_power || true
+modprobe hci_vhci || true
+modprobe snd-dummy || true
+cat > /etc/NetworkManager/conf.d/10-enzui-vm.conf <<'EOF'
+[keyfile]
+unmanaged-devices=interface-name:wlan1;interface-name:wlan2
+[device]
+wifi.scan-rand-mac-address=no
+EOF
+udevadm settle
+wlans=$(ls /sys/class/net | grep '^wlan' | sort)
+ap=$(echo "$wlans" | sed -n 2p)
+if [ -n "$ap" ]; then
+  cat > /etc/hostapd/enzui-vm.conf <<EOF
+interface=$ap
+driver=nl80211
+ssid=Harbour Studio
+hw_mode=g
+channel=6
+wpa=2
+wpa_passphrase=enzui-test
+wpa_key_mgmt=WPA-PSK
+rsn_pairwise=CCMP
+EOF
+  ip addr add 10.42.7.1/24 dev "$ap" 2>/dev/null || true
+  pkill -f 'hostapd -B /etc/hostapd/enzui-vm.conf' || true
+  hostapd -B /etc/hostapd/enzui-vm.conf
+  # The fixture access point must keep serving DHCP outside the firewall under test.
+  firewall-offline-cmd --zone=trusted --add-interface="$ap" >/dev/null 2>&1 || true
+  firewall-cmd --zone=trusted --add-interface="$ap" >/dev/null 2>&1 || true
+  pkill -f 'dnsmasq --conf-file=/dev/null --interface=' || true
+  dnsmasq --conf-file=/dev/null --interface="$ap" --bind-interfaces --except-interface=lo \
+    --dhcp-range=10.42.7.10,10.42.7.60,12h --dhcp-option=option:router,10.42.7.1 --port=0
+fi
+eap=$(echo "$wlans" | sed -n 3p)
+if [ -n "$eap" ]; then
+  # Throwaway PEAP/MSCHAPv2 fixture with a self-signed certificate.
+  mkdir -p /etc/hostapd/eap
+  if [ ! -s /etc/hostapd/eap/server.pem ]; then
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=Harbour University RADIUS" \
+      -keyout /etc/hostapd/eap/server.key -out /etc/hostapd/eap/server.pem >/dev/null 2>&1
+  fi
+  printf '%s\n' '* PEAP' '"student" MSCHAPV2 "campus-pass" [2]' > /etc/hostapd/eap/users
+  cat > /etc/hostapd/enzui-vm-eap.conf <<CONF
+interface=$eap
+driver=nl80211
+ssid=Harbour University
+hw_mode=g
+channel=11
+ieee8021x=1
+eapol_version=2
+eap_server=1
+eap_user_file=/etc/hostapd/eap/users
+ca_cert=/etc/hostapd/eap/server.pem
+server_cert=/etc/hostapd/eap/server.pem
+private_key=/etc/hostapd/eap/server.key
+wpa=2
+wpa_key_mgmt=WPA-EAP
+rsn_pairwise=CCMP
+CONF
+  ip addr add 10.42.8.1/24 dev "$eap" 2>/dev/null || true
+  pkill -f 'hostapd -B /etc/hostapd/enzui-vm-eap.conf' || true
+  hostapd -B /etc/hostapd/enzui-vm-eap.conf
+  firewall-offline-cmd --zone=trusted --add-interface="$eap" >/dev/null 2>&1 || true
+  firewall-cmd --zone=trusted --add-interface="$eap" >/dev/null 2>&1 || true
+  dnsmasq --conf-file=/dev/null --interface="$eap" --bind-interfaces --except-interface=lo \
+    --dhcp-range=10.42.8.10,10.42.8.60,12h --dhcp-option=option:router,10.42.8.1 --port=0
+fi
+pgrep -x btvirt >/dev/null || (btvirt -l2 >/var/log/btvirt.log 2>&1 &)
+sleep 1
+(sleep 6; for c in "power on" "connectable on" "bondable on" "discov yes"; do
+   timeout 5 btmgmt --index 1 $c </dev/null >/dev/null 2>&1; done
+ busctl call org.bluez /org/bluez/hci1 org.freedesktop.DBus.Properties Set ssv org.bluez.Adapter1 Alias s "Soundcore Liberty 4"
+ for h in hci0 hci1; do busctl call org.bluez /org/bluez/$h org.freedesktop.DBus.Properties Set ssv org.bluez.Adapter1 Pairable b true; done) &
+systemctl enable cups avahi-daemon chronyd power-profiles-daemon firewalld upower
+systemctl start --no-block cups avahi-daemon chronyd power-profiles-daemon firewalld upower
+pgrep -f 'ippeveprinter.*Studio' >/dev/null || \
+  (runuser -u enz -- ippeveprinter -k -r _print -p 8631 'Studio LaserJet' >/var/log/ippeveprinter.log 2>&1 &)
+"""
+
+SESSION = r"""#!/bin/bash
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+export WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman
+exec sway -c /home/enz/.config/sway/config
+"""
+
+SWAY = """output HEADLESS-1 mode 1440x900 bg #1d2330 solid_color
+default_border none
+for_window [app_id=".*"] floating enable
+"""
+
+
+def run(*args, **kw):
+    return subprocess.run(args, check=True, **kw)
+
+
+def unit_active():
+    out = subprocess.run(["systemctl", "--user", "is-active", UNIT], capture_output=True, text=True)
+    return out.stdout.strip() in ("active", "activating")
+
+
+def ssh(command, check=True, capture=False, timeout=600):
+    args = ["ssh", "-i", str(KEY), "-p", str(PORT), "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
+            "-o", "ConnectTimeout=5", f"{USER}@127.0.0.1", command]
+    return subprocess.run(args, check=check, text=True, capture_output=capture, timeout=timeout)
+
+
+def guest_files():
+    return {
+        "/usr/local/sbin/enzui-vm-hardware": (GUEST_SETUP, "0755"),
+        "/usr/local/bin/enzui-vm-session": (SESSION, "0755"),
+        "/home/enz/.config/sway/config": (SWAY, "0644"),
+        "/etc/systemd/system/enzui-vm-hardware.service": (
+            "[Unit]\nAfter=systemd-modules-load.service\nBefore=NetworkManager.service bluetooth.service\n[Service]\nType=oneshot\nRemainAfterExit=yes\n"
+            "ExecStart=/usr/local/sbin/enzui-vm-hardware\n[Install]\nWantedBy=multi-user.target\n", "0644"),
+        "/etc/polkit-1/rules.d/50-enzui-vm.rules": (
+            # Guest-only policy allows wheel users to test settings from SSH-started sessions.
+            "polkit.addRule(function(action, subject) {\n  if (subject.isInGroup('wheel')) return polkit.Result.YES;\n});\n", "0644"),
+    }
+
+
+def create():
+    VM.mkdir(parents=True, exist_ok=True)
+    base = VM / "arch.qcow2"
+    if not base.exists():
+        sys.exit("settings-vm: download the Arch cloud image to .build/vm/arch.qcow2 first")
+    if not KEY.exists():
+        run("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "enzui-settings-vm", "-f", str(KEY))
+    disk = VM / "disk.qcow2"
+    if disk.exists():
+        sys.exit("settings-vm: disk.qcow2 exists; remove it to recreate the guest")
+    run("qemu-img", "create", "-q", "-f", "qcow2", "-F", "qcow2", "-b", str(base), str(disk), "16G")
+    seed = VM / "seed"
+    shutil.rmtree(seed, ignore_errors=True)
+    seed.mkdir()
+    pub = (KEY.with_suffix(".pub")).read_text().strip()
+    files = guest_files()
+    write_files = [{"path": p, "content": c, "permissions": m} for p, (c, m) in files.items()]
+    user_data = {
+        "hostname": "enzimos-vm",
+        "users": [{"name": USER, "groups": ["wheel", "sys", "audio", "video", "input"], "shell": "/bin/bash",
+                   "sudo": "ALL=(ALL) NOPASSWD:ALL", "lock_passwd": False, "ssh_authorized_keys": [pub]}],
+        "chpasswd": {"expire": False, "users": [{"name": USER, "password": "enzui-test", "type": "text"}]},
+        "ssh_pwauth": False,
+        "write_files": write_files,
+        "runcmd": [
+            ["bash", "-c", "pacman-key --init && pacman-key --populate archlinux"],
+            ["bash", "-c", "pacman -Syu --noconfirm --needed " + " ".join(PACKAGES) + " > /var/log/enzui-packages.log 2>&1"],
+            # Arch's bluez-utils does not ship the btvirt controller emulator.
+            ["bash", "-c", "pacman -S --noconfirm --needed base-devel glib2 dbus libical readline >> /var/log/enzui-packages.log 2>&1 && "
+             "v=$(pacman -Q bluez | awk '{print $2}' | cut -d- -f1) && cd /tmp && "
+             "curl -sLO https://www.kernel.org/pub/linux/bluetooth/bluez-$v.tar.xz && tar xf bluez-$v.tar.xz && cd bluez-$v && "
+             "./configure --enable-testing --disable-systemd --disable-cups --disable-obex --disable-manpages --disable-udev >/dev/null && "
+             "make -j2 emulator/btvirt >/dev/null && install -m755 emulator/btvirt /usr/local/bin/btvirt"],
+            ["bash", "-c", "chown -R enz:enz /home/enz/.config && mkdir -p /home/enz/bin && chown enz:enz /home/enz/bin"],
+            ["bash", "-c", "systemctl disable --now systemd-networkd systemd-timesyncd 2>/dev/null; systemctl mask systemd-time-wait-sync; systemctl enable NetworkManager bluetooth enzui-vm-hardware"],
+            ["bash", "-c", "loginctl enable-linger enz"],
+            ["bash", "-c", "touch /var/lib/enzui-vm-ready && systemctl reboot"],
+        ],
+    }
+    (seed / "user-data").write_text("#cloud-config\n" + json.dumps(user_data, indent=1))
+    (seed / "meta-data").write_text("instance-id: enzui-settings-vm\nlocal-hostname: enzimos-vm\n")
+    run("xorriso", "-as", "mkisofs", "-quiet", "-output", str(VM / "seed.iso"), "-volid", "cidata",
+        "-joliet", "-rock", str(seed / "user-data"), str(seed / "meta-data"))
+    print(f"created {disk}")
+
+
+def start():
+    if unit_active():
+        print("already running")
+        return
+    disk = VM / "disk.qcow2"
+    run("systemd-run", "--user", "--unit", UNIT, "--collect", "-p", f"MemoryMax={MEMORY}", "-p", "MemorySwapMax=0",
+        "qemu-system-x86_64", "-name", "enzui-settings-vm", "-enable-kvm", "-cpu", "host", "-smp", "2",
+        "-m", "1152", "-drive", f"file={disk},if=virtio", "-drive", f"file={VM / 'seed.iso'},media=cdrom",
+        "-nic", f"user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:{PORT}-:22",
+        "-audiodev", "none,id=snd0", "-device", "intel-hda", "-device", "hda-duplex,audiodev=snd0",
+        "-display", "none",
+        "-chardev", f"socket,id=console,path={VM / 'serial.sock'},server=on,wait=off,logfile={VM / 'serial.log'}",
+        "-serial", "chardev:console")
+    deadline = time.time() + 900
+    while time.time() < deadline:
+        if ssh("true", check=False, capture=True, timeout=20).returncode == 0:
+            print("ssh ready")
+            return
+        time.sleep(5)
+    sys.exit("settings-vm: guest did not answer over SSH")
+
+
+def stop():
+    if unit_active():
+        ssh("sudo systemctl poweroff", check=False, capture=True, timeout=20)
+        for _ in range(60):
+            if not unit_active():
+                break
+            time.sleep(1)
+        if unit_active():
+            run("systemctl", "--user", "stop", UNIT)
+    cgroup = Path(f"/sys/fs/cgroup/user.slice/user-{os.getuid()}.slice/user@{os.getuid()}.service/app.slice/{UNIT}")
+    if cgroup.exists() and (cgroup / "cgroup.procs").read_text().strip():
+        sys.exit("settings-vm: the VM unit still has processes")
+    print("stopped")
+
+
+def sync():
+    """Rewrites the guest's setup files from this script and reruns them."""
+    for path, (content, mode) in guest_files().items():
+        subprocess.run(["ssh", "-i", str(KEY), "-p", str(PORT), "-o", "StrictHostKeyChecking=no",
+                        "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", f"{USER}@127.0.0.1",
+                        f"sudo install -D -m {mode} /dev/stdin {path}"], input=content, text=True, check=True)
+    ssh("sudo systemctl daemon-reload && sudo systemctl restart enzui-vm-hardware && sudo systemctl restart NetworkManager bluetooth")
+
+
+GREETER_SWAY = """output * bg #000000 solid_color
+default_border none
+exec sh -c '/usr/local/bin/enzui-greeter 2>/tmp/enzui-greeter.log; swaymsg exit'
+"""
+
+GREETER_SESSION = """#!/bin/sh
+# Test stand-in for config/greetd/enzui-greeter-session: sway, software-rendered.
+export ENZUI_DESKTOP_ROOT=/usr/share/enzui WLR_RENDERER=pixman XDG_SESSION_TYPE=wayland
+exec sway -c /etc/enzui/greeter-sway.conf
+"""
+
+TEST_SESSION = """[Desktop Entry]
+Name=Sway (software)
+Exec=env WLR_RENDERER=pixman sway -c /etc/enzui/session-sway.conf
+DesktopNames=sway
+"""
+
+
+def greeter():
+    push([str(ROOT / "target/release/enzui-greeter"), str(ROOT / "assets/wallpaper.png")])
+    files = {
+        "/etc/enzui/greeter-sway.conf": GREETER_SWAY,
+        "/usr/local/bin/enzui-vm-greeter-session": GREETER_SESSION,
+        "/usr/share/wayland-sessions/sway-software.desktop": TEST_SESSION,
+        "/etc/enzui/session-sway.conf": "output * bg #3a6ea5 solid_color\nexec foot\n",
+        "/etc/greetd/config.toml": (ROOT / "config/greetd/config.toml").read_text().replace(
+            "/usr/lib/enzui/enzui-greeter-session", "/usr/local/bin/enzui-vm-greeter-session"),
+    }
+    ssh("sudo pacman -S --noconfirm --needed greetd >/dev/null")
+    for path, content in files.items():
+        mode = "0755" if path.endswith("-session") else "0644"
+        subprocess.run(["ssh", "-i", str(KEY), "-p", str(PORT), "-o", "StrictHostKeyChecking=no",
+                        "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", f"{USER}@127.0.0.1",
+                        f"sudo install -D -m {mode} /dev/stdin {path}"], input=content, text=True, check=True)
+    ssh("sudo install -m755 /home/enz/bin/enzui-greeter /usr/local/bin/enzui-greeter && "
+        "sudo install -D -m644 /home/enz/bin/wallpaper.png /usr/share/enzui/assets/wallpaper.png && "
+        "sudo install -d -o greeter -g greeter -m700 /var/cache/enzui-greeter && "
+        "sudo systemctl enable greetd && sudo systemctl restart greetd")
+
+
+def push(files):
+    ssh("mkdir -p /home/enz/bin")
+    for f in files:
+        name = Path(f).name
+        # Upload beside the target and rename, so a running binary is replaced.
+        run("scp", "-q", "-i", str(KEY), "-P", str(PORT), "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", f, f"{USER}@127.0.0.1:/home/enz/bin/.{name}.new")
+        ssh(f"mv -f /home/enz/bin/.{name}.new /home/enz/bin/{name}")
+
+
+def main():
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
+    command, rest = sys.argv[1], sys.argv[2:]
+    if command == "create":
+        create()
+    elif command == "start":
+        start()
+    elif command == "stop":
+        stop()
+    elif command == "ssh":
+        sys.exit(ssh(" ".join(rest), check=False).returncode)
+    elif command == "sync":
+        sync()
+    elif command == "push":
+        push(rest)
+    elif command == "greeter":
+        greeter()
+    elif command == "session":
+        ssh("systemctl --user is-active --quiet enzui-vm-sway || "
+            "systemd-run --user --unit enzui-vm-sway --collect /usr/local/bin/enzui-vm-session")
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main()

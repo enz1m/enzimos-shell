@@ -1,0 +1,484 @@
+#!/usr/bin/env python3
+"""Stage the installed enzUI desktop from already-built, pinned components.
+
+  scripts/export-desktop --destdir DIR [--prefix /usr] --compositor BUILD_ROOT
+                         --bin-dir DIR
+
+DESTDIR must be empty or absent. Nothing is built or downloaded here: the
+compositor root comes from scripts/build-desktop-compositor and build-sidebar-scene,
+the executables from scripts/build-release. The enzUI apps are packaged from
+their own repositories and install into PREFIX/lib/enzui/apps/. The
+result is a plain file tree plus PREFIX/share/enzui/manifest.json describing
+every owned path (files with mode, size and sha256; symlinks with their
+relative target), the exact source pins, the build receipt of every
+executable, the compositor source and plugin identity, runtime dependencies and
+licence notices, for the OS package build to consume.
+
+Executables must come with the receipts scripts/build-release writes
+(scripts/build-receipt): the export refuses bytes a
+receipt does not describe, a receipt for another source revision or pins, and
+uncommitted source, unless --allow-unreleased is given for a development
+stage (then recorded in the manifest). Layout:
+
+  PREFIX/share/enzui/          desktop root (ENZUI_DESKTOP_ROOT): config, scripts,
+                               assets, live wallpaper scenes, installed.json
+  PREFIX/lib/enzui/compositor/ pinned Hyprland, hyprctl, private libraries, plugin
+  PREFIX/lib/enzui/bin/        shell, Settings, lock, greeter, polkit agent, helpers
+  PREFIX/bin/enzui-session     the login session command
+  PREFIX/share/wayland-sessions/enzui.desktop
+  etc/greetd/config.toml, etc/pam.d/enzui-lock, etc/pam.d/enzui-fingerprint, PREFIX/lib/tmpfiles.d/enzui-greeter.conf
+  PREFIX/share/enzui/agent-apps/, PREFIX/lib/systemd/user/ (with enzui-session.target),
+  PREFIX/share/dbus-1/services/, PREFIX/share/enzimos/background-apps/
+                               Settings' on-demand agent worker (config/agent)
+"""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import stat
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / 'tools'))
+
+EXECUTABLES = ["enzui-shell", "enzui-settings", "enzui-shell-command", "enzui-desktop-frame", "enzui-maximize-preview", "enzui-idle-inhibit",
+               "enzui-wallpaper", "enzui-polkit-agent", "enzui-location-agent", "enzui-keyring-prompt", "enzui-drive-unlock", "enzui-agent-consent", "enzui-assistant", "enzui-network-secrets", "enzui-portal", "enzui-lock", "enzui-greeter", "enzui-dev-tools", "enzwall",
+               "enzui-plugin-worker", "window-snapshot", "xdg-desktop-portal-enzui-remote"]
+DESKTOP_SCRIPTS = ["start-shell-platform", "run-wallpaper", "launch-desktop-app"]
+RUNTIME_TOOLS = ["python3", "bwrap", "dbus-update-activation-environment", "systemd-run", "systemctl", "loginctl", "gio",
+                 "greetd"]
+OPTIONAL_TOOLS = {"grim": "screenshots", "wpctl": "volume and audio devices", "nmcli": "network settings",
+                  "bluetoothctl": "Bluetooth", "brightnessctl": "brightness", "wf-recorder": "screen recording",
+                  "wl-copy": "copying screenshots"}
+
+# The desktop's default handlers; the apps themselves ship as their own packages.
+DEFAULT_TYPES = {"inode/directory": "io.github.enzui.Files.desktop", "text/plain": "io.github.enzui.Text.desktop",
+                 "text/markdown": "io.github.enzui.Text.desktop"}
+
+
+def desktop_entry(text, program, executable):
+    """The entry with Exec and TryExec naming the exported binary; field
+    codes and every other key are kept."""
+    lines = []
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key in ("Exec", "TryExec"):
+            first, _, rest = value.partition(" ")
+            if first != program:
+                raise SystemExit(f"export-desktop: unexpected {key} in {program}'s desktop entry")
+            value = str(executable) + (" " + rest if rest else "")
+        lines.append(f"{key}={value}" if sep else line)
+    return "\n".join(lines) + "\n"
+
+
+def die(message):
+    print("export-desktop:", message, file=sys.stderr)
+    sys.exit(1)
+
+
+def compositor_source(compositor, executable, control, pins, problems):
+    variants = {"enz-hyprland": ("desktop", pins["hyprland"]["revision"]),
+                "Hyprland": ("desktop-unrenamed", pins["hyprland"]["variants"]["desktop-unrenamed"])}
+    variant, revision = variants[executable.name]
+    descriptor = compositor / "desktop-compositor.json"
+    try:
+        record = json.loads(descriptor.read_text())
+        revisions = (compositor / "build-revisions").read_text().splitlines()
+        if (isinstance(record, dict) and record.get("complete") is True and record.get("variant") == variant
+                and record.get("revision") == revision
+                and record.get("aquamarine_revision") == pins["aquamarine"]["revision"]
+                and revisions == [record.get("fingerprint"), f"privileged-launcher-child-pidfd-v2 {revision}"]
+                and record.get("binary_sha256") == sha256(executable)
+                and record.get("control_sha256") == sha256(control)):
+            return {"variant": variant, "revision": revision, "aquamarine_revision": record["aquamarine_revision"]}
+    except (OSError, ValueError):
+        pass
+    problems.append("the supplied compositor does not match the locked fork revisions and build receipt")
+    return None
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        for block in iter(lambda: source.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def copy(source, target, mode):
+    source = Path(source).resolve()
+    if not source.is_file():
+        die(f"missing component {source}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, target)
+    os.chmod(target, mode)
+
+
+def copy_tree(source, target, pattern="*"):
+    for path in sorted(Path(source).rglob(pattern)):
+        if path.is_file() and not path.is_symlink():
+            relative = path.relative_to(source)
+            copy(path, target / relative, 0o755 if os.access(path, os.X_OK) else 0o644)
+
+
+def relocate_runpath(path, runpath):
+    """Point a build-tree RUNPATH at the exported private libraries.
+
+    The prepared compositor links with a RUNPATH into its build prefix. The
+    string lives in .dynstr, so the exported copy gets a shorter,
+    $ORIGIN-relative value written in place and NUL-padded; readelf then
+    confirms the result. Nothing else in the file changes."""
+    out = subprocess.run(["readelf", "-d", str(path)], capture_output=True, text=True).stdout
+    found = re.search(r"\((?:RUNPATH|RPATH)\)\s+Library r(?:un)?path: \[([^\]]*)\]", out)
+    if not found:
+        return
+    old, new = found.group(1).encode(), runpath.encode()
+    data = bytearray(path.read_bytes())
+    if data.count(old + b"\0") != 1 or len(new) > len(old):
+        die(f"cannot relocate the RUNPATH of {path}")
+    at = data.index(old + b"\0")
+    data[at:at + len(old)] = new + b"\0" * (len(old) - len(new))
+    path.write_bytes(bytes(data))
+    check = subprocess.run(["readelf", "-d", str(path)], capture_output=True, text=True).stdout
+    if f"[{runpath}]" not in check:
+        die(f"RUNPATH relocation of {path} did not verify")
+
+
+def needed(path):
+    out = subprocess.run(["readelf", "-d", str(path)], capture_output=True, text=True).stdout
+    for runpath in re.findall(r"Library r(?:un)?path: \[([^\]]*)\]", out):
+        if any(not part.startswith("$ORIGIN") for part in runpath.split(":") if part):
+            die(f"{path} carries a RUNPATH outside its own install; release artifacts must not point at a build tree")
+    return re.findall(r"\(NEEDED\)\s+Shared library: \[([^\]]+)\]", out)
+
+
+def receipt_state(directory):
+    out = subprocess.run([str(ROOT / "scripts/build-receipt"), "source", str(directory)], capture_output=True, text=True)
+    if out.returncode:
+        die(f"cannot read the source state of {directory}")
+    return json.loads(out.stdout)
+
+
+def load_receipt(path, files, expect, problems):
+    """Checks a build receipt against the bytes about to be exported and the
+    source this export stands for; returns the receipt for the manifest."""
+    if not path.is_file():
+        die(f"{path.name} is missing next to the supplied binaries; build them with scripts/build-release")
+    receipt = json.loads(path.read_text())
+    if receipt.get("schema") != 1:
+        die(f"{path} is not a version-1 build receipt")
+    for name, file in files.items():
+        if receipt.get("files", {}).get(name) != sha256(file):
+            die(f"{name} does not match its build receipt {path}; rebuild instead of mixing binaries")
+    for key, wanted in expect.items():
+        have = receipt
+        for part in key.split("."):
+            have = have.get(part) if isinstance(have, dict) else None
+        if have != wanted:
+            problems.append(f"{path.name}: {key} is {have!r}, this export needs {wanted!r}")
+    for part in ("source", "framework"):
+        if receipt.get(part, {}).get("dirty"):
+            problems.append(f"{path.name}: built from uncommitted {part} changes")
+    return receipt
+
+
+def is_elf(path):
+    with open(path, "rb") as source:
+        return source.read(4) == b"\x7fELF"
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--destdir", required=True)
+    parser.add_argument("--prefix", default="/usr")
+    parser.add_argument("--compositor", required=True, help="prepared build root with hyprland-current-build, prefix/lib and shell-plugins")
+    parser.add_argument("--bin-dir", required=True, help="release shell executables (scripts/build-release)")
+    parser.add_argument("--allow-unreleased", action="store_true",
+                        help="a development stage: accept receipts for other or uncommitted source, recording it in the manifest")
+    args = parser.parse_args()
+
+    prefix = Path(args.prefix)
+    if not prefix.is_absolute():
+        die("--prefix must be absolute")
+    destdir = Path(args.destdir).resolve()
+    if destdir.exists() and any(destdir.iterdir()):
+        die("DESTDIR must be empty; exports never overwrite an existing stage")
+    compositor = Path(args.compositor).resolve()
+    bin_dir = Path(args.bin_dir).resolve()
+    # enz-hyprland and enz-hyprctl; compositor roots from before the rename hold Hyprland and hyprctl.
+    compositor_name = "enz-hyprland" if (compositor / "hyprland-current-build/enz-hyprland").exists() else "Hyprland"
+    control_name = "enz-hyprctl" if compositor_name == "enz-hyprland" else "hyprctl"
+    for required in [compositor / "hyprland-current-build" / compositor_name, compositor / "hyprland-current-build/hyprctl" / control_name,
+                     compositor / "build-revisions", compositor / "shell-plugins/enzui-pointer-events.so"]:
+        if not required.exists():
+            die(f"compositor root is incomplete: {required}")
+    lock = json.loads((ROOT / "sources.lock.json").read_text())
+    revision = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    dirty = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True).stdout.strip()
+    problems = []
+    if dirty:
+        problems.append("the exporting checkout has uncommitted changes")
+    framework_state = receipt_state(ROOT / "vendor/enzui")
+    shell_receipt = load_receipt(bin_dir / "BUILD_RECEIPT.json", {name: bin_dir / name for name in EXECUTABLES},
+                                 {"source.revision": revision, "framework.revision": lock["framework"]["revision"],
+                                  "sources_lock_sha256": sha256(ROOT / "sources.lock.json")}, problems)
+    compositor_pins = compositor_source(compositor, compositor / "hyprland-current-build" / compositor_name,
+                                        compositor / "hyprland-current-build/hyprctl" / control_name, lock, problems)
+    if problems and not args.allow_unreleased:
+        die("the supplied binaries are not a release of this source:\n  " + "\n  ".join(problems)
+            + "\nRebuild from the committed source, or pass --allow-unreleased for a development stage")
+
+    def at(path):
+        return destdir / Path(path).relative_to("/")
+
+    share, lib = at(prefix / "share/enzui"), at(prefix / "lib/enzui")
+    components = {}
+
+    def track(target, component):
+        components[target] = component
+    links = {}
+
+    def track_link(target, component):
+        links[target] = component
+
+    for source in sorted((ROOT / "config").glob("*.lua")):
+        copy(source, share / "config" / source.name, 0o644)
+    for name in DESKTOP_SCRIPTS:
+        copy(ROOT / "scripts" / name, share / "scripts" / name, 0o755)
+    copy(ROOT / "enzui-hypr", share / "enzui-hypr", 0o755)
+    copy_tree(ROOT / "assets", share / "assets")
+    if (ROOT / "enzwall/scenes").is_dir():
+        copy_tree(ROOT / "enzwall/scenes", share / "enzwall/scenes")
+    copy(ROOT / "config/greetd/hyprland-greeter.lua", share / "greeter/hyprland.lua", 0o644)
+    copy(ROOT / "sources.lock.json", share / "sources.lock.json", 0o644)
+    installed = {"compositor": str(prefix / "lib/enzui/compositor"), "bin": str(prefix / "lib/enzui/bin"), "apps": str(prefix / "lib/enzui/apps")}
+    (share / "installed.json").write_text(json.dumps(installed, indent=2) + "\n")
+    (share / "SOURCE_REVISION").write_text(revision + ("-dirty" if dirty else "") + "\n")
+    for path in share.rglob("*"):
+        if path.is_file():
+            track(path, "desktop")
+
+    build = lib / "compositor"
+    copy(compositor / "hyprland-current-build" / compositor_name, build / "hyprland-current-build" / compositor_name, 0o755)
+    copy(compositor / "hyprland-current-build/hyprctl" / control_name, build / "hyprland-current-build/hyprctl" / control_name, 0o755)
+    copy(compositor / "build-revisions", build / "build-revisions", 0o644)
+    # The installed launcher uses this descriptor to pass its pidfd capability.
+    descriptor = compositor / "desktop-compositor.json"
+    if descriptor.is_file():
+        copy(descriptor, build / descriptor.name, 0o644)
+    relocate_runpath(build / "hyprland-current-build" / compositor_name, "$ORIGIN/../prefix/lib")
+    relocate_runpath(build / "hyprland-current-build/hyprctl" / control_name, "$ORIGIN/../../prefix/lib")
+    plugin = (compositor / "shell-plugins/enzui-pointer-events.so").resolve()
+    copy(plugin, build / "shell-plugins" / plugin.name, 0o755)
+    (build / "shell-plugins/enzui-pointer-events.so").symlink_to(plugin.name)
+    track_link(build / "shell-plugins/enzui-pointer-events.so", "compositor")
+    private_libs = []
+    for library in sorted((compositor / "prefix/lib").glob("lib*.so*")):
+        target = build / "prefix/lib" / library.name
+        if library.is_symlink():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.symlink_to(os.readlink(library))
+            track_link(target, "compositor")
+        else:
+            copy(library, target, 0o755)
+            private_libs.append(library.name)
+    for path in build.rglob("*"):
+        if path.is_file() and not path.is_symlink():
+            track(path, "compositor")
+
+    for name in EXECUTABLES:
+        copy(bin_dir / name, lib / "bin" / name, 0o755)
+        track(lib / "bin" / name, "shell")
+    # User and system MIME defaults take precedence over desktop-specific defaults.
+    mimeapps = at(prefix / "share/applications/enzui-mimeapps.list")
+    mimeapps.parent.mkdir(parents=True, exist_ok=True)
+    mimeapps.write_text("[Default Applications]\n" + "".join(f"{mime}={entry_id}\n" for mime, entry_id in DEFAULT_TYPES.items()))
+    os.chmod(mimeapps, 0o644)
+    track(mimeapps, "shell")
+
+    session = at(prefix / "bin/enzui-session")
+    session.parent.mkdir(parents=True, exist_ok=True)
+    session.write_text(f"#!/bin/sh\n# The enzUI desktop for a login; started by greetd from wayland-sessions/enzui.desktop.\n"
+                       "state=\"${XDG_STATE_HOME:-$HOME/.local/state}/enzui\"\n"
+                       "mkdir -p -m 700 \"$state\" && exec >>\"$state/session.log\" 2>&1\n"
+                       f"exec /usr/bin/python3 {prefix}/share/enzui/scripts/start-shell-platform --installed \"$@\"\n")
+    os.chmod(session, 0o755)
+    track(session, "session")
+    entry = at(prefix / "share/wayland-sessions/enzui.desktop")
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.write_text("[Desktop Entry]\nName=enzUI\nComment=The enzUI desktop\nExec=enzui-session\nType=Application\nDesktopNames=enzUI;Hyprland;\n")
+    track(entry, "session")
+    greeter = lib / "enzui-greeter-session"
+    greeter.write_text("#!/bin/sh\n# greetd's greeter: the pinned compositor running only enzui-greeter.\n"
+                       f"export ENZUI_DESKTOP_ROOT={prefix}/share/enzui\n"
+                       "export ENZUI_SHELL_SETTINGS=\"${ENZUI_SHELL_SETTINGS:-/etc/enzui/greeter.json}\"\n"
+                       "export XDG_SESSION_TYPE=wayland\n"
+                       "# The greeter user's own bus: screen readers and the greeter's AT-SPI tree meet there.\n"
+                       "# Its user manager starts beside this script, so the socket may still be coming.\n"
+                       "i=0; while [ ! -S \"${XDG_RUNTIME_DIR:-/nonexistent}/bus\" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done\n"
+                       "if [ -z \"${DBUS_SESSION_BUS_ADDRESS:-}\" ] && [ -S \"${XDG_RUNTIME_DIR:-/nonexistent}/bus\" ]; then\n"
+                       "    export DBUS_SESSION_BUS_ADDRESS=\"unix:path=$XDG_RUNTIME_DIR/bus\"\n"
+                       "fi\n"
+                       "# The greeter account has no writable home. This session gets one in its runtime\n"
+                       "# directory, shared with its user services, so settings such as the accessibility\n"
+                       "# switch hold (GSettings would otherwise revert them) and a screen reader can run.\n"
+                       "if [ ! -w \"${HOME:-/}\" ] && [ -d \"${XDG_RUNTIME_DIR:-}\" ]; then\n"
+                       "    mkdir -p -m 700 \"$XDG_RUNTIME_DIR/home\" && export HOME=\"$XDG_RUNTIME_DIR/home\"\n"
+                       "    systemctl --user set-environment HOME=\"$HOME\" >/dev/null 2>&1 || true\n"
+                       "    systemctl --user try-restart dconf.service at-spi-dbus-bus.service >/dev/null 2>&1 || true\n"
+                       "fi\n"
+                       "# The greeter publishes its accessibility tree from its first frame, so a screen\n"
+                       "# reader started later (Super+Alt+S) finds it; it is the only application here.\n"
+                       "busctl --user set-property org.a11y.Bus /org/a11y/bus org.a11y.Status IsEnabled b true >/dev/null 2>&1 || true\n"
+                       f"export PATH={prefix}/lib/enzui/bin:{prefix}/lib/enzui/compositor/hyprland-current-build/hyprctl:$PATH\n"
+                       f"export LD_LIBRARY_PATH={prefix}/lib/enzui/compositor/prefix/lib\n"
+                       f"exec {prefix}/lib/enzui/compositor/hyprland-current-build/{compositor_name} --config {prefix}/share/enzui/greeter/hyprland.lua\n")
+    os.chmod(greeter, 0o755)
+    track(greeter, "greeter")
+    greetd = (ROOT / "config/greetd/config.toml").read_text().replace("/usr/lib/enzui/enzui-greeter-session", str(prefix / "lib/enzui/enzui-greeter-session"))
+    at("/etc/greetd/config.toml").parent.mkdir(parents=True, exist_ok=True)
+    at("/etc/greetd/config.toml").write_text(greetd)
+    track(at("/etc/greetd/config.toml"), "greeter")
+    copy(ROOT / "config/pam/enzui-lock", at("/etc/pam.d/enzui-lock"), 0o644)
+    track(at("/etc/pam.d/enzui-lock"), "lock")
+    copy(ROOT / "config/pam/enzui-fingerprint", at("/etc/pam.d/enzui-fingerprint"), 0o644)
+    track(at("/etc/pam.d/enzui-fingerprint"), "lock")
+    copy(ROOT / "config/greetd/enzui-greeter.tmpfiles", at(prefix / "lib/tmpfiles.d/enzui-greeter.conf"), 0o644)
+    track(at(prefix / "lib/tmpfiles.d/enzui-greeter.conf"), "greeter")
+
+    copy(ROOT / "config/portal/enzui.portal", at(prefix / "share/xdg-desktop-portal/portals/enzui.portal"), 0o644)
+    copy(ROOT / "config/portal/enzui-portals.conf", at(prefix / "share/xdg-desktop-portal/enzui-portals.conf"), 0o644)
+    service = at(prefix / "share/dbus-1/services/org.freedesktop.impl.portal.desktop.enzui.service")
+    service.parent.mkdir(parents=True, exist_ok=True)
+    service.write_text(f"[D-BUS Service]\nName=org.freedesktop.impl.portal.desktop.enzui\nExec={prefix}/lib/enzui/bin/enzui-portal\n")
+    # Use a separate portal bus name so the system backend retains screenshots and shortcuts.
+    copy(ROOT / "config/portal/enzui-remote.portal", at(prefix / "share/xdg-desktop-portal/portals/enzui-remote.portal"), 0o644)
+    remote = at(prefix / "share/dbus-1/services/org.freedesktop.impl.portal.desktop.enzuiremote.service")
+    remote.write_text("[D-BUS Service]\nName=org.freedesktop.impl.portal.desktop.enzuiremote\n"
+                      f"Exec=/usr/bin/env XDPH_BUS_NAME=org.freedesktop.impl.portal.desktop.enzuiremote {prefix}/lib/enzui/bin/xdg-desktop-portal-enzui-remote\n")
+    for path in (at(prefix / "share/xdg-desktop-portal/portals/enzui.portal"), at(prefix / "share/xdg-desktop-portal/enzui-portals.conf"), service,
+                 at(prefix / "share/xdg-desktop-portal/portals/enzui-remote.portal"), remote):
+        track(path, "portal")
+
+    # Install on-demand Settings activation from the generated registry; leave autostart
+    # disabled.
+    agent = ROOT / "config/agent"
+    for source, target in ((agent / "dev.enzui.Settings.json", prefix / "share/enzui/agent-apps/dev.enzui.Settings.json"),
+                           (agent / "enzui-agent-dev.enzui.Settings.service", prefix / "lib/systemd/user/enzui-agent-dev.enzui.Settings.service"),
+                           (agent / "dev.enzui.Settings.service", prefix / "share/dbus-1/services/dev.enzui.Settings.service"),
+                           (agent / "dev.enzui.Settings.background.json", prefix / "share/enzimos/background-apps/dev.enzui.Settings.json"),
+                           (agent / "dev.enzui.Settings.search-provider.ini", prefix / "share/enzui/search-providers/dev.enzui.Settings.ini"),
+                           (agent / "dev.enzui.Settings.desktop", prefix / "share/applications/dev.enzui.Settings.desktop")):
+        path = at(target)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source.read_text().replace("/usr/lib/enzui/bin/", f"{prefix}/lib/enzui/bin/"))
+        path.chmod(0o644)
+        track(path, "agent")
+
+    # Settings' own app icon (from the enzimOS icon set), named by its desktop entry.
+    settings_icon = at(prefix / "share/icons/hicolor/scalable/apps/dev.enzui.Settings.svg")
+    settings_icon.parent.mkdir(parents=True, exist_ok=True)
+    copy(ROOT / "assets/icons/hicolor/scalable/apps/dev.enzui.Settings.svg", settings_icon, 0o644)
+    track(settings_icon, "agent")
+
+    for source, target in ((ROOT / "config/systemd/enzui-keyring-prompt.service", prefix / "lib/systemd/user/enzui-keyring-prompt.service"),
+                           (ROOT / "config/portal/dev.enzui.SecretPrompter.service", prefix / "share/dbus-1/services/dev.enzui.SecretPrompter.service")):
+        path = at(target)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source.read_text().replace("/usr/lib/enzui/bin/", f"{prefix}/lib/enzui/bin/"))
+        path.chmod(0o644)
+        track(path, "session")
+
+    # The session's own target; see config/systemd/enzui-session.target.
+    session_target = at(prefix / "lib/systemd/user/enzui-session.target")
+    session_target.parent.mkdir(parents=True, exist_ok=True)
+    copy(ROOT / "config/systemd/enzui-session.target", session_target, 0o644)
+    track(session_target, "session")
+
+    notices = at(prefix / "share/licenses/enzui-desktop")
+    notices.mkdir(parents=True, exist_ok=True)
+    for label, directory in [("enzimos-shell", ROOT), ("enzwall", ROOT / "enzwall"), ("Hyprland", ROOT / "vendor/Hyprland"), ("aquamarine", ROOT / "vendor/aquamarine"), ("hyprutils", ROOT / "vendor/hyprutils"),
+                             ("hyprlang", ROOT / "vendor/hyprlang"), ("hyprcursor", ROOT / "vendor/hyprcursor"), ("hyprgraphics", ROOT / "vendor/hyprgraphics"),
+                             ("hyprwire", ROOT / "vendor/hyprwire"), ("enzui", ROOT / "vendor/enzui"), ("iced", ROOT / "vendor/iced")]:
+        for name in ("LICENSE", "LICENSE.md", "COPYING", "LICENSE-MIT", "LICENSE-APACHE"):
+            if (directory / name).is_file():
+                copy(directory / name, notices / f"{label}-{name}", 0o644)
+    copy(ROOT / "vendor/iced/graphics/fonts/FiraSans-Regular.OFL.txt", notices / "FiraSans-Regular.OFL.txt", 0o644)
+    if (bin_dir / "xdg-desktop-portal-hyprland-LICENSE").is_file():
+        copy(bin_dir / "xdg-desktop-portal-hyprland-LICENSE", notices / "xdg-desktop-portal-hyprland-LICENSE", 0o644)
+    for dependency in sorted((ROOT / "third-party/licenses").iterdir()):
+        for notice in sorted(dependency.iterdir()):
+            copy(notice, notices / f"{dependency.name}-{notice.name}", 0o644)
+    for path in notices.iterdir():
+        track(path, "licenses")
+
+    dependencies = set()
+    files = []
+    for path, component in sorted(components.items(), key=lambda item: str(item[0])):
+        info = path.lstat()
+        record = {"path": "/" + str(path.relative_to(destdir)), "type": "file", "mode": oct(stat.S_IMODE(info.st_mode)), "size": info.st_size,
+                  "sha256": sha256(path), "component": component}
+        if is_elf(path):
+            libs = needed(path)
+            record["needed"] = libs
+            dependencies.update(lib for lib in libs if lib not in private_libs)
+        files.append(record)
+    # Links stay relative and resolve to an exported file.
+    for path, component in sorted(links.items(), key=lambda item: str(item[0])):
+        target = os.readlink(path)
+        resolved = (path.parent / target).resolve()
+        if os.path.isabs(target) or not resolved.is_relative_to(destdir) or resolved not in components:
+            die(f"{path} links to {target}, which is absolute, outside the export or not an exported file")
+        files.append({"path": "/" + str(path.relative_to(destdir)), "type": "symlink", "target": target,
+                      "resolves_to": "/" + str(resolved.relative_to(destdir)), "component": component})
+    manifest_path = "/" + str((share / "manifest.json").relative_to(destdir))
+    # The manifest bounds exactly which paths upgrades replace and removal deletes.
+    present = set()
+    for directory, dirnames, filenames in os.walk(destdir):
+        for name in dirnames + filenames:
+            path = Path(directory) / name
+            if path.is_symlink() or not path.is_dir():
+                present.add("/" + str(path.relative_to(destdir)))
+    listed = {record["path"] for record in files}
+    if present != listed:
+        die(f"export inventory mismatch: unlisted {sorted(present - listed)[:5]}, missing {sorted(listed - present)[:5]}")
+    owned_roots = [prefix / "lib/enzui", prefix / "share/enzui", prefix / "share/licenses/enzui-desktop"]
+    directories = sorted({"/" + str(Path(d).relative_to(destdir)) for d, _, _ in os.walk(destdir)
+                          if any(Path("/" + str(Path(d).relative_to(destdir))).is_relative_to(root) for root in owned_roots)})
+    hyprland_version = subprocess.run([str(build / "hyprland-current-build" / compositor_name), "--version"], capture_output=True, text=True,
+                                      env={**os.environ, "LD_LIBRARY_PATH": str(build / "prefix/lib")}).stdout.strip().splitlines()[:1]
+    manifest = {
+        "schema": 1,
+        "source_revision": revision,
+        "source_tree_dirty": bool(dirty),
+        "prefix": str(prefix),
+        "pins": lock,
+        "compositor": {
+            "build_revisions": (compositor / "build-revisions").read_text().split(),
+            "source": compositor_pins,
+            "hyprland_version": hyprland_version,
+            "plugin": plugin.name,
+            "plugin_sha256": sha256(plugin),
+            "plugin_abi": "built against exactly this Hyprland build; loaded only by it",
+        },
+        "layout": installed,
+        "session": {"command": str(prefix / "bin/enzui-session"), "environment": "ENZUI_DESKTOP_SESSION=installed",
+                    "contract": "docs/installed-session.md"},
+        "runtime_dependencies": {"shared_libraries": sorted(dependencies), "tools": RUNTIME_TOOLS, "optional_tools": OPTIONAL_TOOLS},
+        "private_libraries": private_libs,
+        "builds": {"shell": shell_receipt, "framework_source": framework_state},
+        "unreleased": problems,
+        "files": files,
+        "owned_directories": directories,
+        "generated": {"path": manifest_path, "note": "this manifest; owned, not listed in files, written last"},
+    }
+    (share / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    print(f"Exported {len(files)} files to {destdir} (prefix {prefix})")
+
+
+if __name__ == "__main__":
+    main()

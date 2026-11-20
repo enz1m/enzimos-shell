@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+app=${1:-}
+case "$app" in files-app|text-app|terminal-emulator|task-manager-app) ;; *) echo 'Unknown app' >&2; exit 2;; esac
+: "${XDG_RUNTIME_DIR:?}"
+: "${WAYLAND_DISPLAY:?Launch from the nested desktop}"
+: "${HYPRLAND_INSTANCE_SIGNATURE:?Launch from the nested desktop}"
+runtime=${ENZUI_HYPR_RUNROOT:-$XDG_RUNTIME_DIR/enzui-desktop}
+[[ -s "$runtime/instance" && "$(<"$runtime/instance")" == "$HYPRLAND_INSTANCE_SIGNATURE" ]] || { echo 'Wrong desktop instance' >&2; exit 2; }
+[[ -s "$runtime/wayland-display" && "$(<"$runtime/wayland-display")" == "$WAYLAND_DISPLAY" ]] || { echo 'Wrong desktop display' >&2; exit 2; }
+apps=$ROOT/.build/apps/bin
+if [[ -f "$ROOT/installed.json" ]]; then apps=$(python3 -c 'import json,sys; a=json.load(open(sys.argv[1]))["apps"]; assert a.startswith("/"); print(a)' "$ROOT/installed.json"); fi
+[[ -x "$apps/$app" ]] || { echo "$app is not installed in $apps" >&2; exit 1; }
+if [[ ${ENZUI_DESKTOP_SESSION:-} == installed ]]; then
+  # Installed apps retain valid absolute XDG paths; invalid relative paths use defaults.
+  for name in XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_STATE_HOME; do
+    [[ -z ${!name:-} || ${!name} == /* ]] || unset "$name"
+  done
+  shared_config=${XDG_CONFIG_HOME:-${HOME:-}/.config}
+  state=${XDG_STATE_HOME:-${HOME:?}/.local/state}/enzui/apps
+  install -d -m 700 "$state"
+else
+  state=$runtime/apps
+  install -d -m 700 "$state" "$state/config" "$state/data" "$state/cache" "$state/state"
+  # Keep app config private while retaining lower-precedence access to the shared desktop theme.
+  shared_config=${XDG_CONFIG_HOME:-${HOME:-}/.config}
+  export XDG_CONFIG_HOME="$state/config" XDG_DATA_HOME="$state/data" XDG_CACHE_HOME="$state/cache" XDG_STATE_HOME="$state/state"
+  if [[ $shared_config == /* ]]; then
+    export XDG_CONFIG_DIRS="$shared_config${XDG_CONFIG_DIRS:+:$XDG_CONFIG_DIRS}"
+  fi
+fi
+# MCP credentials remain in shared account config outside each app's private config root.
+case "$app" in calendar-app) center_id=io.github.enzui.Calendar ;; files-app) center_id=io.github.enzui.Files ;; *) center_id= ;; esac
+if [[ -n $center_id && $shared_config == /* && -f "$shared_config/enzui/apps/$center_id.credential.json" ]]; then
+  export ENZUI_CENTER_CREDENTIAL="$shared_config/enzui/apps/$center_id.credential.json"
+fi
+unset DISPLAY ENZUI_TEST_FRAME
+exec "$apps/$app" >> "$state/$app.log" 2>&1

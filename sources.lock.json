@@ -1,0 +1,49 @@
+{
+  "hyprland": {
+    "url": "https://github.com/enz1m/enzim-hyprland.git",
+    "revision": "c675f1bd126dca295cb5c7dfe9b2f6fdca39237d",
+    "destination": "vendor/Hyprland",
+    "variants": {
+      "scoped-eis": "173de69ebc7dc3fd3743257482bc416d0e2d8caf",
+      "desktop-unrenamed": "94d7da481b9444131ae4858d5c9ee32fd194c929",
+      "shared-desktop": "6e1fd309a3b9eae93f8f931fb2041e0c460331ad"
+    }
+  },
+  "aquamarine": {
+    "url": "https://github.com/enz1m/enzim-aquamarine.git",
+    "revision": "9b360e9775c3920dd6144e8a872e5575e7c43fbd",
+    "destination": "vendor/aquamarine",
+    "variants": {
+      "headless-render-node": "211c66e3567f35c5ed2479f4524c3c2360d0a9a4"
+    }
+  },
+  "framework": {
+    "url": "https://github.com/enz1m/enzui.git",
+    "revision": "a53869d67a11171b8c7ee0fa1dad164af76087d8"
+  },
+  "iced": {
+    "url": "https://github.com/enz1m/enzim-iced.git",
+    "revision": "e36b07b591661fdb666088fc943cc0b927a2367b",
+    "destination": "vendor/iced"
+  },
+  "winit": {
+    "url": "https://github.com/enz1m/enzim-winit.git",
+    "revision": "40eeb41f8637ef1620afa377ba006874224b6d65"
+  },
+  "enzwall": {
+    "url": "https://github.com/enz1m/enzwall.git",
+    "revision": "ec326f343a24b814e4955d9ffa76aa3010001159",
+    "destination": "enzwall"
+  },
+  "remote_desktop_portal": {
+    "url": "https://github.com/enz1m/enzim-xdg-desktop-portal-hyprland.git",
+    "revision": "b9b4d1b34986c36da394f4217b8bee1562304547",
+    "upstream_revision": "0e832b50ecc49d4bae01a29845c1b3fafc5c5c99",
+    "destination": "vendor/xdg-desktop-portal-hyprland"
+  },
+  "phone_link_client": {
+    "url": "https://github.com/enz1m/enzimos-phone-link.git",
+    "revision": "e31aaf00c025f77cd911fc0d65a68ab64d80dc1e",
+    "destination": "vendor/phone-link"
+  }
+}

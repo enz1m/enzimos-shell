@@ -1,0 +1,12 @@
+{
+  "format": 1,
+  "id": "notification-feed",
+  "name": "Notification previews",
+  "version": "1.0.0",
+  "description": "Read-only previews of up to eight current notifications in this managed desktop. No history, image bytes, actions or reply authority.",
+  "permissions": ["shell.bar", "shell.panels", "notifications.read"],
+  "elements": [{"id": "feed", "section": "end", "before": "builtin.controls"}],
+  "settings": [
+    {"key": "collect", "label": "Receive current notification previews", "kind": "toggle", "default": true}
+  ]
+}

@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""Rebuild the pinned display numeral outlines (development only: fontTools)."""
+from pathlib import Path
+from urllib.request import urlopen
+import hashlib
+import json
+import argparse
+from fontTools.ttLib import TTFont
+from fontTools.varLib.instancer import instantiateVariableFont
+from fontTools.pens.svgPathPen import SVGPathPen
+from fontTools.pens.boundsPen import BoundsPen
+from fontTools.pens.transformPen import TransformPen
+
+ROOT = Path(__file__).resolve().parent.parent
+CACHE = ROOT / '.build/greeter-fonts'
+CACHE.mkdir(parents=True, exist_ok=True)
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('faces', nargs='*', help='optional face names: prism, muse, glass-rounded, glass-date')
+names = parser.parse_args().faces or ['prism', 'muse', 'glass-rounded', 'glass-date']
+if set(names) - {'prism', 'muse', 'glass-rounded', 'glass-date'}:
+    parser.error('unknown face name')
+for name in names:
+    target = ROOT / f'lock/assets/type/{name}.json'
+    source = json.loads(target.read_text())
+    cached = CACHE / f'{name}.ttf'
+    if not cached.exists():
+        cached.write_bytes(urlopen(source['source'], timeout=30).read())
+    if hashlib.sha256(cached.read_bytes()).hexdigest() != source['sha256']:
+        raise SystemExit(f'{name}: source checksum mismatch')
+    font = TTFont(cached)
+    font.recalcTimestamp = False
+    if source['axes']:
+        font = instantiateVariableFont(font, source['axes'], inplace=True)
+    if name == 'glass-date':
+        from fontTools import subset
+        labels = {1: source['family'], 2: source['face'],
+                  3: source['family']+' '+source['face']+' 1.0',
+                  4: source['family']+' '+source['face'],
+                  6: source['family'].replace(' ', '')+'-'+source['face'],
+                  16: source['family'], 17: source['face']}
+        font['name'].names = [n for n in font['name'].names if n.nameID not in labels]
+        for name_id, label in labels.items():
+            for platform, encoding, language in [(3,1,0x409),(0,3,0),(1,0,0)]:
+                font['name'].setName(label,name_id,platform,encoding,language)
+        options = subset.Options()
+        options.recalc_timestamp = False
+        options.name_IDs = ['*']
+        sub = subset.Subsetter(options=options)
+        sub.populate(unicodes=list(range(0x20,0x250))+list(range(0x2000,0x2070)))
+        sub.subset(font)
+        font.save(target.with_suffix('.ttf'))
+        print(f'{name}: regenerated bundled text face from checksum-verified source')
+        continue
+    glyphset, cmap = font.getGlyphSet(), font.getBestCmap()
+    bounds = []
+    for c in '0123456789:':
+        pen = BoundsPen(glyphset)
+        glyphset[cmap[ord(c)]].draw(pen)
+        bounds.append(pen.bounds)
+    top, bottom = max(b[3] for b in bounds), min(b[1] for b in bounds)
+    scale = 1000 / font['head'].unitsPerEm
+    glyphs = {}
+    for c in '0123456789:':
+        pen = SVGPathPen(glyphset)
+        glyph = glyphset[cmap[ord(c)]]
+        glyph.draw(TransformPen(pen, (scale, 0, 0, -scale, 0, top * scale)))
+        glyphs[c] = {'advance': glyph.width * scale, 'path': pen.getCommands()}
+    source.update(height=(top-bottom)*scale, glyphs=glyphs)
+    target.write_text(json.dumps(source, separators=(',', ':')) + '\n')
+    print(f'{name}: regenerated from checksum-verified source')

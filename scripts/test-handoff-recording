@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""Check bounded recording analysis using generated, nonprivate pixel fixtures."""
+from pathlib import Path
+import json
+import subprocess
+import sys
+import tempfile
+
+root = Path(__file__).resolve().parents[1]
+(root / '.build').mkdir(exist_ok=True)
+with tempfile.TemporaryDirectory(prefix='handoff-check-', dir=root / '.build') as directory:
+    directory = Path(directory)
+    base = [bytes(color) * (64 * 48) for color in
+            [(200, 0, 0)] * 10 + [(0, 0, 200)] * 10 + [(0, 200, 0)] * 10 + [(200, 0, 0)] * 10]
+
+    def video(name, frames):
+        path = directory / name
+        subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-threads', '1',
+                        '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-video_size', '64x48',
+                        '-framerate', '10', '-i', '-', '-c:v', 'ffv1', '-threads', '1', str(path)],
+                       input=b''.join(frames), check=True, timeout=10)
+        return path
+
+    def check(path, *extra, cwd=None):
+        return subprocess.run([sys.executable, str(root / 'scripts/check-handoff-recording'), str(path),
+                               '--crop', '64:48:0:0', '--before-frame', '2', '--protected-frame', '12', *extra],
+                              capture_output=True, text=True, timeout=15, cwd=cwd)
+
+    good = video('states.mkv', base)
+    result = check(good)
+    assert result.returncode == 1, result.stderr
+    assert json.loads(result.stdout)['mismatching_frames'] == list(range(20, 30))
+    result = check(good, '--returning-frame', '22')
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)['reference_frames'] == [2, 12, 22, 39]
+    broken = base.copy()
+    broken[31] = bytes((200, 200, 0)) * (64 * 48)
+    result = check(video('artifact.mkv', broken), '--returning-frame', '22')
+    assert result.returncode == 1, result.stderr
+    assert json.loads(result.stdout)['mismatching_frames'] == [31]
+    literal = video('file:states.mkv', broken)
+    result = check(literal.name, '--returning-frame', '22', cwd=directory)
+    assert result.returncode == 1, result.stderr
+    assert json.loads(result.stdout)['mismatching_frames'] == [31]
+    for extra in [('--returning-frame', '-1'), ('--returning-frame', '40'),
+                  ('--crop', '64:48:1:0'), ('--max-frames', '30')]:
+        assert check(good, *extra).returncode != 0
+print('Recording references, isolated artifact detection and analysis bounds passed.')

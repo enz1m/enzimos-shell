@@ -1,0 +1,10 @@
+# Generated from the app's live registry by enzui-agent; do not edit.
+[Unit]
+Description=enzUI agent worker for dev.enzui.Settings
+
+[Service]
+Type=exec
+ExecStart=/usr/lib/enzui/bin/enzui-settings --agent-background
+Environment=ENZUI_APP_CREDENTIAL=%S/enzui/apps/dev.enzui.Settings.credential.json
+Environment=ENZUI_CENTER_SOCKET=%t/enzui/center.sock
+Restart=no

@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""Probe inherited EIS FD transfer in a disposable nested compositor; inject no input."""
+import array
+import os
+from pathlib import Path
+import socket
+import struct
+import subprocess
+import tempfile
+
+root = Path(__file__).resolve().parent.parent
+runtime_parent = os.environ['XDG_RUNTIME_DIR']
+with tempfile.TemporaryDirectory(prefix='enzui-eis-probe-', dir=runtime_parent) as runtime:
+    controller, server = socket.socketpair()
+    controller.settimeout(5)
+    environment = {**os.environ, 'ENZUI_HYPR_RUNROOT':runtime,
+                   'ENZUI_HYPR_CONFIG':str(root/'config/hyprland.lua'),
+                   'ENZUI_DESKTOP_SESSION':'preview',
+                   'ENZREMOTE_EIS_CONTROL_FD':str(server.fileno()),
+                   'ENZREMOTE_EIS_MAPPING_ID':'enzui-probe-output'}
+    helper = [str(root/'enzui-hypr')]
+    try:
+        subprocess.run(helper+['start'],env=environment,pass_fds=(server.fileno(),),check=True,timeout=90)
+        server.close()
+        pid = int((Path(runtime)/'hyprland.pid').read_text())
+        controller.sendall(b'E')
+        payload, ancillary, flags, _ = controller.recvmsg(1,socket.CMSG_SPACE(4),socket.MSG_CMSG_CLOEXEC)
+        descriptors = array.array('i')
+        for level, kind, data in ancillary:
+            if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                descriptors.frombytes(data[:len(data)-(len(data)%descriptors.itemsize)])
+        try:
+            assert payload == b'E' and not flags & socket.MSG_CTRUNC
+            assert len(descriptors) == 1
+            with socket.fromfd(descriptors[0],socket.AF_UNIX,socket.SOCK_STREAM) as endpoint:
+                peer, uid, _ = struct.unpack('3i',endpoint.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12))
+                assert peer == pid and uid == os.getuid(), 'EIS endpoint belongs to a different process'
+            print('Scoped EIS transfer passed: received an endpoint owned by the selected compositor.')
+        finally:
+            for descriptor in descriptors:
+                os.close(descriptor)
+    finally:
+        controller.close()
+        server.close()
+        subprocess.run(helper+['stop'],env=environment,check=True,timeout=10)

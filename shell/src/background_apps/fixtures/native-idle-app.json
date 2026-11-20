@@ -1,0 +1,39 @@
+{
+  "apps": [
+    {
+      "activation_policy": {
+        "autostart": false,
+        "user": true
+      },
+      "agent_tool_consent_required": true,
+      "app_id": "org.enzui.BackgroundQA",
+      "autostart_state": "disabled",
+      "autostart_supported": true,
+      "background": true,
+      "changing_policy_stops_ongoing_work": false,
+      "force_stop_supported": true,
+      "graceful_stop_supported": false,
+      "identity_verified": true,
+      "minimized_window_count": 0,
+      "purpose": "Owned public idle process for safe-stop testing",
+      "running": true,
+      "schema": 1,
+      "stopping_disables_future_activation": false,
+      "title": "Background QA",
+      "unit_observation_known": true,
+      "unit_state": "active",
+      "visibility": "windowless",
+      "window_count": 0,
+      "work": [],
+      "work_observation_known": false
+    }
+  ],
+  "catalogue_observation_known": true,
+  "controls_require_fresh_observation": true,
+  "flatpak_background": [],
+  "generation": 1,
+  "policy_operation": null,
+  "schema": 1,
+  "unavailable_declarations": [],
+  "window_observation_required": true
+}

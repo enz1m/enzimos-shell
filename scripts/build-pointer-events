@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+exec "$root/scripts/with-build-budget" python3 - "$root" "${ENZUI_HYPR_BUILDROOT:-$root/.build/desktop}" <<'PY'
+import hashlib,json,os,shlex,subprocess,sys
+from pathlib import Path
+root,build=map(Path,sys.argv[1:]);build=build.resolve()
+commands=build/'hyprland-current-build/compile_commands.json'
+if not commands.is_file():raise SystemExit('Prepare the selected compositor before building its pointer event plugin')
+entry=next(e for e in json.loads(commands.read_text()) if e['file'].endswith('/LuaEventHandler.cpp'))
+source=root/'tools/enzui-pointer-events.cpp'
+args=shlex.split(entry['command']);compiler=args.pop(0)
+flags=[];i=0
+while i<len(args):
+    arg=args[i]
+    if arg in ('-o','-include'):
+        i+=2;continue
+    if arg in ('-c','-MD','-fmodules-ts','-Winvalid-pch') or arg.startswith(('-fmodule-mapper=','-fdeps-format=')) or arg==entry['file']:
+        i+=1;continue
+    flags.append(arg);i+=1
+prepared_source=Path(entry['file']).parents[3]
+identity=source.read_bytes()+(root/'scripts/build-pointer-events').read_bytes()+entry['command'].encode()+subprocess.check_output([compiler,'--version'])
+for header in ['src/version.h','src/plugins/PluginAPI.hpp','src/event/EventBus.hpp']:
+    identity+=(prepared_source/header).read_bytes()
+fingerprint=hashlib.sha256(identity).hexdigest()
+outdir=build/'shell-plugins';outdir.mkdir(exist_ok=True)
+out=outdir/'enzui-pointer-events.so';stamp=outdir/'enzui-pointer-events.sha256'
+if out.is_file() and stamp.is_file() and stamp.read_text().strip()==fingerprint:
+    print('Pointer event plugin matches its selected compositor build');raise SystemExit(0)
+temporary=outdir/f'.enzui-pointer-events-{os.getpid()}.so'
+try:
+    subprocess.run([compiler,*flags,'-fPIC','-shared','-fvisibility=hidden','-fno-gnu-unique','-O1','-g0',str(source),'-o',str(temporary)],cwd=entry['directory'],check=True)
+    versioned=outdir/f'enzui-pointer-events-{fingerprint[:16]}.so'
+    temporary.replace(versioned)
+    temporary.symlink_to(versioned.name);temporary.replace(out)
+    stamp.write_text(fingerprint+'\n')
+finally:
+    temporary.unlink(missing_ok=True)
+print('Built version-checked pointer event plugin for the selected compositor')
+PY

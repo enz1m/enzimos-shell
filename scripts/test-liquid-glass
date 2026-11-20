@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""Liquid glass end to end: a disposable headless preview on a compositor root
+whose scene plugin paints enzui-material-v1, an opaque striped window, and
+tools/glass-demo over it with and without glass. Checks, from screenshots:
+the glass filters the stripes behind it, its rim is lit, its shadow falls
+outside it, and the same window without glass leaves the backdrop alone. A
+window of several differently shaped regions then moves for 40 frames, and
+the session's shared memory (where GPU buffers are charged) must not grow.
+Last, the enzUI app enzui-glass-sample (desktop_glass) must filter the
+stripes behind its sidebar too.
+
+  test-liquid-glass [--build-root .build/release-scene-7] [--shell-bin-dir .build/release/bin]
+
+The preview is stopped, and its cgroup verified empty, on success and failure."""
+import argparse, json, os, re, subprocess, sys, time
+from pathlib import Path
+
+root = Path(__file__).resolve().parent.parent
+parser = argparse.ArgumentParser()
+parser.add_argument("--build-root", default=str(root / ".build/release-scene-7"))
+parser.add_argument("--shell-bin-dir", default=str(root / ".build/release/bin"))
+args = parser.parse_args()
+build = Path(args.build_root).resolve()
+demo = root / ".build/material/glass-demo"
+subprocess.run([str(root / "scripts/build-glass-demo")], check=True, stdout=subprocess.DEVNULL)
+
+from PIL import Image  # noqa: E402
+
+started = subprocess.run([sys.executable, str(root / "scripts/start-shell-platform"), "--experimental", "--profile", "liquid-glass-test",
+                          "--build-root", str(build), "--shell-bin-dir", args.shell_bin_dir, "--headless", "1440x900",
+                          "--exit-with-shell", "--memory-mib", "1400", "--dev-capture-tools", "/usr/bin/grim"], capture_output=True, text=True, timeout=120)
+unit = re.search(r"^Unit: (\S+)", started.stdout, re.M)
+runtime = re.search(r"^Runtime: (\S+)", started.stdout, re.M)
+if started.returncode or not unit or not runtime:
+    sys.exit(f"preview did not start:\n{started.stdout}{started.stderr}")
+unit, run = unit.group(1), Path(runtime.group(1))
+scratch = run / "liquid-glass"
+failures = []
+
+
+def stop():
+    subprocess.run(["systemctl", "--user", "stop", unit], timeout=60)
+    cgroup = Path(f"/sys/fs/cgroup/user.slice/user-{os.getuid()}.slice/user@{os.getuid()}.service/app.slice/{unit}")
+    deadline = time.monotonic() + 10
+    while cgroup.exists() and (cgroup / "cgroup.procs").read_text().strip() and time.monotonic() < deadline:
+        time.sleep(0.2)
+    if cgroup.exists() and (cgroup / "cgroup.procs").read_text().strip():
+        sys.exit(f"{unit} left processes behind")
+
+
+try:
+    time.sleep(3)
+    instance = (run / "instance").read_text().strip()
+    xdg = next(p.parent.parent for p in Path(f"/run/user/{os.getuid()}").glob(f"*/hypr/{instance}"))
+    env = dict(os.environ, XDG_RUNTIME_DIR=str(xdg), WAYLAND_DISPLAY=(run / "wayland-display").read_text().strip())
+    hyprctl = [str(build / "hyprland-current-build/hyprctl/hyprctl"), "-i", instance]
+    henv = dict(env, LD_LIBRARY_PATH=str(build / "prefix/lib"))
+
+    def hypr(*command):
+        return subprocess.run(hyprctl + list(command), env=henv, capture_output=True, text=True, timeout=10).stdout
+
+    output = json.loads(hypr("-j", "monitors"))[0]["name"]
+    scratch.mkdir(exist_ok=True)
+
+    def shot(name):
+        path = scratch / f"{name}.png"
+        subprocess.run(["grim", "-o", output, str(path)], env=env, check=True, timeout=20)
+        return Image.open(path).convert("RGB")
+
+    def open_window(mode):
+        hypr("dispatch", f"hl.dsp.exec_cmd('{demo} {mode}')")
+        time.sleep(2.0)
+        hypr("dispatch", "hl.dsp.window.move({x=300,y=120})")
+        time.sleep(1.0)
+
+    def close(app_id):
+        hypr("dispatch", f"hl.dsp.window.close({{window='class:{app_id}'}})")
+        time.sleep(1.0)
+
+    def window_origin(app_id):
+        for client in json.loads(hypr("-j", "clients")):
+            if client.get("class") == app_id:
+                return client["at"]
+        raise SystemExit(f"{app_id} did not map")
+
+    open_window("pattern")
+    open_window("none")
+    x0, y0 = window_origin("dev.enzui.GlassDemo")
+    plain = shot("plain")
+    close("dev.enzui.GlassDemo")
+    open_window("regular")
+    x1, y1 = window_origin("dev.enzui.GlassDemo")
+    glass = shot("glass")
+    if (x0, y0) != (x1, y1):
+        failures.append(f"the two demo windows mapped at different places: {(x0, y0)} and {(x1, y1)}")
+
+    def luma(image, x, y):
+        r, g, b = image.getpixel((x, y))
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    def spread(image, y, xs):
+        values = [luma(image, x, y) for x in xs]
+        mean = sum(values) / len(values)
+        return (sum((v - mean) ** 2 for v in values) / len(values)) ** 0.5
+
+    # Inside the sidebar (16,16 220x608), away from its rim and its labels.
+    row = y1 + 16 + 500
+    xs = range(x1 + 16 + 40, x1 + 16 + 180)
+    if not spread(glass, row, xs) < 0.5 * spread(plain, row, xs):
+        failures.append(f"glass does not filter the stripes behind it: {spread(glass, row, xs):.1f} vs {spread(plain, row, xs):.1f}")
+    if spread(plain, row, xs) < 20:
+        failures.append("without glass the stripes should show through unchanged (the control failed)")
+    # The rim's specular line at the sidebar's top edge, against just inside.
+    rim, inside = luma(glass, x1 + 16 + 110, y1 + 16), luma(glass, x1 + 16 + 110, y1 + 16 + 12)
+    if not rim > inside + 8:
+        failures.append(f"the rim is not lit: {rim:.0f} vs {inside:.0f} inside")
+    # The shadow below the toolbar pill (252,16 252x52), against no glass.
+    below = (x1 + 252 + 126, y1 + 16 + 52 + 6)
+    if not luma(glass, *below) < luma(plain, *below) - 4:
+        failures.append(f"no shadow below the toolbar: {luma(glass, *below):.0f} vs {luma(plain, *below):.0f}")
+    # Changing glass-region shapes must reuse filter targets rather than allocate every frame.
+    cgroup = Path(f"/sys/fs/cgroup/user.slice/user-{os.getuid()}.slice/user@{os.getuid()}.service/app.slice/{unit}")
+
+    def shared():
+        stat = dict(line.split() for line in (cgroup / "memory.stat").read_text().splitlines())
+        return int(stat["shmem"]) / 1048576
+
+    for step in range(8):
+        hypr("dispatch", f"hl.dsp.window.move({{x={300 + 20 * (step % 2)},y=120}})")
+        time.sleep(0.1)
+    before = shared()
+    for step in range(40):
+        hypr("dispatch", f"hl.dsp.window.move({{x={300 + 20 * (step % 2)},y=120}})")
+        time.sleep(0.05)
+    time.sleep(1.0)
+    grown = shared() - before
+    if grown > 48:
+        failures.append(f"shared memory grew {grown:.0f} MiB over 40 frames of glass")
+    close("dev.enzui.GlassDemo")
+    restored = shot("restored")
+    if abs(luma(restored, x1 + 120, row) - luma(plain, x1 + 120, row)) > 3:
+        failures.append("closing the glass window did not restore the backdrop")
+    sample = Path(args.shell_bin_dir) / "enzui-glass-sample"
+    hypr("dispatch", f"hl.dsp.exec_cmd('{sample}')")
+    time.sleep(3.0)
+    hypr("dispatch", "hl.dsp.window.move({x=300,y=120})")
+    time.sleep(1.0)
+    sx, sy = window_origin("dev.enzui.GlassSample")
+    app = shot("sample")
+    app_row, app_xs = sy + 400, range(sx + 30, sx + 230)
+    if not spread(app, app_row, app_xs) < 0.5 * spread(plain, app_row, app_xs):
+        failures.append(f"the app's glass sidebar does not filter the stripes: {spread(app, app_row, app_xs):.1f} vs {spread(plain, app_row, app_xs):.1f}")
+
+    # Use a gradient backdrop as the control distinguishing glass from uniform solid colour.
+    def mean(image, y, xs):
+        pixels = [image.getpixel((x, y)) for x in xs]
+        return [sum(channel) / len(pixels) for channel in zip(*pixels)]
+
+    def apart(image, a, b):
+        return sum((p - q) ** 2 for p, q in zip(mean(image, a, app_xs), mean(image, b, app_xs))) ** 0.5
+
+    if not apart(app, sy + 260, sy + 460) > 0.3 * apart(plain, sy + 260, sy + 460):
+        failures.append(f"the app's sidebar does not show the backdrop: {apart(app, sy + 260, sy + 460):.1f} vs {apart(plain, sy + 260, sy + 460):.1f} without it")
+    close("dev.enzui.GlassSample")
+finally:
+    stop()
+
+if failures:
+    sys.exit("Liquid glass:\n- " + "\n- ".join(failures) + f"\nScreenshots were in {scratch} (gone with the preview runtime)")
+print("Liquid glass: the backdrop is filtered, the rim lit, the shadow cast, a window without glass leaves the backdrop alone, and an app's glass sidebar works.")

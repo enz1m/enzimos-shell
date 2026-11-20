@@ -1,0 +1,71 @@
+#!/usr/bin/env lua
+local root=arg[0]:match("^(.*)/").."/../config/"
+local dock={class="dev.enzui.Dock",mapped=true,pid=7,at={x=0,y=0},size={x=1440,y=900},monitor={name="QA"}}
+local app={class="app",mapped=true,pid=8,stable_id="stable",workspace={id=2},at={x=100,y=100},size={x=400,y=300},monitor=dock.monitor,tags={}}
+local windows={dock,app};local warps=false;local dispatched={};local timer
+local monitor={name="QA",enabled=true,is_mirror=false,width=1440,height=900,x=0,y=0,refresh_rate=60,scale=1,transform=0,reserved={left=12,right=12,top=12,bottom=50}}
+hl={dsp={window={}}}
+function hl.get_windows()return windows end
+function hl.get_monitors()return {monitor}end
+function hl.get_active_workspace()return {id=2}end
+function hl.get_window(address)assert(address=="address:0xa");return app end
+function hl.get_config(key)assert(key=="cursor.no_warps");return warps end
+function hl.config(c)warps=c.cursor.no_warps end
+function hl.monitor(c)monitor.reserved=c.reserved end
+local timers={};local handlers={}
+function hl.timer(callback,options)local t={callback=callback,enabled=true,timeout=options.timeout,type=options.type};function t:set_enabled(v)self.enabled=v end;table.insert(timers,t);return t end
+function hl.on(name,callback)local b={name=name,callback=callback,live=true};function b:remove()self.live=false end;handlers[name]=b;return b end
+local function live(timeout)local found;for _,t in ipairs(timers)do if t.enabled and t.timeout==timeout then found=t end end;return found end
+for _,kind in ipairs({"move","resize","alter_zorder","close"})do hl.dsp.window[kind]=function(a)a.kind=kind;return a end end
+function hl.dsp.focus(a)a.kind="focus";return a end
+function hl.dsp.event(value)return {kind="event",value=value}end
+function hl.dispatch(action)
+ table.insert(dispatched,action)
+ if action.kind=="move" then
+  if action.workspace then action.window.workspace={id=type(action.workspace)=="number" and action.workspace or -9}
+  else action.window.at={x=action.x,y=action.y}end
+ elseif action.kind=="resize"then action.window.size={x=action.x,y=action.y}end
+ return {ok=true}
+end
+dofile(root.."shell-reservations.lua");dofile(root.."dock-policy.lua")
+local base={left=12,right=12,top=12,bottom=50}
+enzui_apply_reservations(monitor,base)
+enzui_dock_update(7,"QA",{{0,847,240,3},{600,774,240,68}},false,"bottom",76,{600,774,240,68},false)
+assert(monitor.reserved.bottom==126)
+enzui_apply_reservations(monitor,base);assert(monitor.reserved.bottom==126)
+enzui_dock_update(7,"QA",{},false,"bottom",0,{600,774,240,68},false);assert(monitor.reserved.bottom==50)
+enzui_dock_update(7,"QA",{{0,847,240,3}},false,"left",74,{8,300,66,240},true)
+assert(monitor.reserved.left==86 and monitor.reserved.bottom==50)
+-- At rest only a slow pass runs; events check at once.
+assert(live(2000) and not live(160));timer=live(2000);assert(not enzui_dock_shape.overlapped)
+app.at={x=10,y=310};handlers["window.open"].callback();assert(enzui_dock_shape.overlapped and dispatched[#dispatched].kind=="event")
+app.at={x=100,y=100};handlers["workspace.active"].callback();assert(not enzui_dock_shape.overlapped)
+-- A held button (a drag) checks every 160 ms until it is released.
+handlers["enzui.pointer_button"].callback(272,1);local fast=live(160);assert(fast)
+app.at={x=10,y=310};fast.callback();assert(enzui_dock_shape.overlapped)
+app.at={x=100,y=100};handlers["enzui.pointer_button"].callback(272,0);assert(not fast.enabled and not live(160) and not enzui_dock_shape.overlapped)
+-- A key's release checks once a moment later (keyboard moves).
+app.at={x=10,y=310};handlers["input.keyboard.key"].callback(30,0,0);local soon=live(250);assert(soon and soon.type=="oneshot");soon.enabled=false;soon.callback()
+assert(enzui_dock_shape.overlapped and dispatched[#dispatched].kind=="event")
+local count=#dispatched;timer.callback();assert(#dispatched==count)
+app.tags={"enzremote-guard-owner"};timer.callback();assert(not enzui_dock_shape.overlapped)
+app.tags={};app.monitor={name="OTHER"};timer.callback();assert(not enzui_dock_shape.overlapped)
+app.monitor=dock.monitor
+local previous=timer
+enzui_dock_update(7,"QA",{},false,"left",0,{8,300,66,240},false);assert(not previous.enabled and enzui_dock_watch==nil and monitor.reserved.left==12)
+for _,b in pairs(handlers)do assert(not b.live)end;assert(not live(2000) and not live(160))
+assert(not enzui_dock_pointer_inside(dock,{x=800,y=800}))
+enzui_dock_update(7,"QA",{{600,774,240,68}},false,"bottom",0,{600,774,240,68},false)
+assert(enzui_dock_pointer_inside(dock,{x=650,y=800}) and not enzui_dock_pointer_inside(dock,{x=400,y=200}))
+enzui_dock_update(7,"QA",{{600,897,240,3},{600,774,240,68},{500,620,360,148}},false,"bottom",0,{600,774,240,68},false)
+assert(enzui_dock_pointer_inside(dock,{x=550,y=650}) and not enzui_dock_pointer_inside(dock,{x=400,y=650}))
+assert(not pcall(enzui_dock_update,7,"QA",{{0,0,1,1},{0,0,1,1},{0,0,1,1},{0,0,1,1}},false,"bottom",0,{600,774,240,68},false))
+enzui_dock_action("0xa",8,"stable","minimize");assert(app.workspace.id<0 and not warps)
+enzui_dock_action("0xa",8,"stable","focus");assert(app.workspace.id==2 and not warps)
+count=#dispatched;assert(not pcall(enzui_dock_action,"0xa",8,"wrong","close") and #dispatched==count)
+app.tags={"enzremote-guard-owner"};assert(not pcall(enzui_dock_action,"0xa",8,"stable","close"));app.tags={}
+local dispatch=hl.dispatch;function hl.dispatch()error("Rejected")end
+assert(not pcall(enzui_dock_action,"0xa",8,"stable","focus") and not warps)
+hl.dispatch=dispatch;warps=true;enzui_dock_action("0xa",8,"stable","focus");assert(warps)
+dock.mapped=false;enzui_apply_reservations(monitor,base);assert(monitor.reserved.bottom==50)
+print("Dock policy: composed reservations, shape, overlap lifecycle, guarded minimize/restore and cursor preservation passed")

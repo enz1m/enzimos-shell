@@ -1,0 +1,56 @@
+#!/usr/bin/env lua
+local path = arg[0]:match("^(.*)/") .. "/../config/control-center.lua"
+local bindings, closed = {}, {}
+local point = {x=1100,y=100}
+local popup = {class="dev.enzui.ControlCenter",mapped=true,at={x=1028,y=44},size={x=400,y=520}}
+local app = {class="app",mapped=true,at={x=0,y=0},size={x=1440,y=900}}
+hl = {dsp={window={}}}
+function hl.get_cursor_pos() return point end
+local panel={class="dev.enzui.Desktop",mapped=true,at={x=0,y=0},size={x=1440,y=36}}
+function hl.get_windows() return {app,popup,panel} end
+function hl.dsp.window.close(args) return args end
+function hl.dispatch(args) table.insert(closed,args.window) end
+function hl.bind(key, callback, options)
+    assert(options.non_consuming and options.ignore_mods)
+    bindings[key]=callback
+    return key
+end
+dofile(path)
+assert(bindings['mouse:272'] and bindings['mouse:273'])
+bindings['mouse:272'](); assert(#closed==0)
+point={x=1300,y=18};bindings['mouse:272']();assert(#closed==0)
+point={x=10,y=600}; bindings['mouse:272'](); assert(#closed==1 and closed[1]==popup)
+point={x=1428,y=200}; bindings['mouse:273'](); assert(#closed==2 and closed[2]==popup)
+popup.mapped=false; bindings['mouse:272'](); assert(#closed==2)
+popup.mapped=true;popup.class='dev.enzui.PluginPanel'
+point={x=1100,y=100};bindings['mouse:272']();assert(#closed==2)
+point={x=10,y=600};bindings['mouse:273']();assert(#closed==3 and closed[3]==popup)
+popup.class='dev.enzui.NotificationCenter';point={x=1100,y=100};bindings['mouse:272']();assert(#closed==3)
+point={x=10,y=600};bindings['mouse:273']();assert(#closed==4 and closed[4]==popup)
+popup.class='dev.enzui.NotificationToasts';bindings['mouse:272']();assert(#closed==4)
+popup.class='ordinary-app';bindings['mouse:272']();assert(#closed==4)
+local previous=bindings['mouse:272']; dofile(path); assert(previous==bindings['mouse:272'])
+print('Control center: inside/outside bounds, UI-only targets, non-consuming routing and idempotent installation passed.')
+panel.address='bar';panel.pid=888;popup.address='panel';popup.pid=888;popup.class='dev.enzui.ControlCenter'
+local shaped=true
+hl.plugin={enzui_sidebar_scene={input_at=function(address,pid,x,y)
+    assert(pid==888)
+    if not shaped then return nil end
+    if address=='bar' then return x>=1300 end
+    assert(address=='panel');return x>=1100 and y>=100
+end}}
+point={x=1050,y=50};bindings['mouse:272']();assert(#closed==5)
+point={x=1200,y=200};bindings['mouse:272']();assert(#closed==5)
+point={x=300,y=18};bindings['mouse:272']();assert(#closed==6)
+point={x=1400,y=18};bindings['mouse:272']();assert(#closed==6)
+shaped=false;point={x=1050,y=50};bindings['mouse:272']();assert(#closed==6)
+print('Islands: empty panel corners and bar gaps dismiss; painted targets and Frame fallback remain intact.')
+popup.class='dev.enzui.QuickSearch';popup.workspace={id=1};shaped=true
+point={x=1050,y=50};bindings['mouse:272']();assert(#closed==7)
+popup.workspace={name="special:enzui-search"};bindings['mouse:272']();assert(#closed==7)
+popup.workspace.id=1;shaped=false;bindings['mouse:272']();assert(#closed==7)
+print('Island Search dismissal excludes parked surfaces and preserves the Frame focus policy.')
+popup.class='dev.enzui.Launcher';shaped=true;bindings['mouse:272']();assert(#closed==8)
+shaped=false;bindings['mouse:272']();assert(#closed==8)
+assert(enzui_control_dismiss_version==7)
+print('Classic Applications only uses shaped dismissal in Islands.')

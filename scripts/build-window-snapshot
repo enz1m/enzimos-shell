@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+build=$root/.build/window-snapshot
+# A copy of hyprland-protocols' toplevel export (BSD-3, notice inside), so the
+# helper builds without that nested submodule.
+protocol=$root/protocols/hyprland-toplevel-export-v1.xml
+mkdir -p "$build"
+wayland-scanner client-header "$protocol" "$build/hyprland-toplevel-export-v1-client-protocol.h"
+wayland-scanner private-code "$protocol" "$build/hyprland-toplevel-export-v1-protocol.c"
+wayland-scanner private-code "$root/vendor/Hyprland/protocols/wlr-foreign-toplevel-management-unstable-v1.xml" "$build/foreign-toplevel-protocol.c"
+temporary=$(mktemp "$build/window-snapshot.XXXXXX")
+trap 'rm -f "$temporary"' EXIT
+cc -std=c11 -O2 -Wall -Wextra -Werror -I"$build" "$root/tools/window-snapshot.c" \
+    "$build/hyprland-toplevel-export-v1-protocol.c" "$build/foreign-toplevel-protocol.c" $(pkg-config --cflags --libs wayland-client libpng) -o "$temporary"
+chmod 755 "$temporary"
+mv -f "$temporary" "$build/window-snapshot"

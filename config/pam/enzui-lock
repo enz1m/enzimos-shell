@@ -1,0 +1,4 @@
+#%PAM-1.0
+# Lock screen of the enzUI session: re-authentication only. The client runs
+# as the user, so account checks (expiry, lock-out) stay with the login stack.
+auth       include      login

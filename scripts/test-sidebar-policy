@@ -1,0 +1,645 @@
+#!/usr/bin/env lua
+local output={name="TEST",width=1440,height=900,scale=1,x=0,y=0,refresh_rate=60,enabled=true,transform=0,is_mirror=false}
+local workspace={id=1,monitor=output}
+local app={address="0x123",stable_id="abc",pid=777,mapped=true,hidden=false,monitor=output,workspace=workspace,class="app",pinned=false,fullscreen=0,floating=true,at={x=370,y=218},size={x=700,y=500},tags={}}
+local windows={app};local point={x=500,y=300};local fail_park=false;local bindings={};local events=0
+hl={dsp={window={},cursor={}},plugin={enzui_pointer_events={version=function()return 1 end}}}
+local no_warps,follow_mouse=false,1
+function hl.get_config(key)if key=="cursor.no_warps"then return no_warps elseif key=="input.follow_mouse"then return follow_mouse end end
+function hl.config(value)
+    if value.cursor then no_warps=value.cursor.no_warps end
+    if value.input then follow_mouse=value.input.follow_mouse end
+end
+function hl.dsp.cursor.move(args)args.action_name="cursor";return args end
+local subscriptions={};local raised=0;local focused=0;local resize_calls=0;local pin_calls=0
+for _,name in ipairs({"pin","float","move","resize","tag","alter_zorder"})do hl.dsp.window[name]=function(args)args.action_name=name;return args end end
+function hl.dsp.focus(args)args.action_name="focus";return args end
+function hl.dsp.event(text)return{action_name="event"}end
+local rail_rule,rail_updates=nil,0
+function hl.window_rule(rule)
+    if rule.name=="sidebar-rail-input" then
+        assert(rule.match.class=="^dev[.]enzui[.]Sidebar$" and rule.match.tag=="enzui-sidebar-chrome-888")
+        rail_rule=rule;rail_updates=rail_updates+1
+    else
+        assert(rule.name=="sidebar-app-chrome" and rule.border_size==0 and rule.no_anim==true and rule.no_xdg_drags==true and rule.match.tag=="enzui-sidebar-app")
+    end
+end
+function hl.get_monitors()return{output}end
+function hl.get_windows()return windows end
+function hl.get_workspaces()return{workspace}end
+function hl.get_active_workspace(name)assert(name=="TEST");return workspace end
+function hl.get_cursor_pos()return point end
+local keyboard_reveal
+function hl.bind(key,callback,options)
+    if key=="SUPER + SHIFT + B" then assert(options==nil);keyboard_reveal=callback;return{} end
+    assert(options.non_consuming and options.ignore_mods);bindings[#bindings+1]={callback=callback,options=options};return{}
+end
+function hl.on(event,callback)assert(type(event)=="string" and type(callback)=="function");subscriptions[event]=callback;return{remove=function()end}end
+function hl.timer(callback,options)
+    local timer={timeout=options.timeout,callback=callback}
+    function timer:set_timeout(timeout)self.timeout=timeout end
+    return timer
+end
+function hl.dispatch(args)
+    local w=args.window
+    if args.action_name=="event" then events=events+1
+    elseif args.action_name=="alter_zorder" then
+        assert(w.pid==888)
+        if w.class=="dev.enzui.Sidebar" then assert(args.mode=="top");raised=raised+1
+        else assert(w.class=="dev.enzui.SidebarPane" and args.mode=="bottom") end
+    elseif args.action_name=="cursor" then assert(follow_mouse==3);point={x=args.x,y=args.y}
+    elseif args.action_name=="focus" then
+        focused=focused+1
+        if not no_warps then point={x=w.at.x+w.size.x/2,y=w.at.y+w.size.y/2} end
+    elseif args.action_name=="pin" then pin_calls=pin_calls+1;w.pinned=args.action=="on"
+    elseif args.action_name=="float" then w.floating=args.action=="on"
+    elseif args.action_name=="resize" then resize_calls=resize_calls+1;w.size={x=args.x,y=args.y}
+    elseif args.action_name=="move" then
+        if args.workspace then
+            if type(args.workspace)=="string" then if fail_park then return{ok=false}end;w.workspace={name="special:enzui-miniapps",monitor=output}
+            else w.workspace={id=args.workspace,monitor=output} end
+        else w.at={x=args.x,y=args.y} end
+    elseif args.action_name=="tag" then
+        if args.tag:sub(1,1)=="+" then w.tags[#w.tags+1]=args.tag:sub(2)
+        else for i=#w.tags,1,-1 do if w.tags[i]==args.tag:sub(2) then table.remove(w.tags,i)end end end
+    end
+    return{ok=true}
+end
+dofile(arg[0]:match("^(.*)/").."/../config/output-size.lua")
+dofile(arg[0]:match("^(.*)/").."/../config/shell-metrics.lua")
+dofile(arg[0]:match("^(.*)/").."/../config/sidebar-visibility.lua")
+dofile(arg[0]:match("^(.*)/").."/../config/shell-reservations.lua")
+dofile(arg[0]:match("^(.*)/").."/../config/sidebar-policy.lua")
+assert(enzui_sidebar_configure("TEST","left","top",888).ok)
+enzui_install_sidebar();enzui_install_sidebar();assert(#bindings==0 and subscriptions["enzui.pointer_button"])
+app.class="dev.enzui.PluginPanel";assert(not enzui_sidebar_pin_window(app).ok);app.class="app"
+assert(enzui_sidebar_pin_window(app).ok);local id=enzui_sidebar.entries[1].id
+assert(app.workspace.id==nil and app.pid==777 and #app.tags==2)
+assert(enzui_sidebar_toggle(id).ok);assert(app.workspace.id==1 and app.pinned and app.size.x==360 and app.size.y==640 and app.at.x==42 and app.at.y+app.size.y/2==464)
+assert(enzui_sidebar_hide().ok);assert(app.workspace.id==nil and not app.pinned)
+assert(enzui_sidebar_unpin(id,false).ok);assert(app.size.x==700 and app.size.y==500 and app.at.x==370 and app.at.y==218 and #app.tags==0)
+enzui_sidebar.saved_sizes[app.stable_id]={x=480,y=420}
+assert(enzui_sidebar_pin_window(app).ok);id=enzui_sidebar.entries[1].id
+assert(enzui_sidebar_toggle(id).ok and app.size.x==480 and app.size.y==420)
+assert(enzui_sidebar_hide().ok and enzui_sidebar_toggle(id).ok and app.size.x==480 and app.size.y==420)
+assert(enzui_sidebar_unpin(id,false).ok and app.size.x==700 and app.size.y==500)
+enzui_sidebar.saved_sizes[app.stable_id]=nil
+point={x=500,y=300};subscriptions["enzui.pointer_button"](272,1);assert(#enzui_sidebar.entries==0)
+point={x=18,y=350};app.at={x=-100,y=268};enzui_sidebar_tick();assert(enzui_sidebar.reveal)
+subscriptions["enzui.pointer_button"](272,0);assert(app.workspace.id==1 and #enzui_sidebar.entries==0 and enzui_sidebar.reveal)
+enzui_sidebar_tick();assert(#enzui_sidebar.entries==1 and app.workspace.id==nil and not enzui_sidebar.reveal)
+id=enzui_sidebar.entries[1].id;assert(enzui_sidebar.entries[1].original.at.x==370)
+assert(enzui_sidebar_toggle(id).ok)
+point={x=60,y=170};enzui_sidebar_press();app.at={x=242,y=200};point={x=260,y=222};enzui_sidebar_release();enzui_sidebar_tick()
+assert(#enzui_sidebar.entries==0 and app.size.x==700 and app.at.x==242)
+assert(enzui_sidebar_pin_window(app).ok);id=enzui_sidebar.entries[1].id;assert(enzui_sidebar_toggle(id).ok)
+windows[2]={mapped=true,pid=777,address="0x456"};assert(not enzui_sidebar_hide().ok);assert(enzui_sidebar.shown==id and app.workspace.id==1);windows[2]=nil
+local before=app.at;app.monitor={name="ENZREMOTE-APP"}
+assert(not enzui_sidebar_toggle(id).ok and not enzui_sidebar_unpin(id,false).ok and app.at==before)
+assert(enzui_sidebar_snapshot():find('"available":false',1,true));app.monitor=output
+assert(enzui_sidebar_hide().ok)
+for _=1,201 do enzui_sidebar_tick()end
+assert(#enzui_sidebar.entries==0 and app.workspace.id==1 and app.pid==777)
+fail_park=true;assert(not enzui_sidebar_pin_window(app).ok);fail_park=false
+assert(#enzui_sidebar.entries==0 and app.workspace.id==1 and #app.tags==0)
+assert(not pcall(enzui_sidebar_configure,"ENZREMOTE-APP","left","top",888))
+assert(not pcall(enzui_sidebar_configure,"TEST","up","top",888))
+assert(enzui_sidebar_configure("TEST","right","bottom",888).ok)
+enzui_sidebar_snapshot()
+assert(enzui_sidebar_pin_window(app).ok);id=enzui_sidebar.entries[1].id
+assert(enzui_sidebar_toggle(id,460).ok);assert(app.at.y+app.size.y/2==460)
+assert(enzui_sidebar_hide().ok)
+assert(enzui_sidebar_toggle(id,800).ok);assert(app.at.y+app.size.y+6==864)
+assert(enzui_sidebar_unpin(id,false).ok)
+local metrics=enzui_resolve_metrics();metrics.bar=56;metrics.rail=48;metrics.frame=8;metrics.icon=24
+assert(enzui_sidebar_configure("TEST","left","top",888,metrics).ok)
+enzui_sidebar_snapshot()
+assert(enzui_sidebar_pin_window(app).ok);id=enzui_sidebar.entries[1].id
+assert(enzui_sidebar_toggle(id,420).ok);assert(app.at.x==54 and app.at.y+app.size.y/2==420)
+assert(enzui_sidebar_hide().ok);assert(enzui_sidebar_toggle(id,10).ok);assert(app.at.y==62)
+assert(enzui_sidebar_unpin(id,false).ok)
+local chrome={class="dev.enzui.Desktop",pid=888,mapped=true,monitor=output,at={x=0,y=1}}
+local foreign={class="dev.enzui.Sidebar",pid=999,mapped=true,monitor=output,at={x=99,y=99}}
+windows[2]=chrome;windows[3]=foreign;enzui_sidebar_tick()
+assert(chrome.at.x==0 and chrome.at.y==1 and foreign.at.x==99 and foreign.at.y==99)
+windows[4]={class="dev.enzui.Sidebar",pid=888,mapped=true,monitor=output,at={x=0,y=56},tags={}}
+assert(rail_updates==0)
+enzui_sidebar_snapshot();assert(rail_rule.no_focus and windows[4].tags[1]=="enzui-sidebar-chrome-888" and foreign.tags==nil)
+local updates=rail_updates;enzui_sidebar_snapshot();assert(rail_updates==updates)
+assert(raised==0);enzui_sidebar.reveal=true;enzui_sidebar_tick();assert(raised==1 and foreign.at.x==99 and rail_rule.no_focus==false)
+enzui_sidebar.reveal=false;enzui_sidebar_snapshot();assert(rail_rule.no_focus)
+enzui_sidebar.error="fixture";enzui_sidebar_snapshot();assert(rail_rule.no_focus==false)
+enzui_sidebar.error="";enzui_sidebar_snapshot();assert(rail_rule.no_focus)
+windows[2]=nil;windows[3]=nil;windows[4]=nil
+print("Sidebar: same-window pin/show/hide/restore, scoped chrome alignment, border rule, configurable metrics and ownership checks passed.")
+
+local phase="idle";local address=nil;local commands={};local configured=0
+local native={version=function()return 1 end}
+function native.supports(addr,pid)assert(pid==888);return addr==app.address and app.native_supported~=false end
+function native.configure(pid,name)assert(pid==888 and name=="TEST");configured=configured+1;return true end
+function native.prepare(addr,pid,x,y,w,h,right)
+    assert(phase=="idle" and pid==888 and type(right)=="boolean")
+    assert(app.workspace.id==nil and w>0 and h>0)
+    address=addr;phase="opening";commands[#commands+1]="prepare";return true
+end
+local owner_alive=true
+function native.status(addr)
+    if not owner_alive and (phase=="open" or phase=="opening") then phase="failed" end
+    return addr==address and phase or "idle"
+end
+function native.show(addr)assert(addr==address);phase="opening";commands[#commands+1]="show";return true end
+function native.hide(addr)assert(addr==address);phase="closing";commands[#commands+1]="hide";return true end
+function native.restore(addr,pid,x,y,w,h)
+    assert(pid==888 and (phase=="closed" or phase=="failed" or phase=="idle" or phase=="detached" or phase=="dialog"))
+    address=addr;phase="restoring";commands[#commands+1]="restore";return true
+end
+function native.finish(addr)
+    assert((addr=="" and not app.mapped) or (addr==address and (phase=="closed" or phase=="restored" or phase=="foreign")))
+    phase="idle";address=nil;commands[#commands+1]="finish";return true
+end
+hl.plugin.enzui_sidebar_scene=native
+assert(enzui_sidebar_configure("TEST","left","top",888).ok)
+assert(configured==1 and enzui_sidebar.native and enzui_sidebar_snapshot():find('"native":true',1,true))
+assert(select("#",enzui_sidebar_snapshot())==1)
+local before_native={x=app.at.x,y=app.at.y,w=app.size.x,h=app.size.y}
+app.native_supported=false
+assert(not enzui_sidebar_pin_window(app).ok and #enzui_sidebar.entries==0 and app.workspace.id==1)
+app.native_supported=true
+assert(enzui_sidebar_pin_window(app).ok);id=enzui_sidebar.entries[1].id
+local focus_before=focused
+assert(enzui_sidebar_toggle(id,400).ok and phase=="opening" and app.workspace.id==1)
+assert(focused==focus_before)
+local focus_point={x=point.x,y=point.y}
+phase="open";enzui_sidebar_tick();assert(focused==focus_before+1)
+assert(point.x==focus_point.x and point.y==focus_point.y and not no_warps and follow_mouse==1)
+assert(enzui_sidebar_hide().ok and phase=="closing" and app.workspace.id==1 and app.pinned)
+local closing_commands=#commands
+assert(enzui_sidebar_hide().ok and #commands==closing_commands)
+assert(enzui_sidebar_toggle(id,400).ok and phase=="opening" and app.workspace.id==1)
+phase="open";enzui_sidebar_tick()
+assert(enzui_sidebar_hide().ok);phase="closed";enzui_sidebar_tick()
+assert(app.workspace.id==nil and not app.pinned and enzui_sidebar.shown==nil and phase=="idle")
+assert(enzui_sidebar_toggle(id,400).ok);phase="open";enzui_sidebar_tick()
+assert(enzui_sidebar_unpin(id,false).ok and phase=="closing" and #enzui_sidebar.entries==1)
+closing_commands=#commands
+assert(enzui_sidebar_unpin(id,false).ok and #commands==closing_commands)
+assert(enzui_sidebar_hide().ok and enzui_sidebar.after_close.unpin and #commands==closing_commands)
+phase="closed";enzui_sidebar_tick()
+assert(phase=="restoring" and #enzui_sidebar.entries==1 and enzui_sidebar.restoring==id)
+assert(app.at.x==before_native.x and app.at.y==before_native.y and app.size.x==before_native.w and app.size.y==before_native.h)
+phase="restored";enzui_sidebar_tick()
+assert(phase=="idle" and #enzui_sidebar.entries==0 and enzui_sidebar.shown==nil and enzui_sidebar.restoring==nil)
+assert(enzui_sidebar_pin_window(app).ok);id=enzui_sidebar.entries[1].id
+assert(enzui_sidebar_toggle(id,400).ok);phase="failed";enzui_sidebar_tick()
+assert(enzui_sidebar.entries[1].restore_pending and enzui_sidebar.error=="restore-needed")
+assert(enzui_sidebar_toggle(id,400).ok and phase=="restoring")
+phase="restored";enzui_sidebar_tick();assert(#enzui_sidebar.entries==0)
+assert(enzui_sidebar_pin_window(app).ok);id=enzui_sidebar.entries[1].id
+assert(enzui_sidebar_toggle(id,400).ok);app.mapped=false;enzui_sidebar_tick()
+assert(#enzui_sidebar.entries==0 and phase=="idle" and enzui_sidebar.shown==nil)
+app.mapped=true
+hl.plugin.enzui_sidebar_scene=nil
+assert(not enzui_sidebar_configure("TEST","left","top",888).ok)
+print("Native sidebar: delayed parking/focus, reversal, gated restoration, failed-content recovery and no capability downgrade passed.")
+native.version=function()return 2 end
+native.owner_alive=function(pid)assert(pid==888);return owner_alive end
+native.relocated=function(addr,pid)assert(addr==address and pid==888 and phase=="restoring" and not app.pinned);return true end
+hl.plugin.enzui_sidebar_scene=native
+app.pinned=false;app.at={x=370,y=218};app.size={x=700,y=500};app.tags={}
+assert(enzui_sidebar_configure("TEST","left","top",888).ok)
+assert(enzui_sidebar_snapshot():find('"scene_version":2',1,true))
+assert(enzui_sidebar_pin_window(app).ok);id=enzui_sidebar.entries[1].id
+assert(enzui_sidebar_toggle(id,400).ok);phase="open";enzui_sidebar_tick()
+owner_alive=false;enzui_sidebar_tick()
+assert(phase=="restoring" and enzui_sidebar.restoring==id and app.at.x==370 and app.size.x==700)
+phase="restored";enzui_sidebar_tick()
+assert(#enzui_sidebar.entries==0 and phase=="idle")
+owner_alive=true
+assert(enzui_sidebar_pin_window(app).ok);id=enzui_sidebar.entries[1].id
+assert(enzui_sidebar_toggle(id,400).ok)
+local foreign_at=app.at;local foreign_size=app.size
+phase="foreign";app.monitor={name="ENZREMOTE-APP"};enzui_sidebar_tick()
+assert(app.at==foreign_at and app.size==foreign_size and enzui_sidebar.shown==nil and enzui_sidebar.error=="unavailable")
+assert(enzui_sidebar.entries[1].restore_pending)
+print("Native v2: shell-owner loss restores retained app; foreign ownership releases without moving it.")
+
+native.version=function()return 3 end
+app.monitor=output;app.pinned=false;app.at={x=370,y=218};app.size={x=700,y=500};app.tags={}
+enzui_sidebar.entries={};enzui_sidebar.error="";enzui_sidebar.shown=nil
+assert(enzui_sidebar_configure("TEST","left","top",888).ok)
+assert(enzui_sidebar_pin_window(app).ok);id=enzui_sidebar.entries[1].id
+assert(enzui_sidebar_toggle(id,400).ok);phase="open";enzui_sidebar_tick()
+phase="dragging";app.at={x=300,y=250};local drag_commands=#commands
+assert(enzui_sidebar_unpin(id,true).ok and #commands==drag_commands)
+enzui_sidebar_tick();assert(phase=="dragging" and app.size.x==360 and app.at.x==300)
+owner_alive=false;enzui_sidebar_tick();assert(phase=="dragging" and #commands==drag_commands)
+phase="detached";enzui_sidebar_tick()
+assert(phase=="restoring" and app.at.x==300 and app.at.y==250 and app.size.x==700)
+phase="restored";enzui_sidebar_tick();assert(#enzui_sidebar.entries==0 and enzui_sidebar.error=="")
+owner_alive=true
+local dialog={address="0x456",pid=777,mapped=true,class="dialog",at={x=500,y=400},size={x=320,y=180}}
+windows[2]=dialog
+assert(not enzui_sidebar_pin_window(app).ok and #enzui_sidebar.entries==0)
+windows[2]=nil
+assert(enzui_sidebar_pin_window(app).ok);id=enzui_sidebar.entries[1].id
+assert(enzui_sidebar_toggle(id,400).ok);phase="open";enzui_sidebar_tick()
+windows[2]=dialog;local dialog_at=dialog.at;local dialog_size=dialog.size
+phase="dialog";enzui_sidebar_tick()
+assert(phase=="restoring" and app.at.x==300 and app.at.y==250)
+phase="restored";enzui_sidebar_tick()
+assert(#enzui_sidebar.entries==0 and enzui_sidebar.error=="desktop-return")
+assert(dialog.at==dialog_at and dialog.size==dialog_size)
+print("Native v3: drag remains live until release; additional-window fallback restores only its parent.")
+
+native.version=function()return 4 end
+local motion_value
+native.motion=function(pid,rate,enabled) assert(pid==888);motion_value={rate=rate,windows=enabled};return true end
+native.motion_state=function(pid) assert(pid==888);return motion_value end
+windows[2]=nil;enzui_sidebar.error=""
+assert(enzui_sidebar_configure("TEST","left","top",888,nil,{rate=200,windows=false}).ok)
+assert(motion_value.rate==200 and motion_value.windows==false)
+assert(enzui_sidebar_snapshot():find('"scene_version":4',1,true))
+assert(enzui_sidebar_pin_window(app).ok);id=enzui_sidebar.entries[1].id
+assert(enzui_sidebar_toggle(id,400).ok);phase="open";enzui_sidebar_tick()
+local motion_commands=#commands
+assert(enzui_sidebar_configure("TEST","left","top",888,nil,{rate=50,windows=true}).ok)
+assert(#commands==motion_commands and phase=="open" and motion_value.rate==50 and motion_value.windows)
+assert(not pcall(enzui_sidebar_configure,"TEST","left","top",888,nil,{rate=24,windows=true}))
+assert(#commands==motion_commands)
+print("Native v4: scoped motion configuration/readback leaves the active app and geometry intact.")
+native.version=function()return 5 end
+assert(enzui_sidebar_configure("TEST","left","top",888,nil,{rate=100,windows=true}).ok)
+assert(enzui_sidebar_snapshot():find('"scene_version":5',1,true))
+assert(#commands==motion_commands and phase=="open")
+print("Native v5: retained-restore provider preserves the scoped policy contract.")
+
+native.version=function()return 6 end
+local hint={};local repins=0;local held_pockets=0;local pocket_calls=0
+native.hold_pocket=function(pid)assert(pid==888);held_pockets=held_pockets+1;return true end
+native.pocket=function(pid,show,hover,x,y,w,h,right)
+    assert(pid==888 and type(show)=="boolean" and type(hover)=="boolean")
+    if show then assert(w>80 and w<=512 and h<=1024) end
+    pocket_calls=pocket_calls+1;hint={show=show,hover=hover};return true
+end
+local expected_pinned_width,expected_pinned_height=360,640
+native.repin=function(addr,pid,x,y,w,h,right)
+    assert(addr==address and pid==888 and phase=="detached" and w==expected_pinned_width and h==expected_pinned_height)
+    phase="opening";repins=repins+1;commands[#commands+1]="repin";return true
+end
+assert(enzui_sidebar_configure("TEST","left","top",888).ok)
+assert(enzui_sidebar_snapshot():find('"scene_version":6',1,true))
+local original_entry=enzui_sidebar.entries[1].original
+local repin_resizes,repin_pins=resize_calls,pin_calls
+point={x=app.at.x+20,y=app.at.y+20};enzui_sidebar_press()
+phase="dragging";app.at={x=400,y=200};point={x=420,y=220};enzui_sidebar_tick()
+assert(enzui_sidebar.reveal and hint.show and not hint.hover)
+point={x=60,y=400};enzui_sidebar_tick();assert(hint.show and hint.hover)
+enzui_sidebar_release();assert(enzui_sidebar.pending.repin==id and held_pockets==1)
+enzui_sidebar_tick();assert(phase=="dragging" and enzui_sidebar.pending.repin==id and repins==0)
+phase="detached";enzui_sidebar_tick()
+assert(phase=="opening" and repins==1 and #enzui_sidebar.entries==1 and app.size.x==360)
+assert(enzui_sidebar.entries[1].original==original_entry and app.pinned)
+assert(resize_calls==repin_resizes and pin_calls==repin_pins)
+phase="open";enzui_sidebar_tick()
+point={x=app.at.x+20,y=app.at.y+20};subscriptions["enzui.pointer_button"](273,1)
+assert(enzui_sidebar.drag and enzui_sidebar.drag.resizing)
+phase="dragging";app.size={x=480,y=520};subscriptions["enzui.pointer_button"](273,0)
+assert(enzui_sidebar.pending and enzui_sidebar.pending.repin==id and enzui_sidebar.entries[1].resize_pending)
+assert(enzui_sidebar.entries[1].released_size.x==480)
+app.size={x=424,y=234}
+expected_pinned_width,expected_pinned_height=480,520
+phase="detached";enzui_sidebar_tick()
+assert(app.size.x==480 and app.size.y==520 and enzui_sidebar.entries[1].pinned_size.x==480)
+assert(not enzui_sidebar.entries[1].released_size)
+assert(enzui_sidebar.saved_sizes[app.stable_id].x==480 and enzui_sidebar.entries[1].original==original_entry)
+enzui_sidebar.saved_sizes[app.stable_id]=nil;enzui_sidebar.entries[1].pinned_size=nil
+app.size={x=360,y=640};expected_pinned_width,expected_pinned_height=360,640
+phase="open";enzui_sidebar_tick()
+point={x=app.at.x+app.size.x-14,y=app.at.y+app.size.y-14};enzui_sidebar_press()
+assert(enzui_sidebar.drag.resizing);enzui_sidebar_release()
+point={x=app.at.x+app.size.x-8,y=app.at.y+(app.size.y-72)/2+90};enzui_sidebar_press()
+assert(not enzui_sidebar.drag.resizing);enzui_sidebar_release()
+-- Beside a right-hand rail the grip is in the pane's bottom left corner.
+local rail_side=enzui_sidebar.side;enzui_sidebar.side="right"
+point={x=app.at.x+14,y=app.at.y+app.size.y-14};enzui_sidebar_press()
+assert(enzui_sidebar.drag.resizing,"The outer corner did not resize beside a right-hand rail");enzui_sidebar_release()
+point={x=app.at.x+app.size.x-14,y=app.at.y+app.size.y-14};enzui_sidebar_press()
+assert(not enzui_sidebar.drag.resizing,"The inner corner resized beside a right-hand rail");enzui_sidebar_release()
+enzui_sidebar.side=rail_side
+point={x=app.at.x+20,y=app.at.y+20};enzui_sidebar_press()
+phase="dragging";app.at={x=400,y=200};point={x=420,y=220};enzui_sidebar_tick()
+enzui_sidebar_cancel_drag();assert(enzui_sidebar.pending.repin==id and held_pockets==3)
+enzui_sidebar_tick();assert(enzui_sidebar.pending.repin==id and phase=="dragging")
+phase="detached";enzui_sidebar_tick();assert(repins==3 and phase=="opening")
+phase="open";enzui_sidebar_tick()
+point={x=app.at.x+20,y=app.at.y+20};enzui_sidebar_press()
+phase="dragging";app.at={x=500,y=240};point={x=520,y=260};enzui_sidebar_tick()
+enzui_sidebar_release();phase="detached";enzui_sidebar_tick()
+assert(phase=="restoring" and app.size.x==original_entry.size.x)
+phase="restored";enzui_sidebar_tick();assert(#enzui_sidebar.entries==0)
+enzui_sidebar.anchor=nil
+point={x=app.at.x+20,y=app.at.y+20};enzui_sidebar_press()
+app.at={x=-100,y=268};point={x=18,y=350};enzui_sidebar_tick();assert(hint.show and enzui_sidebar.reveal)
+local hint_pane=enzui_sidebar_snapshot():match('"pane":(%b[])')
+assert(enzui_sidebar.anchor~=nil)
+enzui_sidebar.error="ineligible"
+assert(enzui_sidebar_snapshot():match('"pane":(%b[])')==hint_pane)
+enzui_sidebar.error=""
+point={x=60,y=350};enzui_sidebar_tick();assert(hint.show and enzui_sidebar.reveal)
+enzui_sidebar_release();enzui_sidebar_tick();assert(#enzui_sidebar.entries==1 and app.workspace.id==nil and not hint.show)
+print("Native v6: narrow pocket intent, release-delayed repin, Escape return and retained original geometry passed.")
+
+native.version=function()return 7 end
+local rail_source
+native.rail=function(pid,visible,x,y,w,h,solid,frame,right)
+    assert(pid==888 and type(visible)=="boolean" and type(right)=="boolean")
+    rail_source={visible=visible,x=x,y=y,w=w,h=h,solid=solid,frame=frame,right=right};return true
+end
+assert(enzui_sidebar_configure("TEST","left","top",888).ok)
+assert(enzui_sidebar_snapshot():find('"scene_version":7',1,true))
+assert(rail_source.visible and not rail_source.right and rail_source.x==0 and rail_source.y==36)
+assert(enzui_sidebar_configure("TEST","right","bottom",888).ok)
+assert(enzui_sidebar_snapshot():find('"scene_version":7',1,true))
+assert(rail_source.right)
+print("Native v7: full rail source geometry and visibility are scoped to both selected edges.")
+
+local floating={frame=0,bar=32,radius=16,rail=40,text=13,icon=16,
+    islands={height=32,gap=8,edge_gap=10,side_gap=12,radius=16,rail=40,padding=16}}
+local before_islands=enzui_sidebar_snapshot()
+assert(not pcall(enzui_sidebar_configure,"TEST","left","top",888,floating))
+assert(enzui_sidebar_snapshot()==before_islands)
+native.version=function()return 8 end
+native.supports_islands=function()return true end
+native.rail=function(pid,visible,x,y,w,h,solid,frame,right,islands,client_shape)
+    assert(pid==888 and type(visible)=="boolean" and type(right)=="boolean")
+    assert(not islands or client_shape==true)
+    rail_source={visible=visible,x=x,y=y,w=w,h=h,solid=solid,frame=frame,right=right,islands=islands,client_shape=client_shape};return true
+end
+assert(enzui_sidebar_configure("TEST","left","top",888,floating).ok)
+assert(enzui_sidebar_snapshot():find('"scene_version":8',1,true))
+assert(rail_source.islands and rail_source.client_shape and rail_source.x==12 and rail_source.y==50 and rail_source.w==40 and rail_source.h==840 and rail_source.frame==0)
+assert(enzui_sidebar_snapshot():find('"rail":[12,444,40,52]',1,true))
+assert(enzui_sidebar_snapshot():find('"canvas":[12,50,40,840]',1,true))
+local sized_entry=enzui_sidebar.entries[1];local positioned=enzui_sidebar.positioned
+sized_entry.pending_size={x=4000,y=4000};enzui_sidebar.positioned=sized_entry.id
+local pane_w,pane_h=enzui_sidebar_snapshot():match('"pane":%[%-?%d+,%-?%d+,(%d+),(%d+)%]')
+assert(tonumber(pane_w)>512 and tonumber(pane_w)<=1536 and tonumber(pane_h)<=1024)
+sized_entry.pending_size=nil;enzui_sidebar.positioned=positioned
+assert(enzui_sidebar_configure("TEST","right","bottom",888,floating).ok)
+assert(enzui_sidebar_snapshot():find('"rail":[1388,404,40,52]',1,true))
+assert(rail_source.islands and rail_source.right)
+local retained=enzui_sidebar.entries
+local app_position=app.at
+local app_size=app.size
+local saved_original=retained[1].original
+floating.islands.side_gap=20
+floating.islands.edge_gap=18
+floating.islands.gap=12
+assert(enzui_sidebar_configure("TEST","left","top",888,floating).ok)
+assert(enzui_sidebar_snapshot():find('"rail":[20,444,40,52]',1,true))
+assert(enzui_sidebar.entries==retained and retained[1].original==saved_original and app.at==app_position and app.size==app_size)
+assert(enzui_sidebar_configure("TEST","left","top",888).ok)
+enzui_sidebar_snapshot()
+assert(rail_source.islands==nil and rail_source.frame==8)
+print("Native v8: floating capsule geometry/margins, older-provider refusal and retained-app Frame roundtrip passed.")
+
+local prepared_inset
+local prepare_base=native.prepare
+native.prepare=function(addr,pid,x,y,w,h,right,inset)
+    prepared_inset=inset
+    return prepare_base(addr,pid,x,y,w,h,right)
+end
+native.repin=function(addr,pid,x,y,w,h,right,inset)
+    assert(addr==address and pid==888 and phase=="detached" and inset==prepared_inset)
+    assert(w==app.size.x and h==app.size.y)
+    phase="opening";repins=repins+1;return true
+end
+local function pane_bounds()
+    local box={}
+    for v in enzui_sidebar_snapshot():match('"pane":(%b[])'):gmatch("%-?%d+")do box[#box+1]=tonumber(v)end
+    assert(#box==4);return table.unpack(box)
+end
+floating.islands.side_gap=12;floating.islands.edge_gap=10;floating.islands.gap=8
+for _,canvas in ipairs({{1440,900},{800,480},{400,640}})do
+    output.width=canvas[1];output.height=canvas[2]
+    for _,side in ipairs({"left","right"})do
+        for _,bar in ipairs({"top","bottom"})do
+            for radius=0,32 do
+                floating.radius=radius;floating.islands.radius=radius
+                assert(enzui_sidebar_configure("TEST",side,bar,888,floating).ok)
+                assert(enzui_sidebar_toggle(retained[1].id).ok)
+                local px,py,pw,ph=pane_bounds()
+                local inset=prepared_inset
+                assert(inset==math.max(6,math.ceil(radius*(1-math.sqrt(0.5)))))
+                assert(inset>=6 and inset<=10)
+                assert(app.at.x==px+inset and app.at.y==py+inset)
+                assert(app.size.x==pw-2*inset and app.size.y==ph-2*inset)
+                assert(px>=output.x+12 and px+pw<=output.x+output.width-12)
+                local top=bar=="top" and 50 or 10
+                local bottom=output.height-(bar=="bottom" and 50 or 10)
+                assert(py>=output.y+top and py+ph<=output.y+bottom)
+                local r=math.min(radius,pw/2,ph/2)
+                for _,x in ipairs({app.at.x,app.at.x+app.size.x})do
+                    for _,y in ipairs({app.at.y,app.at.y+app.size.y})do
+                        local dx=x-math.max(px+r,math.min(x,px+pw-r))
+                        local dy=y-math.max(py+r,math.min(y,py+ph-r))
+                        assert(dx*dx+dy*dy<=r*r)
+                    end
+                end
+                if radius==16 and canvas[1]==800 and side=="right"and bar=="bottom"then
+                    assert(px==368 and py==10 and pw==372 and ph==420 and inset==6)
+                end
+                if radius==32 and canvas[1]==800 and side=="right"and bar=="bottom"then
+                    assert(px==360 and py==10 and pw==380 and ph==420 and inset==10)
+                end
+                phase="open";enzui_sidebar_tick()
+                if radius==32 then
+                    point={x=app.at.x+20,y=app.at.y+20};enzui_sidebar_press();phase="dragging"
+                    enzui_sidebar_cancel_drag();assert(enzui_sidebar.pending.repin==retained[1].id)
+                    phase="detached";local before_repins=repins;enzui_sidebar_tick();assert(repins==before_repins+1)
+                    phase="open";enzui_sidebar_tick()
+                end
+                assert(enzui_sidebar_hide().ok);phase="closed";enzui_sidebar_tick()
+                assert(phase=="idle" and retained[1].original==saved_original)
+            end
+        end
+    end
+end
+output.width=1440;output.height=900
+assert(enzui_sidebar_configure("TEST","left","top",888).ok)
+assert(enzui_sidebar_toggle(retained[1].id).ok)
+assert(app.at.x==42 and app.size.x==360 and app.size.y==640)
+print("Pane inset: all radii and selected canvases/edges contain square app buffers; default/Frame sizes and repin ownership retained.")
+phase="open";enzui_sidebar_tick()
+assert(enzui_sidebar_unpin(retained[1].id,false).ok);phase="closed";enzui_sidebar_tick()
+phase="restored";enzui_sidebar_tick();assert(#enzui_sidebar.entries==0)
+output.width=800;output.height=480;app.at={x=200,y=100};app.size={x=360,y=240}
+floating.radius=16;floating.islands.radius=16
+assert(enzui_sidebar_configure("TEST","left","top",888,floating).ok)
+local initial_pocket_calls=pocket_calls
+point={x=250,y=130};enzui_sidebar_press();app.at={x=300,y=100};point={x=500,y=200};enzui_sidebar_tick()
+assert(enzui_sidebar.reveal and not enzui_sidebar.drop_hover and pocket_calls==initial_pocket_calls)
+assert(enzui_sidebar_snapshot():find('"rail":[12,200,40,120]',1,true))
+point={x=16,y=80};enzui_sidebar_tick()
+assert(enzui_sidebar.drop_hover and pocket_calls==initial_pocket_calls)
+assert(point.y<200 and point.y>=rail_source.y)
+enzui_sidebar_release();enzui_sidebar_tick()
+assert(#enzui_sidebar.entries==1 and app.workspace.id==nil and not enzui_sidebar.reveal and not enzui_sidebar.drop_hover)
+assert(enzui_sidebar.entries[1].original.at.x==200 and pocket_calls==initial_pocket_calls)
+assert(enzui_sidebar_snapshot():find('"rail":[12,234,40,52]',1,true))
+print("Islands drop: wide edge admission, tall empty indicator, hover state and no expanding pocket calls passed.")
+local other={address="0x456",stable_id="second",pid=778,mapped=true,hidden=false,monitor=output,workspace=workspace,class="other-app",pinned=false,fullscreen=0,floating=true,at={x=300,y=100},size={x=320,y=200},tags={}}
+windows[2]=other
+local supports=native.supports
+native.supports=function(addr,pid)return addr==other.address and pid==888 or supports(addr,pid)end
+local first_entry=enzui_sidebar.entries[1]
+local canvas=enzui_sidebar_snapshot():match('"canvas":(%b[])')
+point={x=400,y=150};enzui_sidebar_press();other.at={x=350,y=100};point={x=16,y=80};enzui_sidebar_tick()
+local extra=enzui_sidebar_snapshot()
+assert(extra:find('"drop_add":true',1,true) and extra:find('"rail":[12,213,40,94]',1,true))
+assert(extra:match('"canvas":(%b[])')==canvas and rail_source.h==420)
+assert(enzui_sidebar.entries[1]==first_entry and pocket_calls==initial_pocket_calls)
+point={x=500,y=220};enzui_sidebar_release();enzui_sidebar_tick()
+assert(#enzui_sidebar.entries==1 and not enzui_sidebar.reveal)
+assert(enzui_sidebar_snapshot():find('"rail":[12,234,40,52]',1,true))
+point={x=400,y=150};enzui_sidebar_press();other.at={x=400,y=100};point={x=16,y=80};enzui_sidebar_tick()
+assert(enzui_sidebar_snapshot():find('"drop_add":true',1,true))
+enzui_sidebar_release();enzui_sidebar_tick()
+local added=enzui_sidebar_snapshot()
+assert(#enzui_sidebar.entries==2 and enzui_sidebar.entries[1]==first_entry)
+assert(added:find('"drop_add":false',1,true) and added:find('"rail":[12,213,40,94]',1,true))
+assert(added:match('"canvas":(%b[])')==canvas and pocket_calls==initial_pocket_calls)
+assert(enzui_sidebar.entries[2].original.at.x==350 and other.workspace.id==nil)
+print("Islands insertion: distinct additional slot, canceled drop, in-place replacement and stable source canvas passed.")
+local icon_permit=false
+native.icon_drop=function(owner,x,y)assert(owner==888 and x==500 and y==250);local allowed=icon_permit;icon_permit=false;return allowed end
+native.cancel_icon_drop=function(owner)assert(owner==888);icon_permit=false;return true end
+local second_entry=enzui_sidebar.entries[2]
+assert(enzui_sidebar_snapshot():find('"icon_drag":true',1,true))
+local unchanged_resize=resize_calls
+assert(not pcall(enzui_sidebar_restore_icon,second_entry.id,999,500,250))
+assert(enzui_sidebar_restore_icon(second_entry.id,888,500,250).ok)
+assert(#enzui_sidebar.entries==2 and resize_calls==unchanged_resize and other.workspace.id==nil)
+icon_permit=true;enzui_sidebar_cancel_drag()
+assert(enzui_sidebar_restore_icon(second_entry.id,888,500,250).ok and #enzui_sidebar.entries==2)
+other.monitor={name="ENZREMOTE-APP"};icon_permit=true
+assert(not enzui_sidebar_restore_icon(second_entry.id,888,500,250).ok)
+assert(other.workspace.id==nil and resize_calls==unchanged_resize);other.monitor=output
+assert(enzui_sidebar_restore_icon(second_entry.id,888,500,250).ok)
+assert(second_entry.restoring and second_entry.original.at.x==350)
+assert(other.size.x==320 and other.size.y==200 and other.at.x==340 and other.at.y==226 and other.workspace.id==1)
+phase="restored";enzui_sidebar_tick()
+assert(#enzui_sidebar.entries==1 and enzui_sidebar.entries[1]==first_entry)
+assert(not enzui_sidebar_restore_icon(second_entry.id,888,500,250).ok)
+print("Icon restoration: hidden pane, qualified release, Escape, stale entry, foreign output and retained full-size identity passed.")
+local clock={now=10,held=false,keyboard=false};local area
+native.rail_context=function(owner)assert(owner==888);return clock end
+native.rail_state=function(owner)assert(owner==888);return {input=true}end
+native.fullscreen_area=function(owner,enabled,left,top,right,bottom)assert(owner==888);area={enabled=enabled,left=left,top=top,right=right,bottom=bottom};return true end
+function hl.monitor(args)
+    assert(args.output=="TEST" and args.mode=="800x480@60.000000" and args.scale==1 and args.position=="0x0")
+    output.reserved=args.reserved
+end
+enzui_sidebar_tick();assert(enzui_sidebar_timer.timeout==2000)
+subscriptions["window.fullscreen"]();assert(enzui_sidebar_timer.timeout==40)
+other.fullscreen=2;other.at={x=0,y=0};other.size={x=800,y=480};point={x=500,y=400}
+assert(enzui_sidebar_configure("TEST","left","top",888,floating,nil,{visibility="fullscreen",fullscreen_padding=8}).ok)
+assert(enzui_sidebar_snapshot():find('"autohidden":true',1,true) and not rail_source.visible)
+assert(area.enabled and area.left==8 and area.right==8 and area.top==50 and area.bottom==8)
+point={x=1,y=260};clock.now=10.1;enzui_sidebar_snapshot();assert(not rail_source.visible)
+clock.now=10.3;enzui_sidebar_snapshot();assert(not rail_source.visible)
+point={x=32,y=260};clock.now=11;enzui_sidebar_snapshot();assert(not rail_source.visible)
+other.fullscreen=1;enzui_sidebar_snapshot();assert(rail_source.visible)
+other.fullscreen=2;enzui_sidebar_snapshot();assert(not rail_source.visible)
+other.workspace={id=2};enzui_sidebar_snapshot();assert(rail_source.visible)
+other.workspace=workspace;enzui_sidebar_snapshot();assert(not rail_source.visible)
+other.monitor={name="OTHER"};enzui_sidebar_snapshot();assert(rail_source.visible)
+other.monitor=output;enzui_sidebar_snapshot();assert(not rail_source.visible)
+assert(enzui_sidebar_configure("TEST","left","top",888,floating,nil,{visibility="reserved",fullscreen_padding=24}).ok)
+enzui_sidebar_snapshot();assert(not rail_source.visible and output.reserved.left==60)
+assert(area.left==60 and area.right==24 and area.top==50 and area.bottom==24)
+point={x=500,y=400};other.fullscreen=0;other.at={x=400,y=80};other.size={x=320,y=300}
+assert(enzui_sidebar_configure("TEST","left","top",888,floating,nil,{visibility="overlap",fullscreen_padding=8}).ok)
+enzui_sidebar_snapshot();assert(rail_source.visible and output.reserved.left==0)
+other.at={x=0,y=50};clock.now=13;enzui_sidebar_snapshot();clock.now=13.3;enzui_sidebar_snapshot();assert(not rail_source.visible)
+windows[3]={class="dev.enzui.Sidebar",pid=888,mapped=true,monitor=output,at={x=12,y=50},tags={}}
+local dispatch=hl.dispatch
+function hl.dispatch(args)
+    if args.action_name=="focus" and args.window==windows[3] then clock.keyboard=true end
+    return dispatch(args)
+end
+keyboard_reveal();enzui_sidebar_tick();assert(rail_source.visible and clock.keyboard)
+assert(enzui_sidebar_snapshot():find('"keyboard_reveal":true',1,true))
+other.fullscreen=2;enzui_sidebar_snapshot();assert(rail_source.visible)
+clock.keyboard=false;enzui_sidebar_snapshot();assert(not rail_source.visible)
+point={x=1,y=260};clock.now=13.8;enzui_sidebar_snapshot();assert(not rail_source.visible)
+keyboard_reveal();enzui_sidebar_tick();assert(rail_source.visible);enzui_sidebar_snapshot()
+other.fullscreen=0;point={x=500,y=400}
+clock.keyboard=false;clock.now=14;enzui_sidebar_snapshot();clock.now=14.3;enzui_sidebar_snapshot();assert(not rail_source.visible)
+other.tags={"enzremote-test"};enzui_sidebar_snapshot();assert(rail_source.visible);other.tags={}
+assert(enzui_sidebar_configure("TEST","left","top",888).ok)
+assert(enzui_sidebar_snapshot():find('"autohidden":false',1,true) and rail_source.visible and not area.enabled)
+assert(output.reserved.left==36 and output.reserved.top==36)
+other.fullscreen=2;point={x=1,y=260};enzui_sidebar_snapshot();assert(not rail_source.visible)
+clock.now=15;enzui_sidebar_snapshot();assert(not rail_source.visible)
+keyboard_reveal();enzui_sidebar_tick();enzui_sidebar_snapshot();assert(rail_source.visible and clock.keyboard)
+clock.keyboard=false;enzui_sidebar_snapshot();assert(not rail_source.visible)
+other.fullscreen=0;enzui_sidebar_snapshot();assert(rail_source.visible)
+
+print("Sidebar behavior: fullscreen/overlap hiding, delayed hover reveal, keyboard route, reservations/padding and Frame restoration passed.")
+local drag_live,drop_live=false,false
+native.drag_active=function(owner,addr)assert(owner==888);return drag_live and addr==other.address end
+native.drag_drop=function(owner,addr)assert(owner==888);local valid=drop_live and addr==other.address;if valid then drop_live=false end;return valid end
+assert(enzui_sidebar_configure("TEST","left","top",888,floating).ok)
+other.floating=false;other.at={x=200,y=80};other.size={x=580,y=360}
+point={x=300,y=150};enzui_sidebar_press();point={x=16,y=80};enzui_sidebar_tick()
+assert(not enzui_sidebar.reveal)
+drag_live=true;other.size={x=560,y=340};enzui_sidebar_tick();assert(enzui_sidebar.reveal)
+drag_live=false;drop_live=true;enzui_sidebar_release();enzui_sidebar_tick()
+assert(#enzui_sidebar.entries==2 and other.workspace.id==nil and not drop_live)
+local tiled_entry=enzui_sidebar.entries[2]
+assert(not tiled_entry.original.floating and tiled_entry.original.size.x==580)
+local feedback
+native.icon_feedback=function(owner,light,addr,x,y)feedback={owner,light,addr,x,y};return true end
+assert(enzui_sidebar_icon_feedback(tiled_entry.id,888,true,32,260).ok)
+assert(feedback[1]==888 and feedback[2] and feedback[3]==other.address and feedback[4]==32 and feedback[5]==260)
+feedback=nil;enzui_sidebar_icon_feedback(tiled_entry.id,999,true,32,260);assert(feedback==nil)
+local mode,placed
+native.tiling_mode=function(owner,enabled)assert(owner==888);mode=enabled;return true end
+native.place_tile=function(addr,owner,x,y)
+    assert(addr==other.address and owner==888 and phase=="restoring" and mode and not other.pinned and other.workspace.id==1)
+    placed={x=x,y=y};other.floating=false;other.at={x=402,y=50};other.size={x=386,y=418};return {x=402,y=50,width=386,height=418}
+end
+enzui_desktop={tiling=true};icon_permit=true
+function enzui_desktop_tiling_at(id)assert(id==workspace.id);return enzui_desktop.tiling end
+assert(enzui_sidebar_restore_icon(tiled_entry.id,888,500,250).ok)
+assert(placed.x==500 and placed.y==250 and tiled_entry.restoring and not other.floating)
+phase="restored";enzui_sidebar_tick();assert(#enzui_sidebar.entries==1)
+enzui_desktop.tiling=false;enzui_sidebar_snapshot();assert(mode==false)
+print("Tiled pinning: native move/release admission survives size changes; feedback identity and drop-position restoration passed.")
+
+-- A vanished output must not raise from the pointer callbacks. The snapshot
+-- request still reports the missing output to its caller.
+native.tiling_mode=function()return false end
+native.rail=function()return false end
+output.enabled=false
+local pressed,released=pcall(enzui_sidebar_press),pcall(enzui_sidebar_release)
+assert(pressed and released,"pointer callbacks raised after the output went away")
+assert(pcall(enzui_sidebar_tick),"tick raised after the output went away")
+local ok,err=pcall(enzui_sidebar_snapshot)
+assert(not ok and tostring(err):match("Sidebar output unavailable"),"snapshot should report the missing output")
+output.enabled=true
+native.tiling_mode=function()return true end
+native.rail=function(_,visible)rail_source.visible=visible;return true end
+local ok2,err2=pcall(enzui_sidebar_snapshot)
+assert(ok2,"snapshot raised after the output returned: "..tostring(err2))
+print("Lost output: pointer callbacks stay quiet; the snapshot still reports it.")
+assert(enzui_sidebar_configure("TEST","left","top",888,floating,nil,nil,"shared",false).ok)
+local disabled=enzui_sidebar_snapshot()
+assert(disabled:find('"enabled":false',1,true) and not rail_source.visible)
+assert(output.reserved.left==0 and not area.enabled)
+assert(not enzui_sidebar_pin_window(other).ok)
+assert(not enzui_sidebar_toggle(enzui_sidebar.entries[1].id).ok)
+assert(enzui_sidebar_configure("TEST","left","top",888,floating,nil,nil,"shared",true).ok)
+assert(enzui_sidebar_snapshot():find('"enabled":true',1,true))
+print("Sidebar power: off disables rail/input/drop/reservations without destroying entries; on restores controls.")

@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""Budgeted shell iteration: targeted check/test/build, or the full precommit gate."""
+import argparse
+from pathlib import Path
+import subprocess
+import sys
+import time
+import tomllib
+
+ROOT = Path(__file__).resolve().parent.parent
+TARGETS = {"lib": ["--lib"], "settings": ["--bin", "enzui-settings"], "shell": ["--bin", "enzui-shell"]}
+
+
+def cargo_arguments(mode, target=None, test_filter=None):
+    args = ["cargo", "test" if mode == "gate" else mode, "--offline", "--locked", "-j1"]
+    if mode == "gate":
+        return args + ["--workspace", "--all-targets", "--all-features", "--", "--test-threads=1"]
+    args += ["-p", "enzui-shell", *TARGETS[target]]
+    if mode == "test":
+        return args + [test_filter, "--", "--test-threads=1"]
+    return args
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    subcommands = parser.add_subparsers(dest="mode", required=True)
+    for mode in ["check", "build", "test"]:
+        command = subcommands.add_parser(mode)
+        command.add_argument("target", choices=TARGETS)
+        if mode == "test":
+            command.add_argument("filter", help="Required scoped test-name filter")
+    subcommands.add_parser("lint")
+    subcommands.add_parser("gate")
+    args = parser.parse_args()
+    if args.mode == "gate":
+        vm = subprocess.run(["systemctl", "--user", "is-active", "enzui-enzimos-vm.service"], capture_output=True, text=True, check=False)
+        if vm.stdout.strip() != "inactive":
+            parser.error("Full gate requires enzui-enzimos-vm.service inactive; no service was stopped")
+    manifests = ["Cargo.toml", "tools/wgsl-glsl/Cargo.toml"]
+    if args.mode in {"lint", "gate"}:
+        policies = []
+        for manifest in manifests:
+            path = ROOT / manifest
+            data = tomllib.loads(path.read_text())
+            policies.append(data["workspace"]["lints"])
+            packages = [path] if "package" in data else []
+            for member in data["workspace"].get("members", []):
+                matches = list(path.parent.glob(member))
+                if not matches:
+                    parser.error(f"Workspace member has no manifest: {member}")
+                packages.extend(directory / "Cargo.toml" for directory in matches)
+            for package in packages:
+                lint_settings = tomllib.loads(package.read_text()).get("lints", {})
+                if lint_settings.get("workspace") is not True:
+                    parser.error(f"{package.relative_to(ROOT)} must inherit the workspace lint policy")
+        if any(policy != policies[0] for policy in policies[1:]):
+            parser.error("Owned Rust workspaces must share the same lint policy")
+    commands = []
+    if args.mode in {"lint", "gate"}:
+        for manifest in manifests:
+            features = [[], ["--all-features"]] if manifest == "Cargo.toml" else [["--all-features"]]
+            for feature_flags in features:
+                commands.append(["cargo", "clippy", "--offline", "--locked", "-j1", "--manifest-path", manifest,
+                                 "--workspace", "--all-targets", *feature_flags, "--", "-D", "warnings"])
+    if args.mode != "lint":
+        commands.append(cargo_arguments(args.mode, getattr(args, "target", None), getattr(args, "filter", None)))
+    start = time.monotonic()
+    for command in commands:
+        result = subprocess.run([str(ROOT / "scripts/with-build-budget"), *command], cwd=ROOT, check=False)
+        if result.returncode:
+            break
+    print(f"shell-iterate: {args.mode} completed with exit {result.returncode} in {time.monotonic() - start:.2f}s", file=sys.stderr)
+    return result.returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,136 @@
+{
+  "format": 1,
+  "id": "app-dock",
+  "name": "App dock",
+  "version": "1.0.0",
+  "description": "Optional application dock and grouped taskbar. Joins the bar on its edge. Hover for window snapshots; scroll an icon to cycle its windows. Disabled until you enable this plugin.",
+  "permissions": [
+    "shell.bar",
+    "applications.surface"
+  ],
+  "elements": [
+    {
+      "id": "applications",
+      "section": "middle",
+      "before": null
+    }
+  ],
+  "settings": [
+    {
+      "key": "visible",
+      "label": "Show dock",
+      "kind": "toggle",
+      "default": true
+    },
+    {
+      "key": "position",
+      "label": "Position",
+      "kind": "choice",
+      "default": "bottom",
+      "choices": [
+        "top",
+        "bottom",
+        "left",
+        "right"
+      ],
+      "labels": {
+        "top": "Top",
+        "bottom": "Bottom",
+        "left": "Left",
+        "right": "Right"
+      }
+    },
+    {
+      "key": "style",
+      "label": "Style",
+      "kind": "choice",
+      "default": "island",
+      "choices": [
+        "island",
+        "panel",
+        "minimal"
+      ],
+      "labels": {
+        "island": "Island",
+        "panel": "Edge panel",
+        "minimal": "Icons only"
+      }
+    },
+    {
+      "key": "visibility",
+      "label": "Visibility",
+      "kind": "choice",
+      "default": "never",
+      "choices": [
+        "never",
+        "always",
+        "overlap",
+        "fullscreen"
+      ],
+      "labels": {
+        "never": "Always visible",
+        "always": "Autohide",
+        "overlap": "Hide when windows overlap",
+        "fullscreen": "Hide for fullscreen apps"
+      }
+    },
+    {
+      "key": "icon_size",
+      "label": "Icon size (px)",
+      "kind": "integer",
+      "default": 24,
+      "min": 12,
+      "max": 64
+    },
+    {
+      "key": "spacing",
+      "label": "Icon spacing (px)",
+      "kind": "integer",
+      "default": 4,
+      "min": 0,
+      "max": 24
+    },
+    {
+      "key": "radius",
+      "label": "Dock corner radius (px)",
+      "kind": "integer",
+      "default": 12,
+      "min": 0,
+      "max": 32
+    },
+    {
+      "key": "highlight_radius",
+      "label": "Icon highlight rounding (px)",
+      "kind": "integer",
+      "default": 6,
+      "min": 0,
+      "max": 32
+    },
+    {
+      "key": "margin",
+      "label": "Distance from screen edge (px)",
+      "kind": "integer",
+      "default": 8,
+      "min": 0,
+      "max": 24
+    },
+    {
+      "key": "show_running",
+      "label": "Show running applications",
+      "kind": "toggle",
+      "default": true
+    },
+    {
+      "key": "current_desktop",
+      "label": "Only windows on this desktop",
+      "kind": "toggle",
+      "default": false
+    },
+    {
+      "key": "pins",
+      "label": "Favorite applications",
+      "kind": "applications",
+      "default": []
+    }
+  ]
+}

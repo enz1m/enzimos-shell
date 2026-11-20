@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if (($#)); then
+    printf '%s\n' 'build-sidebar-scene takes no positional arguments; set ENZUI_HYPR_BUILDROOT and ENZUI_SIDEBAR_BUILDROOT.' >&2
+    exit 2
+fi
+root=$(cd "$(dirname "$0")/.." && pwd)
+exec "$root/scripts/with-build-budget" python3 "$root/tools/build-sidebar-scene.py" "${ENZUI_HYPR_BUILDROOT:-$root/.build/shared-desktop}" "${ENZUI_SIDEBAR_BUILDROOT:-$root/.build/sidebar-scene}"

@@ -1,0 +1,222 @@
+#!/usr/bin/env lua
+local path=arg[0]:match("^(.*)/").."/../config/search-policy.lua"
+local monitor={name="HEADLESS-1",enabled=true,transform=0,is_mirror=false,width=1440,height=900,scale=1,x=0,y=0,reserved={left=0,right=0,top=36,bottom=0}}
+local function window(address,pid,class)
+    return {address=address,stable_id=address.."s",pid=pid,class=class,mapped=true,monitor=monitor,tags={},workspace={id=1},at={x=100,y=100},size={x=400,y=300}}
+end
+local app=window("0xa",70,"fixture")
+local search=window("0xb",42,"dev.enzui.QuickSearch")
+local panel=window("0xc",42,"dev.enzui.Desktop")
+local windows={app,search,panel}
+local active,actions=app,{}
+local pointer={x=712.5,y=540.25}
+local no_warps,config_calls,fault=false,0,nil
+local follow_mouse,pointer_refreshes=2,0
+hl={dsp={window={},cursor={}}}
+function hl.get_config(key)
+    if key=="input.follow_mouse" then return follow_mouse end
+    assert(key=="cursor.no_warps");return no_warps
+end
+function hl.config(value)
+    if value.input then
+        assert(value.input.follow_mouse>=0 and value.input.follow_mouse<=3)
+        follow_mouse=value.input.follow_mouse
+    else
+        assert(type(value.cursor.no_warps)=="boolean");no_warps=value.cursor.no_warps;config_calls=config_calls+1
+    end
+end
+function hl.get_windows() return windows end
+function hl.get_monitors() return {monitor} end
+function hl.get_active_workspace(output) assert(output==monitor.name);return {id=1} end
+function hl.get_active_window() return active end
+function hl.get_cursor_pos() return pointer end
+function hl.get_window(selector) for _,w in ipairs(windows) do if "address:"..w.address==selector then return w end end end
+for _,name in ipairs({"move","resize","alter_zorder","set_prop"}) do hl.dsp.window[name]=function(args) return {name=name,args=args} end end
+function hl.dsp.focus(args) return {name="focus",args=args} end
+function hl.dsp.cursor.move(args)
+    assert(search.workspace.id==nil and active~=search and follow_mouse==3)
+    assert(args.x==pointer.x and args.y==pointer.y)
+    return {name="pointer_refresh",args=args}
+end
+function hl.dispatch(action)
+    actions[#actions+1]=action
+    local args=action.args
+    if action.name==fault then return {ok=false} end
+    if action.name=="pointer_refresh" then pointer_refreshes=pointer_refreshes+1 end
+    if action.name=="focus" then
+        active=args.window
+        if not no_warps then pointer={x=10,y=20} end
+    end
+    if action.name=="move" then
+        if args.workspace then args.window.workspace={id=type(args.workspace)=="number" and args.workspace or nil,name=args.workspace}
+        else args.window.at={x=args.x,y=args.y} end
+    end
+    if action.name=="resize" then args.window.size={x=args.x,y=args.y} end
+    return {ok=true}
+end
+dofile(arg[0]:match("^(.*)/").."/../config/output-size.lua")
+dofile(path)
+assert(enzui_search_present(42,monitor.name,740,570,1).ok)
+assert(active==search and search.size.x==740 and search.at.x==350 and search.at.y==132)
+assert(app.at.x==100 and app.size.x==400)
+assert(pointer.x==712.5 and pointer.y==540.25)
+local focus_count=0
+for _,action in ipairs(actions) do if action.name=="focus" then focus_count=focus_count+1 end end
+for _,height in ipairs({80,320,570,80}) do
+    assert(enzui_search_resize(42,monitor.name,740,height,1).ok)
+    assert(search.at.y==132 and search.size.y==height and active==search)
+    assert(pointer.x==712.5 and pointer.y==540.25)
+end
+local after_focus=0
+for _,action in ipairs(actions) do if action.name=="focus" then after_focus=after_focus+1 end end
+assert(after_focus==focus_count and pointer_refreshes==0)
+local resize_before=#actions
+assert(not pcall(enzui_search_resize,42,monitor.name,740,320,0) and #actions==resize_before)
+assert(enzui_search_park(42,2).ok and active==app and search.workspace.name=="special:enzui-search")
+assert(pointer_refreshes==1 and follow_mouse==2)
+assert(pointer.x==712.5 and pointer.y==540.25)
+local before=#actions
+assert(not pcall(enzui_search_present,42,monitor.name,740,570,1) and #actions==before)
+assert(enzui_search_present(42,monitor.name,740,570,3).ok)
+assert(not pcall(enzui_search_park,42,2) and active==search)
+app.mapped=false
+assert(enzui_search_park(42,4).ok and active==panel)
+app.mapped=true
+active=app
+assert(enzui_search_present(42,monitor.name,740,570,5).ok)
+active=panel
+assert(enzui_search_park(42,6).ok and active==panel)
+search.mapped=false
+assert(not pcall(enzui_search_park,42,8))
+search.mapped=true
+before=#actions
+assert(not pcall(enzui_search_present,42,monitor.name,740,570,7) and #actions==before)
+assert(enzui_search_park(42,8).ok)
+local other=window("0xd",99,"dev.enzui.QuickSearch")
+windows[#windows+1]=other
+assert(enzui_search_present(42,monitor.name,740,570,9).ok and other.at.x==100)
+windows[#windows+1]=window("0xe",42,"dev.enzui.QuickSearch")
+before=#actions
+assert(not pcall(enzui_search_present,42,monitor.name,740,570,10) and #actions==before)
+table.remove(windows)
+for _,change in ipairs({function() monitor.scale=8 end,function() monitor.name="ENZREMOTE-private" end,function() monitor.is_mirror=true end,function() search.tags={"enzremote-app"} end}) do
+    change();before=#actions
+    assert(not pcall(enzui_search_present,42,monitor.name,740,570,11) and #actions==before)
+    monitor.scale=1;monitor.name="HEADLESS-1";monitor.is_mirror=false;search.tags={}
+end
+before=#actions
+assert(not pcall(enzui_search_focus_window,app.address,app.pid,"reused-address") and #actions==before)
+assert(enzui_search_focus_window(app.address,app.pid,app.stable_id).ok and active==app)
+app.tags={"enzremote-owned"};before=#actions
+assert(not pcall(enzui_search_focus_window,app.address,app.pid,app.stable_id) and #actions==before)
+app.tags={};app.workspace={name="special:enzui-search"}
+assert(not pcall(enzui_search_focus_window,app.address,app.pid,app.stable_id))
+local toggles=0
+local entry={id=3,pid=app.pid,window=app}
+enzui_sidebar={entries={entry},native=true}
+hl.plugin={enzui_sidebar_scene={status=function() return "opening" end}}
+function enzui_sidebar_toggle(id) assert(id==3);toggles=toggles+1;return {ok=true} end
+assert(enzui_search_focus_window(app.address,app.pid,app.stable_id,3).ok and toggles==1)
+enzui_sidebar.shown=3;before=#actions
+assert(enzui_search_focus_window(app.address,app.pid,app.stable_id,3).ok and #actions==before and toggles==1)
+enzui_sidebar.after_close={park=true}
+assert(enzui_search_focus_window(app.address,app.pid,app.stable_id,3).ok and toggles==2)
+enzui_sidebar.after_close={unpin=true}
+assert(not pcall(enzui_search_focus_window,app.address,app.pid,app.stable_id,3))
+enzui_sidebar.after_close=nil;entry.restore_pending=true
+assert(not pcall(enzui_search_focus_window,app.address,app.pid,app.stable_id,3))
+entry.restore_pending=false;enzui_sidebar.shown=nil
+function enzui_sidebar_toggle() return {ok=false} end
+assert(not pcall(enzui_search_focus_window,app.address,app.pid,app.stable_id,3))
+app.workspace={id=1};active=app;fault="focus"
+assert(not pcall(enzui_search_present,42,monitor.name,620,80,12))
+assert(no_warps==false and pointer.x==712.5 and pointer.y==540.25)
+fault=nil;no_warps=true
+local previous_calls=config_calls
+assert(enzui_search_present(42,monitor.name,620,80,13).ok)
+assert(enzui_search_resize(42,monitor.name,620,176,13).ok)
+assert(enzui_search_park(42,14).ok)
+assert(no_warps==true and config_calls==previous_calls and active==app)
+assert(pointer.x==712.5 and pointer.y==540.25)
+for mode=0,3 do
+    follow_mouse=mode;active=app
+    local epoch=15+mode*2
+    assert(enzui_search_present(42,monitor.name,620,80,epoch).ok)
+    assert(enzui_search_park(42,epoch+1).ok and follow_mouse==mode and active==app)
+end
+follow_mouse=1;active=app
+assert(enzui_search_present(42,monitor.name,620,80,23).ok)
+fault="pointer_refresh"
+assert(not pcall(enzui_search_park,42,24))
+assert(follow_mouse==1 and no_warps==true and pointer.x==712.5 and pointer.y==540.25)
+fault=nil;no_warps=false;active=app
+assert(enzui_search_present(42,monitor.name,620,80,25).ok)
+fault="pointer_refresh"
+assert(not pcall(enzui_search_park,42,26))
+assert(follow_mouse==1 and no_warps==false and pointer.x==712.5 and pointer.y==540.25)
+print("Quick Search policy: placement, pointer-only close routing, error restoration, epochs, ownership and sidebar guards passed")
+fault=nil
+local native_ready=true
+hl.plugin.enzui_sidebar_scene.bar_regions_state=function(owner) assert(owner==42);return {enabled=native_ready,pending=false} end
+hl.plugin.enzui_sidebar_scene.anchor_panel=function(address,owner,x,y,width,height,bottom)
+    assert(address==search.address and owner==42 and type(search.workspace.id)=="number")
+    actions[#actions+1]={name="anchor",top=y,bottom=y+height,at_bottom=bottom}
+    return true
+end
+local island={x=12,bar_end=42,side_gap=12,far_gap=10,bottom=false}
+assert(enzui_search_present(42,monitor.name,620,90,27,island).ok)
+assert(search.at.x==12 and search.at.y==42 and active==search)
+-- Under a top bar the anchor keeps the card's top at the bar while it
+-- resizes (by its bottom edge a tall card jumped over the bar for a frame).
+for _,height in ipairs({90,600,90}) do
+    before=#actions
+    assert(enzui_search_resize(42,monitor.name,620,height,27,island).ok)
+    local anchor=actions[before+1]
+    assert(anchor.name=="anchor" and anchor.at_bottom==false and anchor.top==42)
+end
+island.bottom=true
+for _,height in ipairs({90,220,600,90}) do
+    before=#actions
+    assert(enzui_search_resize(42,monitor.name,620,height,27,island).ok)
+    assert(actions[before+1].name=="anchor" and actions[before+2].name=="resize")
+    -- The scene owns an anchored panel's position, so the pinned bottom edge
+    -- is the anchor's, not a Lua move the policy deliberately skips.
+    assert(actions[before+1].bottom==858 and actions[before+1].at_bottom==true)
+end
+before=#actions;island.x=0
+assert(not pcall(enzui_search_resize,42,monitor.name,620,90,27,island) and #actions==before)
+island.x=12;island.bar_end=math.huge
+assert(not pcall(enzui_search_resize,42,monitor.name,620,90,27,island) and #actions==before)
+island.bar_end=42;native_ready=false
+assert(not pcall(enzui_search_resize,42,monitor.name,620,90,27,island) and #actions==before)
+native_ready=true
+assert(enzui_search_park(42,28).ok and search.workspace.id==nil)
+assert(not pcall(enzui_search_resize,42,monitor.name,620,90,27,island))
+assert(enzui_search_present(42,monitor.name,620,90,29,island).ok and search.at.y==768)
+assert(enzui_search_park(42,30).ok)
+assert(pointer.x==712.5 and pointer.y==540.25)
+monitor.transform=1
+assert(enzui_search_present(42,monitor.name,620,570,31).ok)
+assert(search.at.x==140 and search.at.y==132)
+assert(enzui_search_park(42,32).ok)
+monitor.transform=0
+print("Island Search: margins, mirrored bottom, anchor-before-resize, stale/parked rejection, rotated logical size and preserved pointer passed")
+local dim_calls={}
+hl.plugin.enzui_sidebar_scene.search_dim=function(owner,address,epoch,dim,fade)
+    assert(owner==42 and address==search.address)
+    dim_calls[#dim_calls+1]={epoch=epoch,dim=dim,fade=fade}
+    return true
+end
+assert(enzui_search_present(42,monitor.name,620,570,33,nil,true).ok)
+assert(dim_calls[1].dim and dim_calls[1].fade and dim_calls[1].epoch==33)
+assert(enzui_search_hide_dim(42,34,true).ok and active==search and search.workspace.id==1)
+assert(not dim_calls[2].dim and dim_calls[2].fade)
+local count=#dim_calls
+assert(not pcall(enzui_search_hide_dim,42,33,true) and #dim_calls==count)
+assert(enzui_search_park(42,34).ok and not dim_calls[3].dim)
+assert(enzui_search_present(42,monitor.name,620,570,35,nil,false).ok)
+assert(dim_calls[4].dim and not dim_calls[4].fade)
+assert(enzui_search_hide_dim(42,36,false).ok and not dim_calls[5].fade)
+assert(enzui_search_park(42,36).ok and not dim_calls[6].fade)
+assert(pointer.x==712.5 and pointer.y==540.25)
+print("Native Search dimming: immediate start/dismiss, independent off policy, stale epoch rejection and focus/pointer preservation passed")

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+out=$root/.build/material
+mkdir -p "$out"
+xdg=$(pkg-config --variable=pkgdatadir wayland-protocols)/stable/xdg-shell/xdg-shell.xml
+wayland-scanner client-header "$xdg" "$out/xdg-shell-client-protocol.h"
+wayland-scanner private-code "$xdg" "$out/xdg-shell-protocol.c"
+wayland-scanner client-header "$root/protocols/enzui-material-v1.xml" "$out/enzui-material-v1-client-protocol.h"
+wayland-scanner private-code "$root/protocols/enzui-material-v1.xml" "$out/enzui-material-v1-client.c"
+cc -O2 -Wall -Wextra -I"$out" -o "$out/glass-demo" "$root/tools/glass-demo/glass-demo.c" \
+    "$out/xdg-shell-protocol.c" "$out/enzui-material-v1-client.c" -lwayland-client -lm
+echo "$out/glass-demo"

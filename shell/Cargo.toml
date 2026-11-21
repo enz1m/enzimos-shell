@@ -17,13 +17,13 @@ enzimos-phone-client = { path = "../vendor/phone-link/crates/host-client" }
 evdev = { version = "=0.13.2", features = ["tokio"] }
 iced = { git = "https://github.com/enz1m/enzim-iced.git", rev = "e36b07b591661fdb666088fc943cc0b927a2367b", features = ["wgpu", "tiny-skia", "crisp", "web-colors", "thread-pool", "linux-theme-detection", "wayland", "tokio", "advanced", "svg", "a11y", "sysinfo"], default-features = false }
 iced_runtime = { git = "https://github.com/enz1m/enzim-iced.git", rev = "e36b07b591661fdb666088fc943cc0b927a2367b" }
-enzui-security = { git = "https://github.com/enz1m/enzui.git", rev = "a53869d67a11171b8c7ee0fa1dad164af76087d8" }
-enzui-core = { features = ["accesskit"], git = "https://github.com/enz1m/enzui.git", rev = "a53869d67a11171b8c7ee0fa1dad164af76087d8" }
-enzui-theme = { git = "https://github.com/enz1m/enzui.git", rev = "a53869d67a11171b8c7ee0fa1dad164af76087d8" }
-enzui-icons = { git = "https://github.com/enz1m/enzui.git", rev = "a53869d67a11171b8c7ee0fa1dad164af76087d8" }
-enzui-widgets = { features = ["portal-dbus"], git = "https://github.com/enz1m/enzui.git", rev = "a53869d67a11171b8c7ee0fa1dad164af76087d8" }
-enzui-agent = { features = ["iced-consumer"], git = "https://github.com/enz1m/enzui.git", rev = "a53869d67a11171b8c7ee0fa1dad164af76087d8" }
-enzui-agent-app = { git = "https://github.com/enz1m/enzui.git", rev = "a53869d67a11171b8c7ee0fa1dad164af76087d8" }
+enzui-security = { git = "https://github.com/enz1m/enzui.git", tag = "v0.3.0-alpha.1" }
+enzui-core = { features = ["accesskit"], git = "https://github.com/enz1m/enzui.git", tag = "v0.3.0-alpha.1" }
+enzui-theme = { git = "https://github.com/enz1m/enzui.git", tag = "v0.3.0-alpha.1" }
+enzui-icons = { git = "https://github.com/enz1m/enzui.git", tag = "v0.3.0-alpha.1" }
+enzui-widgets = { features = ["portal-dbus"], git = "https://github.com/enz1m/enzui.git", tag = "v0.3.0-alpha.1" }
+enzui-agent = { features = ["iced-consumer"], git = "https://github.com/enz1m/enzui.git", tag = "v0.3.0-alpha.1" }
+enzui-agent-app = { git = "https://github.com/enz1m/enzui.git", tag = "v0.3.0-alpha.1" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 ttf-parser = "=0.25.1"
 serde_json = "1"

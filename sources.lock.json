@@ -19,7 +19,7 @@
   },
   "framework": {
     "url": "https://github.com/enz1m/enzui.git",
-    "revision": "a53869d67a11171b8c7ee0fa1dad164af76087d8"
+    "revision": "4d71081d58e26bd9f2678662bba78d6e51a9ea80"
   },
   "iced": {
     "url": "https://github.com/enz1m/enzim-iced.git",

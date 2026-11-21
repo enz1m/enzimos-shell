@@ -443,8 +443,14 @@ impl Shell {
             desired_settings: Settings::default(),
             display_layouts: {
                 let (layouts, receiver) = std::sync::mpsc::channel();
+                // Preserve the active layout while Settings awaits confirmation.
+                let restore_initial =
+                    std::env::var_os("ENZUI_KEEP_ACTIVE_DISPLAY_LAYOUT").is_none();
                 std::thread::spawn(move || {
-                    enzui_shell::system_settings::display::restore_on_connect(receiver);
+                    enzui_shell::system_settings::display::restore_on_connect(
+                        receiver,
+                        restore_initial,
+                    );
                 });
                 (layouts, None)
             },

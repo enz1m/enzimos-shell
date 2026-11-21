@@ -65,6 +65,15 @@ impl SettingsApp {
                         .map(|event| Message::SharedTheme(Box::new(event)))
                 }),
             window::resize_events().map(|(id, size)| Message::Viewport(id, size)),
+            iced::event::listen_with(|event, _, _| {
+                use iced::keyboard::{Event, Key};
+                let iced::Event::Keyboard(Event::KeyPressed { key, modifiers, .. }) = event else {
+                    return None;
+                };
+                (modifiers == iced::keyboard::Modifiers::CTRL
+                    && matches!(key, Key::Character(key) if key.eq_ignore_ascii_case("f")))
+                .then_some(Message::FindSetting)
+            }),
             numeric::subscription(),
             navigation::interrupt_subscription(),
             self.agent.subscription(),
@@ -212,7 +221,7 @@ impl SettingsApp {
                             Message::Filter,
                         )
                         .placeholder(tr("shell-find-a-setting"))
-                        .id("settings-find")
+                        .id(SEARCH_FIELD)
                         .into_element(),
                     )
                     .id("settings-window")

@@ -4744,6 +4744,7 @@ shell-ssh-choose-authentication = Add a public key or enable password sign-in.
 
 shell-remote-firewall-review = Allows this port through the firewall only for the approved addresses and source networks. Stopping the server removes its rules.
 shell-ssh-select-addresses = Select one or more local addresses. Only these addresses accept SSH connections.
+shell-ssh-address-disconnected = { $address } (disconnected). Deselect to remove it.
 shell-remote-service-unavailable = The remote access service could not complete the request. Refresh its state before trying again.
 
 shell-ssh-select-key-file = Select public key file

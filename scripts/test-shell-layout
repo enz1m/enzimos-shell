@@ -99,3 +99,47 @@ for _,field in ipairs({"pinned","fullscreen","mapped"}) do
 end
 on_open(panel);assert(panel.size.x==1440)
 print("Floating admission: oversized first map clamped at nonzero output origin; existing, pinned, fullscreen, unmapped and shell clients preserved")
+
+local notify=0
+local dispatch_window=hl.dispatch
+function hl.dsp.event(name) return {operation="event",name=name} end
+function hl.dispatch(args)
+    if args.operation=="event" then
+        assert(args.name=="enzui-output-changed")
+        notify=notify+1
+        return {ok=true}
+    end
+    return dispatch_window(args)
+end
+function hl.monitor(args) rule=args end
+dofile(arg[0]:match("^(.*)/").."/../config/output-rules.lua")
+app.at={x=400,y=200};app.size={x=1100,y=700}
+monitor.scale=1
+enzui_pin_outputs()
+assert(notify==0)
+monitor.scale=1.25
+enzui_pin_outputs()
+local x,y,width,height=enzui_app_work_area(monitor,monitor.reserved)
+assert(notify==1 and app.at.x>=x and app.at.x+app.size.x<=x+width)
+assert(app.at.y>=y and app.at.y+app.size.y<=y+height)
+enzui_pin_outputs()
+assert(notify==1)
+
+local startup
+function hl.on(event, callback)
+    assert(event == "hyprland.start")
+    startup = callback
+end
+local panels = {
+    {name = "eDP-1", width = 2256, height = 1504, physical_width = 286, physical_height = 191, scale = 1},
+    {name = "HDMI-1", width = 3840, height = 2160, physical_width = 698, physical_height = 393, scale = 1},
+    {name = "HDMI-2", width = 2880, height = 1920, physical_width = 0, physical_height = 0, scale = 1},
+    {name = "ENZREMOTE-1", width = 2880, height = 1920, physical_width = 286, physical_height = 191, scale = 1},
+}
+local scaled = {}
+function hl.get_monitors() return panels end
+function hl.monitor(args) scaled[args.output] = args.scale end
+dofile(arg[0]:match("^(.*)/").."/../config/desktop-scale.lua")
+startup()
+assert(scaled["eDP-1"] == 2)
+assert(scaled["HDMI-1"] == nil and scaled["HDMI-2"] == nil and scaled["ENZREMOTE-1"] == nil)

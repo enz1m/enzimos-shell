@@ -4799,6 +4799,7 @@ shell-ssh-choose-authentication = Añade una clave pública o activa el acceso c
 
 shell-remote-firewall-review = Permite este puerto en el cortafuegos solo para las direcciones y redes de origen aprobadas. Al detener el servidor se eliminan sus reglas.
 shell-ssh-select-addresses = Selecciona una o varias direcciones locales. Solo estas direcciones aceptarán conexiones SSH.
+shell-ssh-address-disconnected = { $address } (desconectada). Desmárcala para eliminarla.
 shell-remote-service-unavailable = El servicio de acceso remoto no pudo completar la solicitud. Actualiza su estado antes de volver a intentarlo.
 
 shell-ssh-select-key-file = Seleccionar archivo de clave pública

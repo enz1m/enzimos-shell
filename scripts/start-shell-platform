@@ -181,7 +181,7 @@ def command(arguments, env=None, timeout=10, pass_fds=()):
     return result.stdout.decode()
 
 
-def launch_shell(config, identity):
+def launch_shell(config, identity, restore_displays=True):
     global OWNED_SHELL
     if OWNED_SHELL is not None and OWNED_SHELL.poll() is None:
         raise RuntimeError("This supervisor already owns a live shell")
@@ -200,6 +200,10 @@ def launch_shell(config, identity):
                 env["ENZUI_SHELL_BAR_WIDTH"] = str(size[0])
         except (OSError, RuntimeError, ValueError, OverflowError, KeyError, TypeError, subprocess.SubprocessError):
             pass
+    if restore_displays:
+        env.pop("ENZUI_KEEP_ACTIVE_DISPLAY_LAYOUT", None)
+    else:
+        env["ENZUI_KEEP_ACTIVE_DISPLAY_LAYOUT"] = "1"
     env.pop("DISPLAY", None)
     env.pop("ENZUI_SHELL_LAUNCHER_FD", None)
     # Admission requires the direct supervisor/child relationship; detached wrappers lose
@@ -525,7 +529,6 @@ def compositor_state_homes(environ=None):
 def runtime_config(source, headless, installed=False):
     content = source.read_bytes()
     if installed and source.name == "hyprland.lua":
-        # Start at scale 1; pixel-only output policy and saved settings select the final scale.
         content += b'\nhl.monitor({ output = "", mode = "preferred", position = "auto", scale = 1, reserved = { top = 36 } })\n'
         # Apply system keyboard settings before the first frame; account overrides follow shell
         # startup.
@@ -622,7 +625,8 @@ def supervise_installed(config, identity):
             now = time.monotonic()
             # Output-change markers request relocation without consuming the crash retry budget.
             moved = runtime / "outputs-changed"
-            if moved.exists():
+            relocated = moved.exists()
+            if relocated:
                 moved.unlink()
                 try:
                     publish(runtime / "output.json", {"output": primary_output(config, identity)})
@@ -635,7 +639,7 @@ def supervise_installed(config, identity):
                 command([str(control_binary(config)), "-i", identity["instance"], "dispatch", "hl.dsp.exit()"])
                 return
             time.sleep(1)
-            launch_shell(config, identity)
+            launch_shell(config, identity, restore_displays=not relocated)
             shell = int(read_private(runtime / "shell.pid", 32))
             ticks = int(read_private(runtime / "shell.pid.start", 32))
             publish(runtime / "ready.json", {**ready, "shell_pid": shell, "shell_start": ticks})

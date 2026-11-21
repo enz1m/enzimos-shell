@@ -208,6 +208,7 @@ impl SettingsApp {
                 }
                 Task::none()
             }
+            Message::FindSetting => return iced::widget::operation::focus(SEARCH_FIELD),
             Message::Filter(value) => {
                 self.users_leave();
                 self.sandbox_leave();

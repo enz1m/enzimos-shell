@@ -100,6 +100,8 @@ enum ImagePurpose {
     Avatar(u32),
 }
 
+const SEARCH_FIELD: &str = "settings-find";
+
 #[derive(Clone, Debug)]
 enum Message {
     FileChooser(settings_file_chooser::Message),
@@ -129,6 +131,7 @@ enum Message {
     PageScrolled,
     SectionObserved(u64, Option<(&'static str, f32)>),
     InterruptScroll(navigation::Interruption),
+    FindSetting,
     Filter(String),
     Reveal(&'static str),
     RevealFrame,

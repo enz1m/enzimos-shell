@@ -724,7 +724,7 @@ pub fn apply(layout: &[Change]) -> Result<(), String> {
 }
 
 /// Restores layouts on connection changes, using the newest received list including at startup.
-pub fn restore_on_connect(layouts: std::sync::mpsc::Receiver<Vec<Saved>>) {
+pub fn restore_on_connect(layouts: std::sync::mpsc::Receiver<Vec<Saved>>, restore_initial: bool) {
     let Ok(mut saved) = layouts.recv() else {
         return;
     };
@@ -747,7 +747,9 @@ pub fn restore_on_connect(layouts: std::sync::mpsc::Receiver<Vec<Saved>>) {
         let mut keys: Vec<String> = displays.outputs.iter().map(Output::key).collect();
         keys.sort();
         if connected.as_ref() != Some(&keys) {
-            if let Some(layout) = restored(&displays, &saved) {
+            if (restore_initial || connected.is_some())
+                && let Some(layout) = restored(&displays, &saved)
+            {
                 let _ = apply(&layout);
             }
             connected = Some(keys);

@@ -227,6 +227,7 @@ fn relevant_event(line: &[u8]) -> bool {
         b"activelayout>>",
         b"pin>>",
         b"custom>>enzui-sidebar",
+        b"custom>>enzui-output-changed",
     ]
     .iter()
     .any(|prefix| line.starts_with(prefix))

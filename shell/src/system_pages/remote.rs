@@ -378,14 +378,17 @@ impl SettingsApp {
                             .iter()
                             .find(|entry| entry.address == address)
                     });
-                if let (Some(known), Some(draft)) = (
-                    known,
-                    state
-                        .draft
-                        .as_mut()
-                        .filter(|draft| draft.kind == Kind::Ssh && state.reviewing.is_none()),
-                ) {
-                    if enabled && !draft.addresses.contains(&address) && draft.addresses.len() < 8 {
+                if let Some(draft) = state
+                    .draft
+                    .as_mut()
+                    .filter(|draft| draft.kind == Kind::Ssh && state.reviewing.is_none())
+                {
+                    if enabled {
+                        let Some(known) = known.filter(|_| {
+                            !draft.addresses.contains(&address) && draft.addresses.len() < 8
+                        }) else {
+                            return Task::none();
+                        };
                         draft.addresses.push(address);
                         draft.addresses.sort();
                         let mut networks: Vec<_> = draft
@@ -399,7 +402,7 @@ impl SettingsApp {
                             networks.push(known.network.clone());
                         }
                         draft.networks = networks.join(", ");
-                    } else if !enabled {
+                    } else {
                         draft.addresses.retain(|entry| *entry != address);
                         draft.networks = draft
                             .networks
@@ -723,6 +726,21 @@ mod tests {
 
     #[test]
     fn remote_behaviour() {
+        // Replace a disconnected SSH address.
+        {
+            let (_directory, mut app) = fixture();
+            let _ = app.remote_message(RemoteMessage::Edit(Kind::Ssh));
+            let draft = app.system.remote.draft.as_mut().unwrap();
+            draft.address = Some("192.168.10.4".into());
+            draft.addresses = vec!["192.168.10.4".into()];
+            draft.networks = "192.168.10.0/24".into();
+            let _ = app.remote_message(RemoteMessage::ListenAddress("192.168.10.4".into(), false));
+            let _ = app.remote_message(RemoteMessage::ListenAddress("192.168.1.37".into(), true));
+            let draft = app.system.remote.draft.as_ref().unwrap();
+            assert_eq!(draft.addresses, ["192.168.1.37"]);
+            assert_eq!(draft.networks, "192.168.1.0/24");
+        }
+
         // Ssh needs a key and a stale review never applies.
         {
             let (_directory, mut app) = fixture();

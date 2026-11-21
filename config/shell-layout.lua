@@ -44,6 +44,20 @@ local function enzui_fit_windows(monitor,reserved,panels,only)
     end
 end
 
+local function desktop_panels()
+    local panels={}
+    for _,window in ipairs(hl.get_windows()) do
+        if window.mapped and window.class=="dev.enzui.Desktop" then
+            panels[#panels+1]=window
+        end
+    end
+    return panels
+end
+
+function enzui_reflow_output_windows(monitor,window)
+    enzui_fit_windows(monitor,monitor.reserved or {left=0,right=0,top=0,bottom=0},desktop_panels(),window)
+end
+
 function enzui_apply_shell_layout(output,edge,metrics)
     metrics=enzui_resolve_metrics(metrics)
     assert(type(output)=="string" and output~="" and not output:match("^ENZREMOTE%-"), "Explicit desktop output required")
@@ -55,12 +69,7 @@ function enzui_apply_shell_layout(output,edge,metrics)
     assert(monitor and not monitor.is_mirror, "Unsupported shell output")
     local width,height=enzui_output_w(monitor),enzui_output_h(monitor)
     assert(width>=320 and height>=240 and width<=16384 and height<=16384, "Unsupported shell geometry")
-    local panels={}
-    for _,window in ipairs(hl.get_windows()) do
-        if window.mapped and window.class=="dev.enzui.Desktop" then
-            panels[#panels+1]=window
-        end
-    end
+    local panels=desktop_panels()
     local offset=enzui_bar_offset(metrics)
     local y=edge=="top" and offset or height-metrics.bar-offset
     local sidebar=enzui_sidebar
@@ -113,10 +122,6 @@ if hl.on and not enzui_float_admission then
             if not window.mapped then return end
             local monitor=window.monitor
             if not monitor or monitor.name:match("^ENZREMOTE%-") or monitor.is_mirror then return end
-            local panels={}
-            for _,w in ipairs(hl.get_windows()) do
-                if w.class=="dev.enzui.Desktop" then panels[#panels+1]=w end
-            end
-            enzui_fit_windows(monitor,monitor.reserved or {left=0,right=0,top=0,bottom=0},panels,window)
+            enzui_reflow_output_windows(monitor,window)
     end)
 end

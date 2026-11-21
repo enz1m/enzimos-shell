@@ -71,6 +71,13 @@ pub(super) fn dropped_layout(
     Some(layout)
 }
 
+fn supports_scale(mode: Mode, scale: f64) -> bool {
+    [mode.width, mode.height].into_iter().all(|pixels| {
+        let logical = f64::from(pixels) / scale;
+        logical == logical.round()
+    })
+}
+
 fn scale_label(scale: f64) -> String {
     format!("{:.0}%", scale * 100.0)
 }
@@ -317,7 +324,19 @@ impl SettingsApp {
                 if preferred == Some((w, h)) {
                     label = format!("{label} ({})", tr("shell-recommended").to_lowercase());
                 }
-                (label, request(Box::new(move |c| c.mode = best)))
+                (
+                    label,
+                    request(Box::new(move |c| {
+                        c.mode = best;
+                        if !supports_scale(best, c.scale) {
+                            c.scale = SCALES
+                                .into_iter()
+                                .filter(|&scale| supports_scale(best, scale))
+                                .min_by(|a, b| (a - c.scale).abs().total_cmp(&(b - c.scale).abs()))
+                                .unwrap_or(1.0);
+                        }
+                    })),
+                )
             })
             .collect();
         let mut refresh_choices: Vec<(String, Parent)> = Vec::new();
@@ -335,14 +354,7 @@ impl SettingsApp {
         }
         let scale_choices = SCALES
             .iter()
-            .filter(|&&scale| {
-                scale >= 1.0
-                    || scale == output.scale
-                    || [current.width, current.height].into_iter().all(|pixels| {
-                        let logical = f64::from(pixels) / scale;
-                        (logical - logical.round()).abs() < 0.001
-                    })
-            })
+            .filter(|&&scale| supports_scale(current, scale))
             .map(|&s| (scale_label(s), request(Box::new(move |c| c.scale = s))))
             .collect();
         let rotation_choices = Rotation::ALL

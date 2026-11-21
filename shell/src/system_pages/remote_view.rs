@@ -143,6 +143,25 @@ impl SettingsApp {
                     tr("shell-only-this-address-of-the-computer-accepts-connections")
                 }));
         }
+        if draft.kind == Kind::Ssh {
+            for address in draft
+                .addresses
+                .iter()
+                .filter(|address| !addresses.iter().any(|entry| &entry.address == *address))
+            {
+                let label = tr!("shell-ssh-address-disconnected", "address" => address.clone());
+                let id = format!("remote-ssh-disconnected-{address}");
+                let address = address.clone();
+                fields = fields.push(
+                    enzui_widgets::checkbox::enz_checkbox(true, label, move |enabled| {
+                        message(RemoteMessage::ListenAddress(address.clone(), enabled))
+                    })
+                    .id(id.into())
+                    .enabled(editable)
+                    .into_element(),
+                );
+            }
+        }
         fields = fields.push(
             enz_text_field(
                 enzui_shell::i18n::current().text("shell-allowed-networks"),

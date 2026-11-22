@@ -55,6 +55,7 @@ pub(crate) struct Spread {
     selected: Option<usize>,
     chosen: Option<usize>,
     started: Option<Instant>,
+    frame_at: Option<Instant>,
     // The originals are being hidden; the motion starts once they are.
     hiding: bool,
     // How far out the windows were when closing began.
@@ -63,21 +64,19 @@ pub(crate) struct Spread {
     // The window to focus once the overlay has closed: closing hands focus
     // on, so focusing earlier would be undone.
     focus_after: Option<(window::Id, String)>,
-    // The pictures' uploads, held while the spread is up so its first frame
-    // already shows them.
     allocations: Vec<image::Allocation>,
+    ready: bool,
+    ready_frames: u8,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) enum SpreadMessage {
     Toggle,
     Loaded(u64, Result<Loaded, String>),
-    // The pictures are uploaded: map the overlay.
-    Allocated(u64, Result<Vec<image::Allocation>, image::Error>),
-    // The pictures have had their first frames: start.
-    Begin(u64),
+    Allocated(u64, Vec<image::Allocation>),
+    Presented(window::Id),
     Hidden(u64, Result<(), String>),
-    Frame,
+    Frame(window::Id, Instant),
     Hover(usize),
     Pick(usize),
     Dismiss,
@@ -139,6 +138,10 @@ impl Spread {
         }
     }
 
+    fn sampled_at(&self, now: Instant) -> Instant {
+        self.frame_at.unwrap_or(now)
+    }
+
     fn animating(&self) -> bool {
         matches!(self.phase, Phase::Opening | Phase::Closing) && self.started.is_some()
     }
@@ -174,6 +177,17 @@ fn arrange(windows: &[SpreadWindow], area: [f32; 4], bands: (f32, f32)) -> Vec<(
         .collect()
 }
 
+// Capture at the resting tile size to limit uploads.
+fn picture_pixels(to: Rect, scale: f32) -> (u32, u32) {
+    let scale = if scale.is_finite() {
+        scale.clamp(1.0, 4.0)
+    } else {
+        1.0
+    };
+    let pixels = |logical: f32| ((logical * scale).ceil() as u32).clamp(1, 8192);
+    (pixels(to.width), pixels(to.height))
+}
+
 async fn load(
     root: std::path::PathBuf,
     compositor: enzui_shell::compositor::Compositor,
@@ -187,19 +201,10 @@ async fn load(
     let (area, top, bottom) = compositor.prepare_spread(metrics, bar).await?;
     let (rounding, _) = compositor.window_rounding().await;
     let places = arrange(&desktop.windows, area, (top, bottom));
-    // Pictures at up to twice the spread size, for a crisp scaled output.
     let pictures = iced::futures::future::join_all(desktop.windows.iter().zip(&places).map(
         |(window, (_, to))| {
-            let (w, h) = (
-                (to.width * 2.0).ceil() as u32,
-                (to.height * 2.0).ceil() as u32,
-            );
-            enzui_shell::previews::capture_window(
-                root.clone(),
-                window.address.clone(),
-                w.clamp(1, 8192),
-                h.clamp(1, 8192),
-            )
+            let (w, h) = picture_pixels(*to, desktop.scale);
+            enzui_shell::previews::capture_window(root.clone(), window.address.clone(), w, h)
         },
     ))
     .await;
@@ -258,26 +263,11 @@ impl Shell {
             {
                 match result {
                     Ok(loaded) => {
-                        // Upload the pictures before mapping the overlay: the
-                        // renderer loads images asynchronously, and the
-                        // originals are hidden right after it maps, which
-                        // left blank window silhouettes for a moment.
-                        let uploads: Vec<_> = loaded
-                            .entries
-                            .iter()
-                            .filter_map(|entry| entry.picture.clone())
-                            .map(image::allocate)
-                            .collect();
                         self.spread.desktop = loaded.desktop;
                         self.spread.rounding = loaded.rounding;
                         self.spread.area = loaded.area;
                         self.spread.entries = loaded.entries;
-                        Task::batch(uploads).collect().map(move |results| {
-                            Message::Spread(SpreadMessage::Allocated(
-                                generation,
-                                results.into_iter().collect(),
-                            ))
-                        })
+                        self.open_spread_window()
                     }
                     Err(error) => {
                         self.spread = Spread {
@@ -289,40 +279,17 @@ impl Shell {
                     }
                 }
             }
-            SpreadMessage::Allocated(sent, result)
-                if sent == generation && self.spread.phase == Phase::Loading =>
+            SpreadMessage::Allocated(sent, allocations)
+                if sent == generation && self.spread.phase == Phase::Opening =>
             {
                 // A picture that cannot be uploaded still loads on its own.
-                self.spread.allocations = result.unwrap_or_default();
-                {
-                    {
-                        let area = self.spread.area;
-                        let (id, open) = window::open(window_settings(
-                            "dev.enzui.WindowSpread",
-                            area[2],
-                            area[3],
-                        ));
-                        let reduced = self.window_tokens(None).motion.reduced_motion;
-                        self.spread.duration = if reduced {
-                            0.0
-                        } else {
-                            DURATION
-                                * enzui_shell::motion::duration_factor(
-                                    self.desired_settings.compositor.animation_rate,
-                                )
-                        };
-                        self.spread.window = Some(id);
-                        // Nothing is chosen until the pointer or an arrow does.
-                        self.spread.selected = None;
-                        self.spread.phase = Phase::Opening;
-                        open.map(Message::Opened)
-                    }
-                }
+                self.spread.allocations = allocations;
+                self.spread.ready = true;
+                self.spread_ready_frames()
             }
             SpreadMessage::Allocated(..) => Task::none(),
             SpreadMessage::Loaded(..) => Task::none(),
-            SpreadMessage::Begin(sent) if sent == generation => self.begin_spread(),
-            SpreadMessage::Begin(_) => Task::none(),
+            SpreadMessage::Presented(id) => self.spread_presented(id),
             SpreadMessage::Hidden(sent, Err(error)) if sent == generation => {
                 eprintln!("enzui-shell spread: {error}");
                 self.close_spread(None)
@@ -333,17 +300,22 @@ impl Shell {
                 // and a clock started before would jump.
                 if self.spread.phase == Phase::Opening && self.spread.started.is_none() {
                     self.spread.started = Some(Instant::now());
+                    self.spread.frame_at = None;
                 }
+                self.redraw_only = self.spread.window;
                 Task::none()
             }
             SpreadMessage::Hidden(..) => Task::none(),
-            SpreadMessage::Frame => {
+            SpreadMessage::Frame(id, _) if !self.spread.owns(id) => {
+                self.quiet = true;
+                Task::none()
+            }
+            SpreadMessage::Frame(_, at) => {
                 self.redraw_only = self.spread.window;
-                let now = Instant::now();
-                let done = self
-                    .spread
-                    .started
-                    .is_some_and(|at| now.duration_since(at).as_secs_f32() >= self.spread.duration);
+                self.spread.frame_at = Some(at);
+                let done = self.spread.started.is_some_and(|started| {
+                    at.saturating_duration_since(started).as_secs_f32() >= self.spread.duration
+                });
                 match self.spread.phase {
                     Phase::Opening if done => {
                         self.spread.phase = Phase::Open;
@@ -370,12 +342,20 @@ impl Shell {
             }
             SpreadMessage::Hover(index) if self.spread.phase == Phase::Open => {
                 self.spread.selected = Some(index);
+                self.redraw_only = self.spread.window;
                 Task::none()
             }
-            SpreadMessage::Hover(_) => Task::none(),
+            // Moving tiles report hover as they pass under a resting pointer.
+            SpreadMessage::Hover(_) => {
+                self.quiet = true;
+                Task::none()
+            }
             SpreadMessage::Pick(index) => self.close_spread(Some(index)),
             SpreadMessage::Dismiss => self.close_spread(None),
-            SpreadMessage::Key(key) => self.spread_key(key),
+            SpreadMessage::Key(key) => {
+                self.redraw_only = self.spread.window;
+                self.spread_key(key)
+            }
             SpreadMessage::Restored(sent, result) if sent == generation => {
                 if let Err(error) = result {
                     self.notice = Some(error);
@@ -398,16 +378,66 @@ impl Shell {
         }
     }
 
+    fn open_spread_window(&mut self) -> Task<Message> {
+        let area = self.spread.area;
+        let (id, open) = window::open(window_settings("dev.enzui.WindowSpread", area[2], area[3]));
+        let reduced = self.window_tokens(None).motion.reduced_motion;
+        self.spread.duration = if reduced {
+            0.0
+        } else {
+            DURATION
+                * enzui_shell::motion::duration_factor(
+                    self.desired_settings.compositor.animation_rate,
+                )
+        };
+        self.spread.window = Some(id);
+        self.spread.selected = None;
+        self.spread.ready = false;
+        self.spread.phase = Phase::Opening;
+        open.map(Message::Opened)
+    }
+
     pub(crate) fn spread_opened(&mut self, id: window::Id) -> Task<Message> {
-        if !self.spread.owns(id) {
+        if !self.spread.owns(id) || self.spread.phase != Phase::Opening {
             return Task::none();
         }
-        // Present captured windows before hiding originals to avoid a dimmed startup frame.
         let generation = self.spread.generation;
-        Task::perform(
-            async { tokio::time::sleep(Duration::from_millis(90)).await },
-            move |()| Message::Spread(SpreadMessage::Begin(generation)),
-        )
+        let uploads: Vec<_> = self
+            .spread
+            .entries
+            .iter()
+            .filter_map(|entry| entry.picture.clone())
+            .map(|picture| image::allocate_in(id, picture))
+            .collect();
+        Task::batch(uploads).collect().map(move |results| {
+            Message::Spread(SpreadMessage::Allocated(
+                generation,
+                results.into_iter().filter_map(Result::ok).collect(),
+            ))
+        })
+    }
+
+    // Leave one frame for the uploaded previews before hiding the originals.
+    fn spread_ready_frames(&mut self) -> Task<Message> {
+        let Some(id) = self.spread.window else {
+            return Task::none();
+        };
+        self.spread.ready_frames = 2;
+        self.redraw_only = Some(id);
+        Task::none()
+    }
+
+    fn spread_presented(&mut self, id: window::Id) -> Task<Message> {
+        if !self.spread.owns(id) || self.spread.ready_frames == 0 {
+            self.quiet = true;
+            return Task::none();
+        }
+        self.spread.ready_frames -= 1;
+        self.redraw_only = Some(id);
+        if self.spread.ready_frames != 0 {
+            return Task::none();
+        }
+        self.begin_spread()
     }
 
     fn begin_spread(&mut self) -> Task<Message> {
@@ -435,10 +465,12 @@ impl Shell {
         match self.spread.phase {
             Phase::Opening | Phase::Open => {
                 let now = Instant::now();
-                self.spread.closing_from = self.spread.progress(now);
+                self.spread.closing_from = self.spread.progress(self.spread.sampled_at(now));
                 self.spread.phase = Phase::Closing;
                 self.spread.chosen = chosen.filter(|index| *index < self.spread.entries.len());
                 self.spread.started = Some(now);
+                self.spread.frame_at = None;
+                self.redraw_only = self.spread.window;
                 Task::none()
             }
             Phase::Loading => {
@@ -569,14 +601,27 @@ impl Shell {
         .filter_map(|(owner, (window, key))| {
             (owner == window).then_some(Message::Spread(SpreadMessage::Key(key)))
         });
-        // The motion follows the display: each frame of the spread asks for
-        // the next, at the refresh rate, and redraws only the spread.
         let frames = if self.spread.animating() {
-            window::frames().map(|_| Message::Spread(SpreadMessage::Frame))
+            iced::event::listen_raw(|event, _, window| match event {
+                iced::Event::Window(window::Event::RedrawRequested(at)) => {
+                    Some(Message::Spread(SpreadMessage::Frame(window, at)))
+                }
+                _ => None,
+            })
         } else {
             Subscription::none()
         };
-        Subscription::batch([keys, frames])
+        let presented = if self.spread.ready_frames > 0 {
+            iced::event::listen_raw(|event, _, window| match event {
+                iced::Event::Window(window::Event::RedrawRequested(_)) => {
+                    Some(Message::Spread(SpreadMessage::Presented(window)))
+                }
+                _ => None,
+            })
+        } else {
+            Subscription::none()
+        };
+        Subscription::batch([keys, frames, presented])
     }
 
     pub(crate) fn spread_view(&self, id: window::Id) -> Option<Element<'_, Message>> {
@@ -585,7 +630,7 @@ impl Shell {
         }
         let tokens = self.window_tokens(Some(id));
         let palette = tokens.palette;
-        let p = self.spread.progress(Instant::now());
+        let p = self.spread.progress(self.spread.sampled_at(Instant::now()));
         let open = self.spread.phase == Phase::Open;
         let scrim = iced::Color {
             a: 0.32 * p,
@@ -604,6 +649,14 @@ impl Shell {
             .on_press(Message::Spread(SpreadMessage::Dismiss))
             .into(),
         ];
+        if !self.spread.ready {
+            return Some(
+                stack(layers)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into(),
+            );
+        }
         // Captions of similar-height windows share one line per row; a much
         // shorter window keeps its caption under itself.
         let caption_line = |index: usize| -> f32 {
@@ -800,5 +853,113 @@ mod tests {
         assert!(shell.snapshot.is_none());
         let _ = shell.spread_message(SpreadMessage::Toggle);
         assert!(shell.spread.phase == Phase::Loading);
+    }
+
+    #[test]
+    fn the_originals_are_hidden_after_the_spread_draws_its_pictures() {
+        let compositor = enzui_shell::compositor::Compositor::new(
+            std::path::PathBuf::from("/usr/bin/true"),
+            "fixture".into(),
+        )
+        .unwrap();
+        let mut shell = Shell::new(compositor, std::path::PathBuf::from("/")).0;
+        let _ = shell.spread_message(SpreadMessage::Toggle);
+        let generation = shell.spread.generation;
+        let window = SpreadWindow {
+            address: "0x1".into(),
+            title: "Files".into(),
+            class: "files".into(),
+            image: None,
+            at: [0.0, 0.0],
+            size: [800.0, 600.0],
+        };
+        let place = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let _ = shell.spread_message(SpreadMessage::Loaded(
+            generation,
+            Ok(Loaded {
+                desktop: 1,
+                rounding: 8.0,
+                area: [0.0, 0.0, 1280.0, 800.0],
+                entries: vec![Entry {
+                    window,
+                    from: place,
+                    to: place,
+                    picture: Some(image::Handle::from_rgba(1, 1, vec![0; 4])),
+                }],
+            }),
+        ));
+        let id = shell
+            .spread
+            .window
+            .expect("the spread window opens with its places");
+        assert!(shell.spread.phase == Phase::Opening);
+        assert!(!shell.spread.ready);
+
+        let _ = shell.spread_message(SpreadMessage::Presented(id));
+        assert!(!shell.spread.hiding);
+        let _ = shell.spread_message(SpreadMessage::Allocated(generation, Vec::new()));
+        assert!(shell.spread.ready);
+        let _ = shell.spread_message(SpreadMessage::Presented(id));
+        let _ = shell.spread_message(SpreadMessage::Presented(window::Id::unique()));
+        assert!(!shell.spread.hiding);
+        let _ = shell.spread_message(SpreadMessage::Presented(id));
+        assert!(shell.spread.hiding);
+
+        shell.redraw_only = None;
+        let _ = shell.spread_message(SpreadMessage::Hidden(generation, Ok(())));
+        assert_eq!(shell.redraw_only, Some(id));
+        shell.quiet = false;
+        let _ = shell.spread_message(SpreadMessage::Hover(0));
+        assert!(shell.quiet);
+        shell.quiet = false;
+        shell.redraw_only = None;
+        let _ = shell.spread_message(SpreadMessage::Frame(window::Id::unique(), Instant::now()));
+        assert!(shell.quiet);
+        assert_eq!(shell.redraw_only, None);
+        let _ = shell.spread_message(SpreadMessage::Frame(id, Instant::now()));
+        assert_eq!(shell.redraw_only, Some(id));
+        shell.redraw_only = None;
+        let _ = shell.spread_message(SpreadMessage::Dismiss);
+        assert!(shell.spread.phase == Phase::Closing);
+        assert_eq!(shell.redraw_only, Some(id));
+    }
+
+    #[test]
+    fn the_travel_follows_the_spread_frame_clock() {
+        let compositor = enzui_shell::compositor::Compositor::new(
+            std::path::PathBuf::from("/usr/bin/true"),
+            "fixture".into(),
+        )
+        .unwrap();
+        let mut shell = Shell::new(compositor, std::path::PathBuf::from("/")).0;
+        let id = window::Id::unique();
+        let started = Instant::now();
+        shell.spread.window = Some(id);
+        shell.spread.phase = Phase::Opening;
+        shell.spread.duration = 10.0;
+        shell.spread.started = Some(started);
+
+        let half = started + Duration::from_secs(5);
+        let _ = shell.spread_message(SpreadMessage::Frame(id, half));
+        assert!(shell.spread.phase == Phase::Opening);
+        let shown = shell
+            .spread
+            .progress(shell.spread.sampled_at(Instant::now()));
+        assert!((shown - ease(0.5)).abs() < 1e-4);
+
+        let _ = shell.spread_message(SpreadMessage::Dismiss);
+        assert!(shell.spread.phase == Phase::Closing);
+        assert!((shell.spread.closing_from - shown).abs() < 1e-4);
+        let restart = shell.spread.started.unwrap();
+        assert!(
+            (shell.spread.progress(restart) - shown).abs() < 1e-4,
+            "the close begins where the opening was shown"
+        );
+
+        let _ = shell.spread_message(SpreadMessage::Frame(id, restart + Duration::from_secs(11)));
+        assert!(
+            shell.spread.started.is_none(),
+            "a finished close restores the windows"
+        );
     }
 }

@@ -147,6 +147,8 @@ pub struct SpreadWindow {
 pub struct SpreadDesktop {
     /// The output's position and size, logical.
     pub output: [f32; 4],
+    /// Physical pixels per logical pixel on the output.
+    pub scale: f32,
     pub desktop: i64,
     /// Bottom-most first, as they are stacked.
     pub windows: Vec<SpreadWindow>,
@@ -239,6 +241,7 @@ impl Compositor {
         windows.sort_by_key(|(history, _)| std::cmp::Reverse(*history));
         Ok(SpreadDesktop {
             output: geometry,
+            scale: scale as f32,
             desktop,
             windows: windows.into_iter().map(|(_, window)| window).collect(),
         })

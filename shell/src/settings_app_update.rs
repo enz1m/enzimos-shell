@@ -274,6 +274,7 @@ impl SettingsApp {
                 Task::batch([self.read_controls(), self.read_system(true)])
             }
             Message::RevealFrame => {
+                let selected = self.navigation.selected;
                 let navigation = self.navigation_frame();
                 let focus = if let Some(id) = self.window {
                     self.numeric
@@ -342,7 +343,19 @@ impl SettingsApp {
                             });
                             Task::batch([iced::widget::operation::focus(name), reveal])
                         });
-                Task::batch([navigation, focus, numeric_reveal, reveal, control_focus])
+                let view = if self.navigation.selected == selected {
+                    window::invalidate(window::Invalidation::none())
+                } else {
+                    Task::none()
+                };
+                Task::batch([
+                    navigation,
+                    focus,
+                    numeric_reveal,
+                    reveal,
+                    control_focus,
+                    view,
+                ])
             }
             Message::SearchSettings(message) => self.search_settings_message(message),
             Message::Wallpaper(message) => self.wallpaper_message(message),
@@ -445,7 +458,7 @@ impl SettingsApp {
                 self.navigation.selected = self.sections(page).first().map(|section| section.route);
                 self.menu = None;
                 self.highlighted = None;
-                self.reveal_pending = true;
+                self.reveal_pending = false;
                 self.controls.focus_pending = None;
                 Task::batch([
                     self.read_controls(),

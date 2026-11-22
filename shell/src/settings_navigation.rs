@@ -606,6 +606,7 @@ impl SettingsApp {
 #[derive(Default)]
 pub(super) struct Navigation {
     pub scroll: enzui_widgets::scroll_view::ScrollTranslation,
+    pub scroll_generation: u64,
     pub expanded: Option<Category>,
     pub selected: Option<&'static str>,
     pending: Option<&'static str>,
@@ -620,6 +621,7 @@ pub(super) struct Navigation {
 impl Navigation {
     pub(super) fn reset_scroll(&mut self) {
         self.scroll = Default::default();
+        self.scroll_generation = self.scroll_generation.wrapping_add(1);
     }
     pub(super) fn interrupt(&mut self) {
         self.epoch = self.epoch.wrapping_add(1);

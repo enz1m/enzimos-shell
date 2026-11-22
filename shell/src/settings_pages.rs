@@ -847,7 +847,7 @@ impl SettingsApp {
                 _ => self.system_page(body),
             };
         }
-        enz_scroll_view(
+        let scroll = enz_scroll_view(
             container(enzui_widgets::keyed_column::keyed_column(vec![(
                 format!("{:?}:{}", self.page, self.filter),
                 body.into(),
@@ -857,13 +857,20 @@ impl SettingsApp {
         )
         .id("settings-scroll".into())
         .scrollbar_tokens(self.tokens().scrollbar)
-        .on_scroll(|_| Message::PageScrolled)
+        .on_vertical_scroll(|_| Message::PageScrolled)
         .initial_offset(iced::widget::scrollable::AbsoluteOffset {
             x: 0.0,
             y: self.navigation.scroll.get().y,
         })
         .publish_translation(self.navigation.scroll.clone())
         .backdrop(self.tokens().palette.background)
-        .into_element()
+        .into_element();
+        enzui_widgets::keyed_column::keyed_column(vec![(
+            self.navigation.scroll_generation.to_string(),
+            scroll,
+        )])
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
     }
 }

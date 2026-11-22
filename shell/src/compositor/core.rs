@@ -59,14 +59,29 @@ impl Compositor {
             _ => Err(tr("shell-shortcuts-could-not-be-paused").into()),
         }
     }
-    /// Retains a complete window plane until appearance writers finish, then dissolves it.
-    /// Older compositors without this optional presentation dispatcher keep immediate updates.
+    /// Captures the current appearance before the caller writes a new theme.
+    ///
+    /// Call with `ready` after writing to start the dissolve. Capture can time out.
     pub async fn appearance_transition(&self, ready: bool) {
+        const CAPTURE_BOUND: Duration = Duration::from_millis(250);
         let phase = if ready { "ready" } else { "begin" };
-        let lua = format!(
-            "local p = hl.plugin.enzui_appearance; if p then return p.transition('{phase}') end return false"
-        );
-        let _ = self.request(&["eval", &lua]).await;
+        let transition = |phase: &str| {
+            format!(
+                "repl local p = hl.plugin.enzui_appearance if p then return tostring(p.transition('{phase}')) end return 'false'"
+            )
+        };
+        let mut reply = self.request(&["--batch", &transition(phase)]).await;
+        if ready {
+            return;
+        }
+        let captured = transition("captured");
+        let deadline = tokio::time::Instant::now() + CAPTURE_BOUND;
+        while matches!(&reply, Ok(reply) if reply.trim() == "pending")
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(4)).await;
+            reply = self.request(&["--batch", &captured]).await;
+        }
     }
 
     pub(crate) async fn request(&self, arguments: &[&str]) -> Result<String, String> {

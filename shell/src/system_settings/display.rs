@@ -144,9 +144,10 @@ pub struct Displays {
 
 fn logical(mode: Mode, scale: f64, rotation: Rotation) -> (f64, f64) {
     let scale = if scale > 0.0 { scale } else { 1.0 };
+    // The compositor rounds fractional logical sizes to whole pixels.
     let (w, h) = (
-        f64::from(mode.width) / scale,
-        f64::from(mode.height) / scale,
+        (f64::from(mode.width) / scale).round(),
+        (f64::from(mode.height) / scale).round(),
     );
     if rotation.sideways() { (h, w) } else { (w, h) }
 }
@@ -662,6 +663,18 @@ pub fn read() -> Displays {
     }
 }
 
+/// Whether applying `layout` changes the scale of a display that is on now
+/// and stays on: the desktop's chrome is laid out again at the new size.
+#[must_use]
+pub fn rescales(displays: &Displays, layout: &[Change]) -> bool {
+    layout.iter().filter(|c| c.enabled).any(|change| {
+        displays
+            .outputs
+            .iter()
+            .any(|o| o.name == change.output && o.enabled && (o.scale - change.scale).abs() > 1e-6)
+    })
+}
+
 /// Applies a whole layout. Outputs it does not name keep their state.
 pub fn apply(layout: &[Change]) -> Result<(), String> {
     if layout.iter().any(|c| !(0.5..=4.0).contains(&c.scale)) {
@@ -903,6 +916,18 @@ mod tests {
             );
             let json = serde_json::to_value(&remembered).unwrap();
             assert_eq!(saved_from_json(Some(&json)).unwrap(), remembered);
+        }
+        // Only a new scale on a display that stays on hides the chrome first.
+        {
+            let displays = two();
+            let mut changed = layout(&displays);
+            assert!(!rescales(&displays, &changed));
+            changed[1].position = (0, 0);
+            assert!(!rescales(&displays, &changed));
+            changed[0].scale = 1.25;
+            assert!(rescales(&displays, &changed));
+            changed[0].enabled = false;
+            assert!(!rescales(&displays, &changed));
         }
     }
 

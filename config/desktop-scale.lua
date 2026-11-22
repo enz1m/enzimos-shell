@@ -5,12 +5,11 @@ local function desktop_scale(monitor)
     local ppi = math.sqrt(width^2 + height^2) * 25.4 / math.sqrt(mm_w^2 + mm_h^2)
     if ppi < 140 or ppi > 400 then return 1 end
 
-    -- Keep a usable work area with whole logical pixels.
+    -- Keep a usable work area; the compositor rounds fractional logical sizes.
     local preferred = ppi >= 190 and 2 or ppi >= 160 and 1.5 or 1.25
     for _, scale in ipairs({2, 1.5, 1.25}) do
         local w, h = width / scale, height / scale
-        if scale <= preferred and math.max(w, h) >= 1024 and math.min(w, h) >= 640
-            and w == math.floor(w) and h == math.floor(h) then
+        if scale <= preferred and math.max(w, h) >= 1024 and math.min(w, h) >= 640 then
             return scale
         end
     end

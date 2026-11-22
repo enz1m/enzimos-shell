@@ -303,8 +303,8 @@ impl Shell {
                     .filter(|scale| *scale > 0.0)
                     .ok_or_else(|| tr("shell-missing-output-scale"))?;
                 let size = (
-                    (output["width"].as_f64().unwrap_or(0.0) / scale) as f32,
-                    (output["height"].as_f64().unwrap_or(0.0) / scale) as f32,
+                    (output["width"].as_f64().unwrap_or(0.0) / scale).round() as f32,
+                    (output["height"].as_f64().unwrap_or(0.0) / scale).round() as f32,
                 );
                 let origin = (
                     output["x"].as_i64().unwrap_or(0) as i32,

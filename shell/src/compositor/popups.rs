@@ -26,9 +26,10 @@ impl Compositor {
         let scale = output["scale"]
             .as_f64()
             .ok_or_else(|| tr("shell-missing-output-scale"))?;
-        let screen = (output["width"].as_f64().ok_or("Missing output width")? / scale) as f32;
+        let screen =
+            (output["width"].as_f64().ok_or("Missing output width")? / scale).round() as f32;
         let screen_height =
-            (output["height"].as_f64().ok_or("Missing output height")? / scale) as f32;
+            (output["height"].as_f64().ok_or("Missing output height")? / scale).round() as f32;
         let (x, width, attachment) = if metrics.islands.is_some() {
             popup_layout(
                 screen,
@@ -127,7 +128,8 @@ impl Compositor {
         let scale = output["scale"]
             .as_f64()
             .ok_or_else(|| tr("shell-missing-output-scale"))?;
-        let screen_width = output["width"].as_f64().ok_or("Missing output width")? / scale;
+        let screen_width =
+            (output["width"].as_f64().ok_or("Missing output width")? / scale).round();
         let (x, width, attachment) = popup_layout(
             screen_width as f32,
             metrics,
@@ -144,10 +146,11 @@ impl Compositor {
             attachment.join(radius),
         );
         let height = preferred.min(
-            (output["height"]
+            ((output["height"]
                 .as_f64()
                 .expect("control_geometry validated finite output dimensions and scale")
-                / scale
+                / scale)
+                .round()
                 - f64::from(metrics.bar_band())
                 - f64::from(
                     metrics
@@ -219,14 +222,16 @@ impl Compositor {
             (output["width"]
                 .as_f64()
                 .expect("control_geometry validated finite output dimensions and scale")
-                / scale) as f32
+                / scale)
+                .round() as f32
                 - f32::from(placement.metrics.frame) * 2.0,
         );
         let height = 500.0_f32.min(
             (output["height"]
                 .as_f64()
                 .expect("control_geometry validated finite output dimensions and scale")
-                / scale) as f32
+                / scale)
+                .round() as f32
                 - f32::from(placement.metrics.bar + placement.metrics.frame),
         );
         if width < 240.0 || height < 160.0 {
@@ -316,7 +321,8 @@ impl Compositor {
         let scale = output["scale"]
             .as_f64()
             .ok_or_else(|| tr("shell-missing-output-scale"))?;
-        let screen_width = (output["width"].as_f64().ok_or("Missing output width")? / scale) as f32;
+        let screen_width =
+            (output["width"].as_f64().ok_or("Missing output width")? / scale).round() as f32;
         let anchor = anchor.unwrap_or_else(|| {
             iced::Rectangle::new(
                 iced::Point::new((screen_width - 1.0) / 2.0, 0.0),
@@ -332,7 +338,7 @@ impl Compositor {
             anchor,
         )?;
         let height = (body.height + attachment.join(f32::from(metrics.radius))).min(
-            (output["height"].as_f64().ok_or("Missing output height")? / scale) as f32
+            (output["height"].as_f64().ok_or("Missing output height")? / scale).round() as f32
                 - f32::from(metrics.bar_band())
                 - f32::from(
                     metrics
@@ -460,9 +466,10 @@ impl Compositor {
         let scale = output["scale"]
             .as_f64()
             .ok_or_else(|| tr("shell-missing-output-scale"))?;
-        let screen_width = (output["width"].as_f64().ok_or("Missing output width")? / scale) as f32;
+        let screen_width =
+            (output["width"].as_f64().ok_or("Missing output width")? / scale).round() as f32;
         let screen_height =
-            (output["height"].as_f64().ok_or("Missing output height")? / scale) as f32;
+            (output["height"].as_f64().ok_or("Missing output height")? / scale).round() as f32;
         // Reserve window shadow margins beyond the panel's visible edge gap.
         let edge_gap = if metrics.islands.is_some() { 0.0 } else { 10.0 };
         let inset = |edge: u32| (edge as f32 + edge_gap).max(SHADOW_MARGIN);
@@ -614,9 +621,10 @@ impl Compositor {
         let scale = output["scale"]
             .as_f64()
             .ok_or_else(|| tr("shell-missing-output-scale"))?;
-        let screen_width = (output["width"].as_f64().ok_or("Missing output width")? / scale) as f32;
+        let screen_width =
+            (output["width"].as_f64().ok_or("Missing output width")? / scale).round() as f32;
         let screen_height =
-            (output["height"].as_f64().ok_or("Missing output height")? / scale) as f32;
+            (output["height"].as_f64().ok_or("Missing output height")? / scale).round() as f32;
         let (width, height) = if class == "dev.enzui.Capture" {
             (screen_width.round(), screen_height.round())
         } else {

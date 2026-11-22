@@ -735,19 +735,110 @@ impl Compositor {
         Ok(output)
     }
 
-    /// Whether the shell must move: a primary output exists and is not the
-    /// one (or no longer has the size, scale or rotation) its frame was made for.
-    pub async fn primary_moved(&self, frame_lost: bool) -> bool {
+    /// How the primary output differs from the one the shell's frame was made
+    /// for: another output, size or rotation needs a new shell; a new scale
+    /// on the same output needs only the bar placed again.
+    pub async fn primary_change(&self, frame_lost: bool) -> OutputChange {
         let Ok(output) = self.desktop_output().await else {
-            return false;
+            return OutputChange::Same;
         };
         let current = OutputKey::of(&output);
         PRIMARY
             .lock()
             .ok()
             .and_then(|recorded| recorded.clone())
-            .is_some_and(|recorded| frame_lost || recorded != current)
+            .map_or(OutputChange::Same, |recorded| {
+                recorded.change_to(&current, frame_lost)
+            })
     }
+
+    /// Tells the shell that a display's scale is about to change and waits
+    /// until it has hidden its chrome, so the bar is not seen at the old
+    /// output's size, or moved by the compositor while the change settles.
+    /// Returns whether the shell answered: without a shell, or with one that
+    /// does not know the request, the change goes ahead after a short wait.
+    pub async fn hide_chrome_for_rescale(&self) -> bool {
+        use tokio::io::AsyncBufReadExt;
+        let Some(socket) = self.event_socket() else {
+            return false;
+        };
+        let answer = async {
+            // Listening before asking, so the answer cannot be missed.
+            let stream = tokio::net::UnixStream::connect(&socket).await.ok()?;
+            if stream.peer_cred().ok().map(|peer| peer.uid())
+                != Some(rustix::process::getuid().as_raw())
+            {
+                return None;
+            }
+            self.request(&["dispatch", &event_call("enzui-command:output-rescaling")])
+                .await
+                .ok()?;
+            let mut lines = tokio::io::BufReader::new(stream).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if line == format!("custom>>{RESCALE_HIDDEN}") {
+                    return Some(());
+                }
+            }
+            None
+        };
+        matches!(
+            tokio::time::timeout(RESCALE_ANSWER, answer).await,
+            Ok(Some(()))
+        )
+    }
+
+    /// Tells the shell the scale change requested after
+    /// [`Self::hide_chrome_for_rescale`] was applied or failed.
+    pub async fn rescale_finished(&self) {
+        let _ = self
+            .request(&["dispatch", &event_call("enzui-command:output-rescaled")])
+            .await;
+    }
+
+    /// Answers [`Self::hide_chrome_for_rescale`]: the chrome is hidden.
+    pub async fn chrome_hidden_for_rescale(&self) {
+        let _ = self
+            .request(&["dispatch", &event_call(RESCALE_HIDDEN)])
+            .await;
+    }
+
+    /// Whether the compositor has finished with its outputs: it pins an
+    /// output-management change as monitor rules a moment later, and that
+    /// moves windows on the output again. A compositor without pinning is
+    /// settled, and so is one that cannot be asked.
+    pub async fn outputs_settled(&self) -> bool {
+        // `eval` answers only "ok"; a value comes back from `repl`, and a
+        // batch splits at semicolons, so the query has none.
+        let query = "repl return tostring(enzui_outputs_settled == nil or enzui_outputs_settled())";
+        !matches!(
+            self.request(&["--batch", query])
+                .await
+                .as_deref()
+                .map(str::trim),
+            Ok("false")
+        )
+    }
+}
+
+/// The shell's answer to a rescale announcement, on the event socket.
+const RESCALE_HIDDEN: &str = "enzui-output-rescale-hidden";
+
+/// How long Settings waits for the shell to hide its chrome before changing
+/// a display's scale anyway: the shell answers once its fade, at most the
+/// theme's normal motion, has reached the screen.
+const RESCALE_ANSWER: Duration = Duration::from_millis(600);
+
+fn event_call(name: &str) -> String {
+    format!("hl.dsp.event(\"{name}\")")
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputChange {
+    Same,
+    /// Same output, size and rotation at another scale. The frame helper
+    /// follows the compositor's new logical size and buffer scale itself.
+    Rescaled,
+    Moved,
 }
 
 #[derive(Clone, PartialEq)]
@@ -768,6 +859,32 @@ impl OutputKey {
             scale: output["scale"].to_string(),
             transform: output["transform"].as_i64().unwrap_or(0),
         }
+    }
+
+    pub(crate) fn change_to(&self, current: &Self, frame_lost: bool) -> OutputChange {
+        let rescaled = Self {
+            scale: current.scale.clone(),
+            ..self.clone()
+        };
+        if frame_lost || rescaled != *current {
+            OutputChange::Moved
+        } else if self.scale != current.scale {
+            OutputChange::Rescaled
+        } else {
+            OutputChange::Same
+        }
+    }
+}
+
+/// Records the scale a bar was placed at, once the bar has been laid out for
+/// it. Only a rescale is recorded: anything else still needs a new shell.
+pub(crate) fn record_rescale(output: &serde_json::Value) {
+    let current = OutputKey::of(output);
+    if let Ok(mut recorded) = PRIMARY.lock()
+        && let Some(primary) = recorded.as_mut()
+        && primary.change_to(&current, false) == OutputChange::Rescaled
+    {
+        *primary = current;
     }
 }
 
@@ -928,4 +1045,44 @@ pub fn screen_reader_state() -> Option<bool> {
                 .is_ok_and(|comm| comm.trim() == "orca")
     });
     Some(running)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Only a new scale on the same output is followed in place; another
+    // output, mode or rotation, or a lost frame, still restarts the shell.
+    #[test]
+    fn output_changes_restart_except_rescale() {
+        let key = |name: &str, width, scale: f64, transform| {
+            OutputKey::of(&serde_json::json!({
+                "name": name, "width": width, "height": 1504, "scale": scale, "transform": transform
+            }))
+        };
+        let recorded = key("eDP-1", 2256, 1.25, 0);
+        let rescaled = key("eDP-1", 2256, 1.5, 0);
+        assert_eq!(recorded.change_to(&recorded, false), OutputChange::Same);
+        assert_eq!(recorded.change_to(&rescaled, false), OutputChange::Rescaled);
+        assert_eq!(recorded.change_to(&rescaled, true), OutputChange::Moved);
+        for moved in [
+            key("DP-1", 2256, 1.25, 0),
+            key("eDP-1", 1920, 1.25, 0),
+            key("eDP-1", 2256, 1.25, 1),
+            key("DP-1", 2256, 1.5, 0),
+        ] {
+            assert_eq!(recorded.change_to(&moved, false), OutputChange::Moved);
+        }
+        // A placed bar records only a rescale, never a move.
+        *PRIMARY.lock().unwrap() = Some(recorded.clone());
+        record_rescale(&serde_json::json!({
+            "name": "DP-1", "width": 2256, "height": 1504, "scale": 1.5, "transform": 0
+        }));
+        assert!(PRIMARY.lock().unwrap().as_ref() == Some(&recorded));
+        record_rescale(&serde_json::json!({
+            "name": "eDP-1", "width": 2256, "height": 1504, "scale": 1.5, "transform": 0
+        }));
+        assert!(PRIMARY.lock().unwrap().as_ref() == Some(&rescaled));
+        *PRIMARY.lock().unwrap() = None;
+    }
 }

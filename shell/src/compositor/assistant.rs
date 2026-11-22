@@ -274,8 +274,8 @@ fn screen(output: &serde_json::Value) -> Result<(f32, f32, f64, f64), String> {
     let scale = output["scale"]
         .as_f64()
         .ok_or_else(|| tr("shell-missing-output-scale"))?;
-    let width = (output["width"].as_f64().ok_or("Missing output width")? / scale) as f32;
-    let height = (output["height"].as_f64().ok_or("Missing output height")? / scale) as f32;
+    let width = (output["width"].as_f64().ok_or("Missing output width")? / scale).round() as f32;
+    let height = (output["height"].as_f64().ok_or("Missing output height")? / scale).round() as f32;
     let x = output["x"]
         .as_f64()
         .ok_or_else(|| tr("shell-missing-output-origin"))?;

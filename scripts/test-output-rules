@@ -1,0 +1,36 @@
+#!/usr/bin/env lua
+local path = arg[0]:match("^(.*)/") .. "/../config/output-rules.lua"
+local monitor = {name="eDP-1",enabled=true,width=2256,height=1504,refresh_rate=60,x=0,y=0,scale=1.5,transform=0}
+local remote = {name="ENZREMOTE-1",enabled=true,width=800,height=600,refresh_rate=60,x=0,y=0,scale=1,transform=0}
+local layout_changed, timers, rules, events = nil, {}, {}, {}
+hl = {dsp={}}
+function hl.get_monitors() return {monitor,remote} end
+function hl.monitor(rule) table.insert(rules,rule) end
+function hl.on(name,callback) assert(name=="monitor.layout_changed");layout_changed=callback;return {} end
+function hl.timer(callback,options) assert(options.timeout==400);table.insert(timers,callback) end
+function hl.dsp.event(name) return name end
+function hl.dispatch(name) table.insert(events,name) end
+dofile(path)
+-- Without pinning installed, nothing is due.
+assert(enzui_outputs_settled())
+enzui_install_output_pinning()
+assert(enzui_outputs_settled() and #rules==1 and #events==0)
+-- A new scale is not settled until the deferred pin has recorded it, and that
+-- pin announces the change.
+monitor.scale=1.25
+layout_changed()
+assert(not enzui_outputs_settled())
+local pin=table.remove(timers);pin()
+assert(enzui_outputs_settled() and #rules==2 and rules[2].scale==1.25)
+assert(#events==1 and events[1]=="enzui-output-changed")
+-- A change the pin has not yet seen is not settled either, pending or not.
+monitor.scale=1.5
+assert(not enzui_outputs_settled())
+layout_changed();layout_changed()
+assert(#timers==1 and not enzui_outputs_settled())
+table.remove(timers)()
+assert(enzui_outputs_settled() and #events==2)
+-- Remote-session outputs are left to their session.
+remote.scale=2
+assert(enzui_outputs_settled())
+print("output rules ok")

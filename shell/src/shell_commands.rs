@@ -116,6 +116,8 @@ impl Shell {
             Command::Lock => self.update(Message::SystemAction(Action::Lock)),
             Command::ZoomIn | Command::ZoomOut | Command::ZoomReset => self.zoom_command(command),
             Command::PointerPress => self.search_pointer_press(),
+            Command::OutputRescaling => self.begin_rescale_hold(),
+            Command::OutputRescaled => self.rescale_applied(),
             _ => Task::none(),
         }
     }

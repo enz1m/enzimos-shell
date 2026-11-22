@@ -59,9 +59,29 @@ impl SystemSettings {
             }
             Request::Display(layout) => {
                 let layout = layout.clone();
-                tokio::task::spawn_blocking(move || display::apply(&layout))
+                // A new scale lays the desktop's bar out again: the shell hides
+                // it before the output changes and shows it once it is placed.
+                let rescaling = {
+                    let layout = layout.clone();
+                    tokio::task::spawn_blocking(move || {
+                        display::rescales(&display::read(), &layout)
+                    })
                     .await
-                    .map_err(|_| tr("shell-display-change-stopped").to_owned())?
+                    .unwrap_or(false)
+                };
+                let shell = rescaling
+                    .then(crate::compositor::Compositor::from_environment)
+                    .and_then(Result::ok);
+                if let Some(shell) = &shell {
+                    shell.hide_chrome_for_rescale().await;
+                }
+                let applied = tokio::task::spawn_blocking(move || display::apply(&layout))
+                    .await
+                    .map_err(|_| tr("shell-display-change-stopped").to_owned());
+                if let Some(shell) = &shell {
+                    shell.rescale_finished().await;
+                }
+                applied?
             }
             Request::GameModeOption(key, value) => {
                 let (key, value) = (*key, *value);

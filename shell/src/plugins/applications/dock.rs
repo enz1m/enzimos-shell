@@ -630,8 +630,8 @@ impl crate::compositor::Compositor {
             .filter(|v| *v > 0.0)
             .ok_or_else(|| tr("shell-missing-output-scale"))?;
         let screen = Size::new(
-            (output["width"].as_f64().ok_or("Missing output width")? / scale) as f32,
-            (output["height"].as_f64().ok_or("Missing output height")? / scale) as f32,
+            (output["width"].as_f64().ok_or("Missing output width")? / scale).round() as f32,
+            (output["height"].as_f64().ok_or("Missing output height")? / scale).round() as f32,
         );
         let ox = output["x"].as_f64().unwrap_or(0.0) as f32;
         let oy = output["y"].as_f64().unwrap_or(0.0) as f32;

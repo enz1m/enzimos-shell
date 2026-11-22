@@ -4,6 +4,28 @@ use enzui_shell::{settings::Change as SettingChange, system_controls::Action};
 use iced::{Task, window};
 use std::time::{Duration, Instant};
 
+/// How long the chrome may stay hidden for an announced scale change, should
+/// Settings never say it finished or the output never settle.
+const RESCALE_LIMIT: Duration = Duration::from_secs(6);
+/// How long, after Settings applied a scale, the compositor may take to pin
+/// it as monitor rules before the bar is placed anyway.
+const RESCALE_SETTLE_LIMIT: Duration = Duration::from_secs(3);
+/// How often the output is checked while the compositor settles it.
+const RESCALE_POLL: Duration = Duration::from_millis(50);
+
+/// A display scale change announced by Settings. The chrome is hidden before
+/// the output changes; the compositor resizes the output, then pins it as a
+/// monitor rule about 400 ms later, which moves windows on it again. The bar
+/// comes back once it has been placed for the settled output.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RescaleHold {
+    pub(crate) generation: u64,
+    /// When Settings said the change was applied (or failed).
+    pub(crate) applied: Option<Instant>,
+    /// The output has settled and the bar is being placed for it.
+    pub(crate) placing: bool,
+}
+
 impl Shell {
     pub(crate) fn update_chrome(&mut self, message: Message) -> Task<Message> {
         match message {
@@ -50,12 +72,108 @@ impl Shell {
                 self.frame_lost = true;
                 self.check_outputs()
             }
-            Message::OutputsChecked(moved) => {
-                if moved {
-                    enzui_shell::compositor::restart_for_new_output();
+            Message::OutputsChecked(change) => {
+                use enzui_shell::compositor::OutputChange;
+                match change {
+                    OutputChange::Moved => enzui_shell::compositor::restart_for_new_output(),
+                    OutputChange::Same => {
+                        self.quiet = true;
+                        Task::none()
+                    }
+                    // A new scale on the same output keeps the shell, so the
+                    // chrome stays on screen: restarting hid the whole bar for
+                    // about two seconds. The bar and sidebar are placed again
+                    // at the new logical size. A bar being placed already, or
+                    // a style change under way, places it once done (it may
+                    // have read the old scale), and so does the first
+                    // placement in the saved style.
+                    // An announced change places the bar once the compositor
+                    // has settled the output (see `rescale_checked`).
+                    OutputChange::Rescaled => {
+                        self.quiet = false;
+                        self.bar_output_stale = true;
+                        if self.chrome_styled
+                            && !self.bar_style_fade
+                            && self.rescale_hold.is_none_or(|hold| hold.placing)
+                        {
+                            self.update_bar_preferences()
+                        } else {
+                            Task::none()
+                        }
+                    }
                 }
-                self.quiet = !moved;
-                Task::none()
+            }
+            Message::RescaleHidden(generation) => {
+                if self
+                    .rescale_hold
+                    .is_some_and(|hold| hold.generation == generation)
+                {
+                    let compositor = self.compositor.clone();
+                    Task::batch([
+                        Task::future(async move { compositor.chrome_hidden_for_rescale().await })
+                            .discard(),
+                        Task::done(Message::RescaleFrames(generation)),
+                    ])
+                } else {
+                    Task::none()
+                }
+            }
+            // The compositor applies an output change on its next frame, and
+            // with the chrome hidden nothing may be drawing: keep frames
+            // coming until Settings says the change was applied.
+            Message::RescaleFrames(generation) => {
+                if !self
+                    .rescale_hold
+                    .is_some_and(|hold| hold.generation == generation && hold.applied.is_none())
+                {
+                    return Task::none();
+                }
+                let compositor = self.compositor.clone();
+                Task::batch([
+                    Task::future(async move {
+                        let _ = compositor.wake_sidebar_rail(100).await;
+                    })
+                    .discard(),
+                    Task::perform(tokio::time::sleep(RESCALE_POLL), move |()| {
+                        Message::RescaleFrames(generation)
+                    }),
+                ])
+            }
+            Message::RescaleSettle(generation) => {
+                if !self
+                    .rescale_hold
+                    .is_some_and(|hold| hold.generation == generation)
+                {
+                    return Task::none();
+                }
+                let compositor = self.compositor.clone();
+                let frame_lost = self.frame_lost;
+                Task::perform(
+                    async move {
+                        let change = compositor.primary_change(frame_lost).await;
+                        (change, compositor.outputs_settled().await)
+                    },
+                    move |(change, settled)| Message::RescaleChecked(generation, change, settled),
+                )
+            }
+            Message::RescaleChecked(generation, change, settled) => {
+                self.rescale_checked(generation, change, settled)
+            }
+            Message::RescaleLimit(generation) => {
+                if self
+                    .rescale_hold
+                    .is_some_and(|hold| hold.generation == generation)
+                {
+                    self.bar_output_stale = true;
+                    let place = if self.chrome_styled && !self.bar_style_fade {
+                        self.update_bar_preferences()
+                    } else {
+                        Task::none()
+                    };
+                    Task::batch([self.release_rescale_hold(), place])
+                } else {
+                    Task::none()
+                }
             }
             Message::DesktopChanged => {
                 // Only starts reads: what they find changes what is shown.
@@ -1425,7 +1543,7 @@ impl Shell {
         let compositor = self.compositor.clone();
         let frame_lost = self.frame_lost;
         Task::perform(
-            async move { compositor.primary_moved(frame_lost).await },
+            async move { compositor.primary_change(frame_lost).await },
             Message::OutputsChecked,
         )
     }
@@ -1433,4 +1551,94 @@ impl Shell {
 
 fn control_body_retry(after: Duration) -> Task<Message> {
     Task::perform(tokio::time::sleep(after), |()| Message::ControlBodyRetry)
+}
+
+impl Shell {
+    /// Settings is about to change a display's scale: hide the chrome, and
+    /// answer once its fade has reached the screen. A change announced while
+    /// another is under way starts the wait again.
+    pub(crate) fn begin_rescale_hold(&mut self) -> Task<Message> {
+        self.rescale_generation = self.rescale_generation.wrapping_add(1);
+        let generation = self.rescale_generation;
+        let full = Duration::from_millis(u64::from(self.chrome_fade_ms()) + 40);
+        let (fade, wait) = match self.frame_fade {
+            // Already fading out, for a style change or an earlier rescale.
+            Some((since, true)) => (Task::none(), full.saturating_sub(since.elapsed())),
+            _ if self.chrome_shown() => (self.start_frame_fade(true), full),
+            // Fading in, or hidden at startup: from wherever it is now.
+            Some((_, false)) => (self.start_frame_fade(true), full),
+            None => (Task::none(), Duration::ZERO),
+        };
+        self.rescale_hold = Some(RescaleHold {
+            generation,
+            applied: None,
+            placing: false,
+        });
+        self.quiet = false;
+        Task::batch([
+            fade,
+            Task::perform(tokio::time::sleep(wait), move |()| {
+                Message::RescaleHidden(generation)
+            }),
+            Task::perform(tokio::time::sleep(RESCALE_LIMIT), move |()| {
+                Message::RescaleLimit(generation)
+            }),
+        ])
+    }
+
+    /// Settings has applied the announced change, or failed to: wait for the
+    /// compositor to settle the output.
+    pub(crate) fn rescale_applied(&mut self) -> Task<Message> {
+        match &mut self.rescale_hold {
+            Some(hold) if hold.applied.is_none() => {
+                hold.applied = Some(Instant::now());
+                Task::done(Message::RescaleSettle(hold.generation))
+            }
+            _ => Task::none(),
+        }
+    }
+
+    fn rescale_checked(
+        &mut self,
+        generation: u64,
+        change: enzui_shell::compositor::OutputChange,
+        settled: bool,
+    ) -> Task<Message> {
+        use enzui_shell::compositor::OutputChange;
+        let Some(hold) = self
+            .rescale_hold
+            .filter(|hold| hold.generation == generation)
+        else {
+            return Task::none();
+        };
+        if change == OutputChange::Moved {
+            enzui_shell::compositor::restart_for_new_output();
+        }
+        let waited = hold.applied.map_or(Duration::ZERO, |at| at.elapsed());
+        if !settled && waited < RESCALE_SETTLE_LIMIT {
+            return Task::perform(tokio::time::sleep(RESCALE_POLL), move |()| {
+                Message::RescaleSettle(generation)
+            });
+        }
+        // The compositor may move an earlier placement while pinning the output.
+        self.rescale_hold = Some(RescaleHold {
+            placing: true,
+            ..hold
+        });
+        self.bar_output_stale = true;
+        if self.chrome_styled && !self.bar_style_fade {
+            self.update_bar_preferences()
+        } else {
+            Task::none()
+        }
+    }
+
+    /// Ends a rescale hold; the chrome fades back in with the frame and rail.
+    pub(crate) fn release_rescale_hold(&mut self) -> Task<Message> {
+        if self.rescale_hold.take().is_some() {
+            self.start_frame_fade(false)
+        } else {
+            Task::none()
+        }
+    }
 }

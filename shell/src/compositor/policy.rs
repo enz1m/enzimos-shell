@@ -251,8 +251,8 @@ pub(super) fn control_geometry(output: &serde_json::Value) -> Result<(f32, f32),
     {
         return Err(tr("shell-unsupported-control-center-output-geometry").into());
     }
-    let width = (width / scale - 24.0).min(340.0);
-    let height = (height / scale - 60.0).min(520.0);
+    let width = ((width / scale).round() - 24.0).min(340.0);
+    let height = ((height / scale).round() - 60.0).min(520.0);
     if width < 240.0 || height < 160.0 {
         return Err(tr("shell-desktop-output-is-too-small-for-the-control-center").into());
     }

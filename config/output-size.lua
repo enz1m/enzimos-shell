@@ -1,6 +1,8 @@
--- Output logical dimensions include scale and quarter-turn rotation.
-function enzui_output_w(m) return (m.transform%2==1 and m.height or m.width)/m.scale end
-function enzui_output_h(m) return (m.transform%2==1 and m.width or m.height)/m.scale end
+-- Output logical dimensions include scale and quarter-turn rotation. The compositor rounds
+-- them to whole pixels; fractional scales would otherwise yield sizes such as 1409.99998 or
+-- 1804.8 that no window or anchor can match.
+function enzui_output_w(m) return math.floor((m.transform%2==1 and m.height or m.width)/m.scale+0.5) end
+function enzui_output_h(m) return math.floor((m.transform%2==1 and m.width or m.height)/m.scale+0.5) end
 
 function enzui_app_work_area(m, reserved)
     local outer=hl.get_config and hl.get_config("general.gaps_out") or 12

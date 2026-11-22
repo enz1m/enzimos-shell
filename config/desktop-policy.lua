@@ -256,8 +256,8 @@ function enzui_desktop_cascade(window)
     local reserved = monitor and monitor.reserved or {}
     local left = (monitor and monitor.x or 0) + (reserved.left or 0)
     local top = (monitor and monitor.y or 0) + (reserved.top or 0)
-    local right = (monitor and monitor.x or 0) + (monitor and monitor.width or 1e6) / scale - (reserved.right or 0)
-    local bottom = (monitor and monitor.y or 0) + (monitor and monitor.height or 1e6) / scale - (reserved.bottom or 0)
+    local right = (monitor and monitor.x or 0) + math.floor((monitor and monitor.width or 1e6) / scale + 0.5) - (reserved.right or 0)
+    local bottom = (monitor and monitor.y or 0) + math.floor((monitor and monitor.height or 1e6) / scale + 0.5) - (reserved.bottom or 0)
     for _ = 1, 64 do
         x, y = x + CASCADE, y + CASCADE
         if x + window.size.x > right or y + window.size.y > bottom then

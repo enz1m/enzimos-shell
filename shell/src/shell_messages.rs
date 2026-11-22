@@ -92,7 +92,18 @@ pub(super) enum Message {
     PreviewsDue(u64),
     SelectDesktop(u32),
     FrameStopped(Result<(), String>),
-    OutputsChecked(bool),
+    OutputsChecked(enzui_shell::compositor::OutputChange),
+    /// The chrome has faded out for an announced scale change.
+    RescaleHidden(u64),
+    /// Keeps the compositor drawing until an announced change is applied.
+    RescaleFrames(u64),
+    /// Checks whether the output has settled after a scale change.
+    RescaleSettle(u64),
+    /// The output after a scale change, and whether the compositor has
+    /// settled it.
+    RescaleChecked(u64, enzui_shell::compositor::OutputChange, bool),
+    /// An announced scale change has taken too long: the chrome comes back.
+    RescaleLimit(u64),
     Tiling(bool),
     TilingDefault(bool),
     TilingFollowDefault,

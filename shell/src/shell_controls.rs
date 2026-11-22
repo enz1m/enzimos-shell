@@ -257,6 +257,7 @@ impl Shell {
             return Task::none();
         }
         if !self.bar_ready
+            || self.bar_output_stale
             || self.bar != self.desired_settings.bar
             || self.metrics != self.desired_settings.effective_metrics()
         {

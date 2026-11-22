@@ -34,10 +34,15 @@ pub enum Command {
     /// A left press anywhere (a non-consuming compositor bind); the click
     /// itself still reaches whatever is under the pointer.
     PointerPress,
+    /// Settings is about to change a display's scale: the shell hides its
+    /// chrome first and answers once it is hidden.
+    OutputRescaling,
+    /// Settings has applied that change, or failed to.
+    OutputRescaled,
 }
 
 impl Command {
-    const ALL: [(Self, &'static str); 29] = [
+    const ALL: [(Self, &'static str); 31] = [
         (Self::VolumeUp, "volume-up"),
         (Self::VolumeDown, "volume-down"),
         (Self::VolumeMute, "volume-mute"),
@@ -67,6 +72,8 @@ impl Command {
         (Self::ScreenshotWindow, "screenshot-window"),
         (Self::Lock, "lock"),
         (Self::PointerPress, "pointer-press"),
+        (Self::OutputRescaling, "output-rescaling"),
+        (Self::OutputRescaled, "output-rescaled"),
     ];
 
     #[must_use]

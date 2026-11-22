@@ -325,16 +325,18 @@ pub async fn capture(
         .as_f64()
         .filter(|s| (0.5..=4.0).contains(s))
         .ok_or_else(|| tr("shell-invalid-preview-scale"))?;
-    let width = output["width"]
+    let width = (output["width"]
         .as_f64()
         .filter(|w| (1.0..=16384.0).contains(w))
         .ok_or("Invalid preview width")?
-        / scale;
-    let height = output["height"]
+        / scale)
+        .round();
+    let height = (output["height"]
         .as_f64()
         .filter(|h| (1.0..=16384.0).contains(h))
         .ok_or("Invalid preview height")?
-        / scale;
+        / scale)
+        .round();
     let origin = [
         output["x"]
             .as_f64()

@@ -52,6 +52,20 @@ enzui_apply_shell_layout("TEST","top")
 assert(anchor.y==0 and anchor.h==36 and not anchor.bottom)
 enzui_apply_shell_layout("TEST","bottom")
 assert(anchor.y==864 and anchor.h==36 and anchor.bottom)
+-- The compositor reports float scales and rounds the logical size; the bar anchor must
+-- match that size exactly (1.6 used to give 1409.99998 and 1.25 gives 1804.8).
+local function f32(value) return (string.unpack("f",string.pack("f",value))) end
+monitor.width,monitor.height=2256,1504
+for _,case in ipairs({{1.25,1805,1203},{1.5,1504,1003},{1.6,1410,940},{1.75,1289,859},{2,1128,752}}) do
+    monitor.scale=f32(case[1])
+    enzui_apply_shell_layout("TEST","bottom")
+    assert(anchor.w==case[2] and anchor.y==case[3]-36,"fractional bar anchor "..case[1])
+    assert(resized.x==case[2] and math.type(resized.x)=="integer")
+    local counts={moves,resizes}
+    enzui_apply_shell_layout("TEST","bottom")
+    assert(moves==counts[1] and resizes==counts[2],"fractional layout must settle "..case[1])
+end
+monitor.width,monitor.height,monitor.scale=1440,900,1
 local function merge_named(existing,args)
     local merged={mode="preferred",scale=-1,position="auto"}
     for key,value in pairs(existing or {})do merged[key]=value end

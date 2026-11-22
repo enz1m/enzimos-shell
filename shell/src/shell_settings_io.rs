@@ -62,6 +62,9 @@ impl Shell {
             Ok(settings) => settings,
             Err(error) => {
                 self.notice = Some(error);
+                // Unreadable settings leave the default style to show.
+                self.chrome_styled = true;
+                self.update_frame();
                 return Task::none();
             }
         };
@@ -270,6 +273,7 @@ impl Shell {
     pub(crate) fn apply_bar(&mut self) -> Task<Message> {
         self.cancel_panel_action();
         self.bar_busy = true;
+        self.bar_output_stale = false;
         self.bar_epoch = self.bar_epoch.wrapping_add(1);
         let epoch = self.bar_epoch;
         let edge = self.desired_settings.bar;

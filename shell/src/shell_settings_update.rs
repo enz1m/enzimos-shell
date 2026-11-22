@@ -242,9 +242,20 @@ impl Shell {
                     Ok(geometry) => {
                         self.setup_errors.bar = None;
                         self.bar = edge;
-                        // A new style fades in with its bar.
-                        let restyled = self.metrics.islands.is_some() != metrics.islands.is_some();
-                        let fade = if restyled || self.frame_fade.is_some_and(|(_, out)| out) {
+                        // A new style fades in with its bar, and so does the first one.
+                        let restyled = !self.chrome_styled
+                            || self.metrics.islands.is_some() != metrics.islands.is_some();
+                        self.chrome_styled = true;
+                        // During a scale change it waits for the placement on
+                        // the settled output; one that output changed under
+                        // places it again first.
+                        let fade = if let Some(hold) = self.rescale_hold {
+                            if hold.placing && !self.bar_output_stale {
+                                self.release_rescale_hold()
+                            } else {
+                                Task::none()
+                            }
+                        } else if restyled || self.frame_fade.is_some_and(|(_, out)| out) {
                             self.start_frame_fade(false)
                         } else {
                             Task::none()
@@ -276,7 +287,10 @@ impl Shell {
                     }
                     Err(error) => {
                         self.setup_errors.bar = Some(tr!("shell-desktop-bar", "arg0" => error));
-                        Task::none()
+                        // A bar that cannot be placed still shows.
+                        self.chrome_styled = true;
+                        self.update_frame();
+                        self.release_rescale_hold()
                     }
                 }
             }

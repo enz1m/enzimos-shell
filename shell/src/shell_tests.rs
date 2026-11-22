@@ -152,6 +152,7 @@ fn shell_behaviour() {
     {
         let compositor = Compositor::new(PathBuf::from("/usr/bin/true"), "fixture".into()).unwrap();
         let (mut shell, _) = Shell::new(compositor, PathBuf::from("/"));
+        shell.chrome_styled = true;
         shell.settings_generation = 3;
         shell.desired_settings.bar = BarEdge::Bottom;
         shell.light = true;
@@ -204,6 +205,195 @@ fn shell_behaviour() {
             (frame.surface, frame.light, frame.transparency),
             (Some([0, 0, 0]), false, 20)
         );
+    }
+    // The saved style must be in place before the startup fade-in.
+    {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let _runtime = runtime.enter();
+        let compositor = Compositor::new(PathBuf::from("/usr/bin/true"), "fixture".into()).unwrap();
+        let (mut shell, _) = Shell::new(compositor, PathBuf::from("/"));
+        assert_eq!(shell.frame_appearance.borrow().hidden, 100);
+        shell.chrome_styled = false;
+        shell.update_frame();
+        assert!(!shell.chrome_shown());
+        assert_eq!(shell.frame_appearance.borrow().hidden, 100);
+        let saved = Settings::default();
+        let metrics = saved.effective_metrics();
+        assert!(metrics.islands.is_some() && shell.metrics.islands.is_none());
+        let generation = shell.settings_generation;
+        let _ = shell.update(Message::SettingsLoaded(generation, Ok(saved)));
+        assert!(!shell.chrome_shown());
+        assert_eq!(shell.frame_appearance.borrow().hidden, 100);
+        let _ = shell.update(Message::BarApplied(
+            BarEdge::Top,
+            metrics,
+            Ok(ControlGeometry {
+                width: 1440.0,
+                height: 50.0,
+                output: "TEST".into(),
+                attachment: Default::default(),
+            }),
+        ));
+        assert!(shell.frame_fade.is_some_and(|(_, out)| !out));
+        shell.frame_fade = None;
+        shell.update_frame();
+        assert!(shell.chrome_shown());
+        let frame = *shell.frame_appearance.borrow();
+        assert_eq!((frame.hidden, frame.metrics.islands), (0, metrics.islands));
+        // A bar placed again later (the sidebar asked for it) does not hide it.
+        shell.bar_ready = false;
+        assert!(shell.chrome_shown());
+        shell.bar_ready = true;
+        // Rescale the bar in place when the output stays the same.
+        use enzui_shell::compositor::OutputChange;
+        let placed = |shell: &mut Shell, width: f32| {
+            let _ = shell.update(Message::BarApplied(
+                BarEdge::Top,
+                metrics,
+                Ok(ControlGeometry {
+                    width,
+                    height: 50.0,
+                    output: "TEST".into(),
+                    attachment: Default::default(),
+                }),
+            ));
+        };
+        let _ = shell.update(Message::OutputsChecked(OutputChange::Rescaled));
+        assert!(shell.bar_busy && shell.chrome_shown());
+        // A second rescale while that placement runs is placed once it ends.
+        let _ = shell.update(Message::OutputsChecked(OutputChange::Rescaled));
+        placed(&mut shell, 1805.0);
+        assert_eq!(shell.bar_size, iced::Size::new(1805.0, 50.0));
+        assert!(shell.bar_busy && shell.chrome_shown());
+        placed(&mut shell, 1504.0);
+        assert!(!shell.bar_busy && shell.chrome_shown());
+        assert_eq!(shell.bar_size, iced::Size::new(1504.0, 50.0));
+        assert!(shell.frame_fade.is_none());
+        assert_eq!(shell.frame_appearance.borrow().hidden, 0);
+        // Before its saved style is in place, a starting shell leaves the
+        // rescale to its first placement, which must not use the default style.
+        shell.chrome_styled = false;
+        let _ = shell.update(Message::OutputsChecked(OutputChange::Rescaled));
+        assert!(!shell.bar_busy);
+    }
+    // Settings keeps the chrome hidden until the settled bar placement lands.
+    {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let _runtime = runtime.enter();
+        use enzui_shell::commands::Command;
+        use enzui_shell::compositor::OutputChange;
+        let compositor = Compositor::new(PathBuf::from("/usr/bin/true"), "fixture".into()).unwrap();
+        let (mut shell, _) = Shell::new(compositor, PathBuf::from("/"));
+        let metrics = Settings::default().effective_metrics();
+        shell.desired_settings = Settings::default();
+        shell.metrics = metrics;
+        shell.chrome_styled = true;
+        shell.bar_ready = true;
+        shell.frame_fade = None;
+        assert!(shell.chrome_shown());
+        let placed = |shell: &mut Shell, result: Result<f32, &str>| {
+            let _ = shell.update(Message::BarApplied(
+                BarEdge::Top,
+                metrics,
+                result
+                    .map(|width| ControlGeometry {
+                        width,
+                        height: 50.0,
+                        output: "TEST".into(),
+                        attachment: Default::default(),
+                    })
+                    .map_err(String::from),
+            ));
+        };
+        let generation = |shell: &Shell| shell.rescale_hold.unwrap().generation;
+        let shown_after_fade = |shell: &mut Shell| {
+            assert!(shell.rescale_hold.is_none());
+            assert!(shell.frame_fade.is_some_and(|(_, out)| !out));
+            shell.frame_fade = None;
+            shell.update_frame();
+            assert!(shell.chrome_shown());
+            assert_eq!(shell.frame_appearance.borrow().hidden, 0);
+        };
+
+        let _ = shell.update(Message::Command(Command::OutputRescaling));
+        assert!(!shell.chrome_shown());
+        assert!(shell.frame_fade.is_some_and(|(_, out)| out));
+        assert_eq!(shell.frame_appearance.borrow().hidden, 100);
+        let first = generation(&shell);
+        // While the output changes, and before its pinning, the bar is not
+        // placed; it stays hidden at the old size and the new.
+        let _ = shell.update(Message::OutputsChecked(OutputChange::Rescaled));
+        assert!(!shell.bar_busy && !shell.chrome_shown());
+        let _ = shell.update(Message::Command(Command::OutputRescaled));
+        assert!(shell.rescale_hold.unwrap().applied.is_some());
+        let _ = shell.update(Message::RescaleChecked(
+            first,
+            OutputChange::Rescaled,
+            false,
+        ));
+        assert!(!shell.bar_busy && !shell.chrome_shown());
+        // Settled: placed once more, still hidden until that placement lands.
+        let _ = shell.update(Message::RescaleChecked(first, OutputChange::Rescaled, true));
+        assert!(shell.bar_busy && shell.rescale_hold.unwrap().placing);
+        assert!(!shell.chrome_shown());
+        // A rescale while it is placed places it again before it shows.
+        let _ = shell.update(Message::OutputsChecked(OutputChange::Rescaled));
+        placed(&mut shell, Ok(1504.0));
+        assert!(shell.bar_busy && shell.rescale_hold.is_some() && !shell.chrome_shown());
+        placed(&mut shell, Ok(1805.0));
+        assert_eq!(shell.bar_size, iced::Size::new(1805.0, 50.0));
+        shown_after_fade(&mut shell);
+
+        // Back to back, as when the countdown reverts or another scale is
+        // picked: the newer announcement owns the hold, and the older one's
+        // checks and placement do not end it.
+        let _ = shell.update(Message::Command(Command::OutputRescaling));
+        let older = generation(&shell);
+        let _ = shell.update(Message::Command(Command::OutputRescaled));
+        let _ = shell.update(Message::RescaleChecked(older, OutputChange::Rescaled, true));
+        assert!(shell.bar_busy);
+        let _ = shell.update(Message::Command(Command::OutputRescaling));
+        let newer = generation(&shell);
+        assert_ne!(older, newer);
+        assert!(shell.rescale_hold.unwrap().applied.is_none());
+        let _ = shell.update(Message::RescaleChecked(older, OutputChange::Rescaled, true));
+        let _ = shell.update(Message::RescaleLimit(older));
+        placed(&mut shell, Ok(1504.0));
+        assert!(shell.rescale_hold.is_some_and(|hold| !hold.placing));
+        assert!(!shell.chrome_shown());
+        let _ = shell.update(Message::Command(Command::OutputRescaled));
+        let _ = shell.update(Message::RescaleChecked(newer, OutputChange::Rescaled, true));
+        placed(&mut shell, Ok(1504.0));
+        shown_after_fade(&mut shell);
+
+        // A change that failed, or left the scale as it was, still ends the
+        // hold, and so does a placement that fails.
+        let _ = shell.update(Message::Command(Command::OutputRescaling));
+        let failed = generation(&shell);
+        let _ = shell.update(Message::Command(Command::OutputRescaled));
+        let _ = shell.update(Message::RescaleChecked(failed, OutputChange::Same, true));
+        assert!(shell.bar_busy && !shell.chrome_shown());
+        placed(&mut shell, Err("rejected"));
+        shown_after_fade(&mut shell);
+
+        // Settings never saying it finished (or the output never settling)
+        // brings the chrome back after a bound, placed for the output.
+        let _ = shell.update(Message::Command(Command::OutputRescaling));
+        let lost = generation(&shell);
+        let _ = shell.update(Message::RescaleLimit(lost));
+        assert!(shell.bar_busy);
+        shown_after_fade(&mut shell);
+        placed(&mut shell, Ok(1504.0));
+        assert!(shell.chrome_shown() && !shell.bar_busy);
+        // A finish without an announcement changes nothing.
+        let _ = shell.update(Message::Command(Command::OutputRescaled));
+        assert!(shell.rescale_hold.is_none() && shell.chrome_shown());
     }
     // Dock input failure and close request remove the canvas.
     {

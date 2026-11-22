@@ -214,10 +214,21 @@ struct Shell {
     settings_queue: VecDeque<SettingChange>,
     bar: BarEdge,
     bar_ready: bool,
+    /// The saved style (frame or islands) has been applied once. A shell that
+    /// starts, as at login or after a display change, knows its style only
+    /// once its settings are read; until then the chrome stays hidden rather
+    /// than showing the default style for a moment.
+    chrome_styled: bool,
     bar_size: iced::Size,
     bar_busy: bool,
     // Keep the bar hidden throughout frame/island reconfiguration.
     bar_style_fade: bool,
+    /// The output's scale changed since the bar was placed.
+    bar_output_stale: bool,
+    /// A scale change Settings announced: the chrome stays hidden until the
+    /// bar is placed for the settled output.
+    rescale_hold: Option<shell_chrome::RescaleHold>,
+    rescale_generation: u64,
     /// The frame fading out (`true`) or in since an instant, while the
     /// shell changes style.
     frame_fade: Option<(std::time::Instant, bool)>,
@@ -299,8 +310,12 @@ impl Shell {
         let (panel, open) = window::open(window_settings("dev.enzui.Desktop", bar_width, 36.0));
         let settings_store = SettingsStore::from_environment();
         let light = false;
+        // The frame starts hidden: its style is not known before the settings are read.
         let (frame_appearance, appearance) =
-            tokio::sync::watch::channel(desktop_frame::Appearance::default());
+            tokio::sync::watch::channel(desktop_frame::Appearance {
+                hidden: 100,
+                ..Default::default()
+            });
         let frame_compositor = compositor.clone();
         let frame = Task::perform(
             async move {
@@ -464,9 +479,13 @@ impl Shell {
             settings_queue: VecDeque::new(),
             bar: BarEdge::Top,
             bar_ready: false,
+            chrome_styled: false,
             bar_size: iced::Size::new(bar_width, 36.0),
             bar_busy: false,
             bar_style_fade: false,
+            bar_output_stale: false,
+            rescale_hold: None,
+            rescale_generation: 0,
             frame_fade: None,
             sidebar_read_at: None,
             rail_fade: None,
@@ -527,6 +546,8 @@ impl Shell {
             preview_wait: 0,
             preview_cancel: None,
         };
+        // Without a settings file the default style is the one to show.
+        shell.chrome_styled = shell.settings_store.is_none();
         let task = Task::batch([
             frame,
             shell.refresh(None),
@@ -962,6 +983,11 @@ impl Shell {
             | Message::SettingsTick
             | Message::FrameStopped(..)
             | Message::OutputsChecked(..)
+            | Message::RescaleHidden(..)
+            | Message::RescaleFrames(..)
+            | Message::RescaleSettle(..)
+            | Message::RescaleChecked(..)
+            | Message::RescaleLimit(..)
             | Message::DesktopChanged
             | Message::SidebarScroll(..)
             | Message::DesktopsRead(..)

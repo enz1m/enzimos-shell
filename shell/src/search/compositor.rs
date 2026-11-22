@@ -213,8 +213,8 @@ impl Compositor {
         let geometry = [
             field("x")? as f32,
             field("y")? as f32,
-            (field("width")? / scale) as f32,
-            (field("height")? / scale) as f32,
+            (field("width")? / scale).round() as f32,
+            (field("height")? / scale).round() as f32,
         ];
         let monitor = output["id"]
             .as_i64()
@@ -628,7 +628,7 @@ impl Compositor {
             .as_str()
             .ok_or_else(|| tr("shell-missing-output-name"))?;
         if let Some(style) = metrics.islands {
-            let screen = (width / scale) as f32;
+            let screen = (width / scale).round() as f32;
             let anchor = anchor.unwrap_or_else(|| {
                 iced::Rectangle::new(
                     iced::Point::new((screen - 1.0) / 2.0, 0.0),
@@ -638,7 +638,7 @@ impl Compositor {
             let (x, width, attachment) =
                 crate::compositor::popup_layout(screen, metrics, 620.0, 0.0, 0.0, anchor)?;
             let bar_end = f32::from(metrics.bar_band());
-            let available_height = (height / scale) as f32
+            let available_height = (height / scale).round() as f32
                 - bar_end
                 - f32::from(style.edge_gap)
                 - attachment.join(f32::from(metrics.radius));
@@ -670,7 +670,7 @@ impl Compositor {
         };
         // On the frame Search opens like the bar's other panels: joined to the
         // bar under the button that opened it, or under the bar's middle.
-        let screen = (width / scale) as f32;
+        let screen = (width / scale).round() as f32;
         let (left, right) = (edge(0)? as f32, edge(2)? as f32);
         let anchor = anchor.unwrap_or_else(|| {
             iced::Rectangle::new(
@@ -681,7 +681,7 @@ impl Compositor {
         let (x, panel_width, attachment) =
             crate::compositor::popup_layout(screen, metrics, 620.0, left, right, anchor)?;
         let radius = f32::from(metrics.radius);
-        let available_height = (height / scale) as f32
+        let available_height = (height / scale).round() as f32
             - f32::from(metrics.bar)
             - f32::from(metrics.frame)
             - attachment.join(radius)

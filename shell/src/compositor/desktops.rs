@@ -300,6 +300,7 @@ impl Compositor {
             }
             _ => return Err(tr("shell-bar-placement-was-rejected").into()),
         }
+        super::core::record_rescale(&output);
         Ok(ControlGeometry {
             width: (output["width"]
                 .as_f64()

@@ -296,7 +296,10 @@ impl Shell {
         // Coming back, the bar waits for the tick that starts the frame's
         // and the rail's fades too: deciding on its own, it led them by up
         // to a tick.
-        !self.bar_style_fade && self.frame_fade.is_none()
+        self.chrome_styled
+            && !self.bar_style_fade
+            && self.frame_fade.is_none()
+            && self.rescale_hold.is_none()
     }
 
     // The new style is on screen: applied, and the sidebar has taken it

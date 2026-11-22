@@ -43,6 +43,8 @@ hl.config({
         disable_watchdog_warning = true, disable_hyprland_guiutils_check = true, disable_xdg_env_checks = true,
     },
     ecosystem = { no_update_news = true, no_donation_nag = true },
+    -- Use the requested scale and round the logical size in Shell layout.
+    debug = { disable_scale_checks = true },
 })
 hl.curve("desktop-ease", { type = "bezier", points = { { 0.2, 0.8 }, { 0.2, 1.0 } } })
 hl.animation({ leaf = "global", enabled = true, speed = 3, bezier = "desktop-ease" })

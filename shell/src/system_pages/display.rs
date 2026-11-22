@@ -71,11 +71,15 @@ pub(super) fn dropped_layout(
     Some(layout)
 }
 
+/// Whether `scale` leaves a usable desktop on `mode`. The compositor accepts any listed scale
+/// and rounds the logical size, so fractional results such as 1804.8 pixels are fine; the
+/// limit matches the automatic scale policy in `config/desktop-scale.lua`.
 fn supports_scale(mode: Mode, scale: f64) -> bool {
-    [mode.width, mode.height].into_iter().all(|pixels| {
-        let logical = f64::from(pixels) / scale;
-        logical == logical.round()
-    })
+    let (w, h) = (
+        (f64::from(mode.width) / scale).round(),
+        (f64::from(mode.height) / scale).round(),
+    );
+    (scale <= 1.0 && w.max(h) <= 16384.0) || (w.max(h) >= 1024.0 && w.min(h) >= 640.0)
 }
 
 fn scale_label(scale: f64) -> String {
@@ -354,7 +358,7 @@ impl SettingsApp {
         }
         let scale_choices = SCALES
             .iter()
-            .filter(|&&scale| supports_scale(current, scale))
+            .filter(|&&scale| scale == output.scale || supports_scale(current, scale))
             .map(|&s| (scale_label(s), request(Box::new(move |c| c.scale = s))))
             .collect();
         let rotation_choices = Rotation::ALL
@@ -721,5 +725,32 @@ impl SettingsApp {
         ]
         .spacing(2)
         .into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mode(width: i32, height: i32) -> Mode {
+        Mode {
+            width,
+            height,
+            refresh_mhz: 60_000,
+            preferred: true,
+        }
+    }
+
+    #[test]
+    fn fractional_scales_need_only_a_usable_desktop() {
+        // 2256x1504 has no whole logical size at 125%, 150% or 175%.
+        let surface = mode(2256, 1504);
+        let offered: Vec<f64> = SCALES
+            .into_iter()
+            .filter(|&scale| supports_scale(surface, scale))
+            .collect();
+        assert_eq!(offered, [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]);
+        assert!(!supports_scale(mode(1366, 768), 1.25));
+        assert!(supports_scale(mode(3840, 2160), 2.0));
     }
 }

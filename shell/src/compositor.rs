@@ -1,7 +1,7 @@
 mod core;
 mod desktops;
 mod policy;
-pub use core::{announce_capture, restart_for_new_output, screen_reader_state};
+pub use core::{OutputChange, announce_capture, restart_for_new_output, screen_reader_state};
 pub use policy::fitted_toasts;
 mod assistant;
 mod popups;

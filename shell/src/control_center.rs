@@ -96,17 +96,7 @@ pub(crate) fn status_button(shell: &Shell) -> Element<'_, Message> {
         icons = icons.push(enz_icon("bluetooth").size(size).into_element());
     }
     if let Some(battery) = &s.battery {
-        icons = icons.push(
-            enz_icon(if battery.charging {
-                "battery-charging"
-            } else if battery.percent <= 20 {
-                "battery-low"
-            } else {
-                "battery"
-            })
-            .size(size + 3.0)
-            .into_element(),
-        );
+        icons = icons.push(enz_icon(battery.icon()).size(size + 3.0).into_element());
     }
     if s.game_mode
         .as_ref()
@@ -1152,14 +1142,10 @@ pub(crate) fn view(shell: &Shell) -> Element<'_, Message> {
         // The battery reads at the start of the actions row.
         let battery: Element<'_, Message> = match &shell.system.battery {
             Some(battery) => row![
-                enz_icon(if battery.charging {
-                    "battery-charging"
-                } else {
-                    "battery-medium"
-                })
-                .size(f32::from(shell.metrics.icon))
-                .tint(p.text_muted)
-                .into_element(),
+                enz_icon(battery.icon())
+                    .size(f32::from(shell.metrics.icon))
+                    .tint(p.text_muted)
+                    .into_element(),
                 enz_text(format!("{}%", battery.percent))
                     .size_px((font - 1.0).max(10.0))
                     .muted_on(p.surface)

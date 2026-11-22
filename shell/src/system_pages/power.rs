@@ -109,12 +109,8 @@ impl SettingsApp {
                 battery: Some(battery),
                 ..
             }) => {
-                let icon = match (battery.charging, battery.percent) {
-                    (true, _) => "battery-charging",
-                    (false, 0..=15) => "battery-low",
-                    (false, 16..=60) => "battery-medium",
-                    _ => "battery-full",
-                };
+                let icon =
+                    enzui_shell::system_controls::battery_icon(battery.percent, battery.charging);
                 let tone = match (battery.charging, battery.percent) {
                     (true, _) => ProgressTone::Success,
                     (false, 0..=15) => ProgressTone::Danger,

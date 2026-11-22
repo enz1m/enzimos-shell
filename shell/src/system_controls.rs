@@ -34,6 +34,23 @@ pub struct Battery {
     pub percent: u8,
     pub charging: bool,
 }
+/// The glyph for a battery's charge. Lucide's plain `battery` is an empty
+/// outline, so every level names one that shows how full it is.
+#[must_use]
+pub fn battery_icon(percent: u8, charging: bool) -> &'static str {
+    match (charging, percent) {
+        (true, _) => "battery-charging",
+        (false, 0..=15) => "battery-low",
+        (false, 16..=60) => "battery-medium",
+        _ => "battery-full",
+    }
+}
+impl Battery {
+    #[must_use]
+    pub fn icon(&self) -> &'static str {
+        battery_icon(self.percent, self.charging)
+    }
+}
 #[derive(Clone, Debug, Default)]
 pub struct SystemSnapshot {
     pub audio: Option<Audio>,
@@ -512,6 +529,15 @@ impl SystemControls {
                 continue;
             }
             if small_text(&p.join("scope")).await.as_deref().map(str::trim) == Some("Device") {
+                continue;
+            }
+            // An empty battery bay keeps its supply entry and reads as 0%.
+            if small_text(&p.join("present"))
+                .await
+                .as_deref()
+                .map(str::trim)
+                == Some("0")
+            {
                 continue;
             }
             if let Some(percent) = number(&p.join("capacity")).await.filter(|v| *v <= 100) {
@@ -1058,6 +1084,39 @@ esac"#,
             assert!(start.elapsed() < Duration::from_secs(5));
             script(temp.path(), "wpctl", "head -c 70000 /dev/zero");
             assert!(b.run("wpctl", &[]).await.unwrap_err().contains("bound"));
+        }
+        // The panel shows the installed battery's charge, whatever its name,
+        // past an empty bay and a peripheral's battery.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let b = backend(temp.path());
+            for (name, file, value) in [
+                ("BAT0", "type", "Battery"),
+                ("BAT0", "present", "0"),
+                ("BAT0", "capacity", "0"),
+                ("hid-pen-battery", "type", "Battery"),
+                ("hid-pen-battery", "scope", "Device"),
+                ("hid-pen-battery", "capacity", "5"),
+                ("BAT1", "type", "Battery"),
+                ("BAT1", "present", "1"),
+                ("BAT1", "capacity", "100"),
+                ("BAT1", "status", "Full"),
+            ] {
+                attribute(
+                    temp.path(),
+                    &format!("class/power_supply/{name}/{file}"),
+                    value,
+                );
+            }
+            let battery = b.battery().await.unwrap();
+            assert_eq!(
+                battery,
+                Battery {
+                    percent: 100,
+                    charging: false
+                }
+            );
+            assert_eq!(battery.icon(), "battery-full");
         }
     }
 }

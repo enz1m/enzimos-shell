@@ -279,6 +279,12 @@ static int sizeLimits(lua_State *L) {
     lua_pushnumber(L, std::floor(std::min({8192., clientMax.y, targetMax.y}))); lua_setfield(L, -2, "max_h");
     return 1;
 }
+static int windowConflict(lua_State *L) {
+    auto w = find(L);
+    return result(L, w && ownerAlive() && w->m_monitor == output && !remote(w) &&
+                     lua_isinteger(L, 2) && lua_tointeger(L, 2) == ownerPid &&
+                     hasConflictingWindow(w, active && w == app));
+}
 static int supports(lua_State *L) {
     auto w = find(L);
     if (!ownerAlive() || !lua_isinteger(L, 2) || lua_tointeger(L, 2) != ownerPid || !supported(w) ||
@@ -368,7 +374,8 @@ static int begin(lua_State *L, bool restore, bool repin = false) {
     if (active && detached && draggingApp())
         return result(L, false);
     if (!w || !w->mapped() || w->m_monitor != output || remote(w) || w->backend().isX11() ||
-        (active && (!selected(L) || (!restore && !repin))) || (!restore && !supported(w)))
+        (active && (!selected(L) || (!restore && !repin))) ||
+        (!restore && (!supported(w) || (!repin && hasConflictingWindow(w, false)))))
         return result(L, false);
     if (!active && w->isInputBlocked())
         return result(L, false);
@@ -388,6 +395,12 @@ static int begin(lua_State *L, bool restore, bool repin = false) {
     if (restoreFrame)
         restoreFrame->visible = restoreFrame->source.box;
     app = w;
+    if (!restore && !repin) {
+        existingPeers.clear();
+        for (const auto &peer : Desktop::windowState()->windows())
+            if (peer != w && peer->mapped() && peer->backend().pid() == w->backend().pid())
+                existingPeers.insert(peer->metadata().stableID());
+    }
     if (!repin)
         iconAnchor = anchor;
     wanted = box;

@@ -256,7 +256,9 @@ end
 local function owned(e)
     return (known(e) and e.window.monitor and e.window.monitor.name==s.output and not remote(e.window))==true
 end
-local function another_window(w)
+local function window_conflict(w)
+    local api=scene()
+    if api and api.window_conflict then return api.window_conflict(w.address,s.owner) end
     for _,other in ipairs(hl.get_windows()) do
         if other.mapped and other.pid==w.pid and other.address~=w.address then return true end
     end
@@ -355,7 +357,7 @@ function enzui_sidebar_restore_icon(id,owner,x,y)
     assert(owner==s.owner,"Sidebar icon owner changed")
     assert(type(x)=="number" and x%1==0 and math.abs(x)<=100000 and type(y)=="number" and y%1==0 and math.abs(y)<=100000,"Invalid sidebar icon drop")
     local e=find(id);local api=scene();local g=geometry()
-    if not e or not owned(e) or e.restoring or another_window(e.window) or not api or not api.icon_drop or not g then return {ok=false} end
+    if not e or not owned(e) or e.restoring or window_conflict(e.window) or not api or not api.icon_drop or not g then return {ok=false} end
     if not api.icon_drop(owner,x,y) then return {ok=true} end
     local m=g.monitor
     if x<m.x or y<m.y or x>=m.x+enzui_output_w(m) or y>=m.y+enzui_output_h(m) then return {ok=true} end
@@ -372,7 +374,7 @@ function enzui_sidebar_hide()
     local e=find(s.shown)
     if not e or not known(e) then s.shown=nil;emit();return {ok=true} end
     if not owned(e) then s.error="unavailable";emit();return {ok=false} end
-    if another_window(e.window) then s.error="multi-window";emit();return {ok=false} end
+    if window_conflict(e.window) then s.error="multi-window";emit();return {ok=false} end
     if scene() then
         s.next_show=nil
         if e.restoring then return {ok=true} end
@@ -411,6 +413,9 @@ function enzui_sidebar_toggle(id,anchor)
     if scene() and (s.shown or (s.restoring and find(s.restoring))) then
         s.next_show={id=id,anchor=anchor};return {ok=true}
     end
+    if window_conflict(e.window) then
+        e.return_error="desktop-return";return enzui_sidebar_unpin(id,false)
+    end
     e.size_limits=read_size_limits(e.window)
     local g=geometry(e,anchor);local ws=hl.get_active_workspace(s.output)
     if not g or not ws or type(ws.id)~="number" or ws.id<=0 then return {ok=false} end
@@ -438,7 +443,7 @@ function enzui_sidebar_toggle(id,anchor)
     e.focused=nil;s.shown=id;s.error="";emit();return {ok=true}
 end
 function enzui_sidebar_pin_window(w,before)
-    if s.enabled==false or #s.entries>=16 or not eligible(w) or another_window(w)
+    if s.enabled==false or #s.entries>=16 or not eligible(w) or window_conflict(w)
         or (scene() and not scene().supports(w.address,s.owner)) then
         s.error="ineligible";emit();return {ok=false}
     end
@@ -512,7 +517,7 @@ local function repin_entry(id)
     local phase=api.status(e.window.address)
     if phase=="dragging" then return false,true end
     if phase~="detached" then return false end
-    if another_window(e.window) then e.return_error="desktop-return";return enzui_sidebar_unpin(id,true).ok end
+    if window_conflict(e.window) then e.return_error="desktop-return";return enzui_sidebar_unpin(id,true).ok end
     if e.resize_pending then
         local size=e.released_size or e.window.size
         if size and type(size.x)=="number" and type(size.y)=="number" and size.x>=80 and size.x<=8192 and size.y>=80 and size.y<=8192
@@ -793,7 +798,7 @@ tick_once=function()
             end
         elseif pending.window then
             local candidate=pending.window;local w=candidate.window;local api=scene()
-            local ok,valid=pcall(function()return eligible(w) and w.stable_id==candidate.stable_id and w.pid==candidate.pid and not another_window(w) end)
+            local ok,valid=pcall(function()return eligible(w) and w.stable_id==candidate.stable_id and w.pid==candidate.pid and not window_conflict(w) end)
             if ok and valid then
                 if api and not api.supports(w.address,s.owner) and pending.attempts<25 then
                     pending.attempts=pending.attempts+1;s.pending=pending

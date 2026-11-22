@@ -248,16 +248,27 @@ owner_alive=true
 local dialog={address="0x456",pid=777,mapped=true,class="dialog",at={x=500,y=400},size={x=320,y=180}}
 windows[2]=dialog
 assert(not enzui_sidebar_pin_window(app).ok and #enzui_sidebar.entries==0)
-windows[2]=nil
+native.window_conflict=function(addr,pid)
+    assert(addr==app.address and pid==888)
+    return windows[2]==dialog or windows[3]==dialog
+end
+assert(not enzui_sidebar_pin_window(app).ok and #enzui_sidebar.entries==0)
+local sibling={address="0x545",pid=777,mapped=true,class="app",at={x=610,y=220},size={x=700,y=520}}
+windows[2]=sibling
+local sibling_at,sibling_size=sibling.at,sibling.size
 assert(enzui_sidebar_pin_window(app).ok);id=enzui_sidebar.entries[1].id
 assert(enzui_sidebar_toggle(id,400).ok);phase="open";enzui_sidebar_tick()
-windows[2]=dialog;local dialog_at=dialog.at;local dialog_size=dialog.size
+assert(enzui_sidebar_hide().ok);phase="closed";enzui_sidebar_tick()
+assert(enzui_sidebar_toggle(id,400).ok);phase="open";enzui_sidebar_tick()
+windows[3]=dialog;local dialog_at=dialog.at;local dialog_size=dialog.size
 phase="dialog";enzui_sidebar_tick()
 assert(phase=="restoring" and app.at.x==300 and app.at.y==250)
 phase="restored";enzui_sidebar_tick()
 assert(#enzui_sidebar.entries==0 and enzui_sidebar.error=="desktop-return")
 assert(dialog.at==dialog_at and dialog.size==dialog_size)
-print("Native v3: drag remains live until release; additional-window fallback restores only its parent.")
+assert(sibling.at==sibling_at and sibling.size==sibling_size)
+native.window_conflict=nil;windows[3]=nil
+print("Native v3: drag remains live until release; existing peers stay on the desktop, and a dialog restores only the pinned window.")
 
 native.version=function()return 4 end
 local motion_value

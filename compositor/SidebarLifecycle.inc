@@ -27,7 +27,8 @@ static void init(HANDLE handle) {
           std::pair{"anchor_panel", anchorPanel}, std::pair{"panel_state", panelState},
           std::pair{"pocket", setPocket}, std::pair{"pocket_state", pocketState},
           std::pair{"hold_pocket", holdPocketApi}, std::pair{"repin", repin},
-          std::pair{"supports", supports}, std::pair{"size_limits", sizeLimits}, std::pair{"owner_alive", ownerAliveApi},
+          std::pair{"supports", supports}, std::pair{"size_limits", sizeLimits},
+          std::pair{"window_conflict", windowConflict}, std::pair{"owner_alive", ownerAliveApi},
           std::pair{"prepare", prepare}, std::pair{"restore", restore},
           std::pair{"relocated", relocated}, std::pair{"show", show}, std::pair{"hide", hide},
           std::pair{"status", status}, std::pair{"client_resize_disabled", clientResizeDisabled},
@@ -371,7 +372,7 @@ static void exit(HANDLE handle) {
     g_pHyprRenderer->currentPass().removeAllOfType("EnzControlShape");
     for (const auto *name :
          {"version", "configure", "search_dim", "motion", "motion_state", "supports_islands", "supports_dock", "bar_mode", "bar_regions", "bar_regions_state", "input_at", "panel_frame", "rail", "rail_state", "icon_drop", "cancel_icon_drop", "icon_feedback", "drag_active", "drag_drop", "drag_state", "tiling_mode", "place_tile", "fullscreen_area", "rail_context", "anchor_panel", "panel_state", "pocket", "pocket_state", "hold_pocket", "repin", "supports", "owner_alive", "prepare", "restore", "relocated",
-          "show", "hide", "status", "size_limits", "client_resize_disabled", "wallpaper_transition_state", "finish", "counters", "surface_state"})
+          "show", "hide", "status", "size_limits", "window_conflict", "client_resize_disabled", "wallpaper_transition_state", "finish", "counters", "surface_state"})
         HyprlandAPI::removeLuaFunction(handle, "enzui_sidebar_scene", name);
     bar.reset();
     backing.reset();

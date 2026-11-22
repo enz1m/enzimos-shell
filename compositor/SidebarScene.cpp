@@ -36,6 +36,7 @@
 #include <cmath>
 #include <dlfcn.h>
 #include <map>
+#include <unordered_set>
 
 namespace EnzMaterial {
 // Whether window `w` shows compositor glass (Material.cpp, built into the
@@ -66,6 +67,7 @@ static_assert(static_cast<unsigned>(Desktop::View::FOCUS_BLOCK_GROUP_INACTIVE) =
               static_cast<unsigned>(Desktop::View::FOCUS_BLOCK_MONOCLE_INACTIVE) == 2 &&
               static_cast<unsigned>(Desktop::View::FOCUS_BLOCK_BELOW_FULLSCREEN) == 4);
 static PHLWINDOWREF app, bar, backing;
+static std::unordered_set<uint64_t> existingPeers;
 static PHLMONITORREF output;
 static PHLWORKSPACEREF parkingWorkspace;
 static pid_t ownerPid = 0;
@@ -257,23 +259,28 @@ static void updateChromeCursor() {
     else
         (*cursorSlot)->setOverride(shape, Pointer::Cursor::CURSOR_OVERRIDE_UNKNOWN);
 }
-static bool additionalWindow() {
-    if (!app)
+static bool hasConflictingWindow(PHLWINDOW target, bool watchNewPeers) {
+    if (!target)
         return false;
     for (const auto &other : Desktop::windowState()->windows()) {
-        if (!other->mapped() || other == app)
+        if (!other->mapped() || other == target)
             continue;
-        if (other->backend().pid() == app->backend().pid())
-            return true;
         auto parent = other->backend().parent();
+        if (other->backend().pid() == target->backend().pid()) {
+            // A client may open an unparented dialog after its sidebar window is shown.
+            if ((watchNewPeers && !existingPeers.contains(other->metadata().stableID())) ||
+                (!parent && other->backend().traits().modal))
+                return true;
+        }
         for (unsigned depth = 0; parent && depth < 16; ++depth) {
-            if (parent == app)
+            if (parent == target)
                 return true;
             parent = parent->backend().parent();
         }
     }
     return false;
 }
+static bool additionalWindow() { return hasConflictingWindow(app.lock(), true); }
 static std::string address(PHLWINDOW w) { return std::format("0x{:x}", uintptr_t(w.get())); }
 static PHLWINDOW find(lua_State *L) {
     if (!lua_isstring(L, 1))
@@ -927,6 +934,7 @@ static void clear() {
     commitListener.reset();
     backingPass.reset();
     app.reset();
+    existingPeers.clear();
 }
 
 static bool restoredContentReady() {

@@ -238,6 +238,7 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Rail<'_> {
         let frame = self.frame(state, bounds.size());
         let mut glazed = false;
         if let Some(input) = &self.input {
+            let _commit = input.commit_together();
             if self.interactive {
                 input.shape(&frame, bounds.size());
             } else {

@@ -83,6 +83,8 @@ struct Inner {
     last: Mutex<Option<Mask>>,
     glass: Mutex<Glass>,
     backdrop: Arc<Backdrop>,
+    // `Some` while changes share one commit; true once one is owed.
+    batch: Mutex<Option<bool>>,
 }
 #[derive(Default)]
 struct Glass {
@@ -153,6 +155,29 @@ pub struct GlassRegion {
     pub radius: f32,
     pub tint: Color,
 }
+/// Defers [`SurfaceInput`] commits until dropped; see [`SurfaceInput::commit_together`].
+pub struct CommitTogether<'a> {
+    input: &'a SurfaceInput,
+    owner: bool,
+}
+impl Drop for CommitTogether<'_> {
+    fn drop(&mut self) {
+        if !self.owner {
+            return;
+        }
+        let inner = &self.input.0;
+        let owed = inner
+            .batch
+            .lock()
+            .ok()
+            .and_then(|mut batch| batch.take())
+            .unwrap_or(false);
+        if owed && inner.surface.is_alive() {
+            inner.surface.commit();
+            let _ = inner.globals.0.connection.flush();
+        }
+    }
+}
 impl std::fmt::Debug for SurfaceInput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SurfaceInput")
@@ -178,6 +203,7 @@ impl SurfaceInput {
             last: Mutex::new(None),
             glass: Mutex::new(Glass::default()),
             backdrop: Arc::new(Backdrop::default()),
+            batch: Mutex::new(None),
         }));
         if claim_input && !result.empty() {
             return Err(tr("shell-could-not-initialize-input-region").into());
@@ -234,6 +260,25 @@ impl SurfaceInput {
         // Double-buffered like the rest of the surface's state.
         self.0.surface.commit();
         globals.connection.flush().is_ok()
+    }
+    /// Commits input and glass updates together when the guard drops.
+    pub fn commit_together(&self) -> CommitTogether<'_> {
+        let owner = self.0.batch.lock().is_ok_and(|mut batch| {
+            let owner = batch.is_none();
+            batch.get_or_insert(false);
+            owner
+        });
+        CommitTogether { input: self, owner }
+    }
+    fn commit(&self) -> bool {
+        if let Ok(mut batch) = self.0.batch.lock()
+            && let Some(owed) = batch.as_mut()
+        {
+            *owed = true;
+            return true;
+        }
+        self.0.surface.commit();
+        self.0.globals.0.connection.flush().is_ok()
     }
     pub fn invalidate(&self) {
         self.0.active.store(false, Ordering::Release);
@@ -506,12 +551,11 @@ impl SurfaceInput {
             luminance.clear();
         }
         object.set_regions(bytes.clone());
+        glass.sent = Some(bytes);
         // Double-buffered: an unchanged pixel buffer may be reused (a new
         // shell colour waited for the content's next repaint), so the
         // regions need their own surface commit, like the input mask.
-        self.0.surface.commit();
-        glass.sent = Some(bytes);
-        self.0.globals.0.connection.flush().is_ok() && !empty
+        self.commit() && !empty
     }
     fn apply(&self, mask: Mask) -> bool {
         if !self.0.active.load(Ordering::Acquire)
@@ -544,10 +588,9 @@ impl SurfaceInput {
                 region.destroy();
             }
         }
-        // An unchanged pixel buffer may be reused; input still needs its own surface commit.
-        self.0.surface.commit();
         *previous = Some(mask);
-        self.0.globals.0.connection.flush().is_ok()
+        // An unchanged pixel buffer may be reused; input still needs its own surface commit.
+        self.commit()
     }
 }
 /// Waits for prior requests on the owned window's display without a second reader.
@@ -1005,5 +1048,100 @@ mod tests {
             );
             assert!(spans.iter().any(|s| s.x == 0 && s.y == 0));
         }
+        {
+            let (input, mut server) = wire_fixture();
+            let surface = input.0.surface.id().protocol_id();
+            let tokens = enzui_theme::MaterialStyle::FlatFrosted.builtin_tokens();
+            let panel = Rectangle::new(iced::Point::ORIGIN, Size::new(120.0, 80.0));
+            let mut frame = |size: f32, shadow| {
+                let outer = input.commit_together();
+                let inner = input.commit_together();
+                let bounds = Rectangle::new(iced::Point::ORIGIN, Size::new(size, size));
+                input.rounded_regions(&[(bounds, 12.0)]);
+                input.glass(&[(bounds, 12.0)], &tokens, Color::BLACK, shadow);
+                drop(inner);
+                assert!(requests(&mut server).is_empty());
+                drop(outer);
+                requests(&mut server)
+            };
+            let open = frame(40.0, Some((8.0, 2.0, 0.3)));
+            let commits = |sent: &[(u32, u16)]| {
+                sent.iter()
+                    .filter(|&&request| request == (surface, SURFACE_COMMIT))
+                    .count()
+            };
+            assert_eq!(commits(&open), 1);
+            assert_eq!(open.last(), Some(&(surface, SURFACE_COMMIT)));
+            assert!(open.contains(&(surface, SURFACE_SET_INPUT_REGION)));
+            assert!(
+                open.iter()
+                    .any(|&(id, opcode)| id != surface && opcode == MATERIAL_SET_REGIONS)
+            );
+            assert!(frame(40.0, Some((8.0, 2.0, 0.3))).is_empty());
+            assert_eq!(commits(&frame(64.0, Some((8.0, 2.0, 0.3)))), 1);
+
+            assert!(input.rectangles(&[panel]));
+            assert_eq!(
+                requests(&mut server).last(),
+                Some(&(surface, SURFACE_COMMIT))
+            );
+            input.clear_glass();
+            assert_eq!(commits(&requests(&mut server)), 1);
+        }
+    }
+
+    const SURFACE_SET_INPUT_REGION: u16 = 5;
+    const SURFACE_COMMIT: u16 = 6;
+    const MATERIAL_SET_REGIONS: u16 = 1;
+
+    // Client objects are created locally, so the peer only has to read requests.
+    fn wire_fixture() -> (SurfaceInput, std::os::unix::net::UnixStream) {
+        let (client, server) = std::os::unix::net::UnixStream::pair().unwrap();
+        server.set_nonblocking(true).unwrap();
+        let connection = Connection::from_socket(client).unwrap();
+        let queue = connection.new_event_queue::<Discovery>();
+        let qh = queue.handle();
+        let registry = connection.display().get_registry(&qh, ());
+        let compositor: wl_compositor::WlCompositor = registry.bind(1, 4, &qh, ());
+        let material: enzui_material_manager_v1::EnzuiMaterialManagerV1 =
+            registry.bind(2, 2, &qh, ());
+        let surface: WlSurface = compositor
+            .send_constructor(wl_compositor::Request::CreateSurface {}, Arc::new(NoEvents))
+            .unwrap();
+        let globals = Globals(Arc::new(GlobalState {
+            connection,
+            compositor,
+            material: Some(material),
+            alpha: None,
+            alphas: Mutex::new(Vec::new()),
+            _queue: Mutex::new(queue),
+        }));
+        let input = SurfaceInput::from_parts(surface, 0, globals, false).unwrap();
+        let mut server = server;
+        requests(&mut server);
+        (input, server)
+    }
+
+    fn requests(server: &mut std::os::unix::net::UnixStream) -> Vec<(u32, u16)> {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        let mut chunk = [0; 4096];
+        loop {
+            match server.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(read) => bytes.extend_from_slice(&chunk[..read]),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => panic!("{error}"),
+            }
+        }
+        let mut sent = Vec::new();
+        let mut rest = bytes.as_slice();
+        while rest.len() >= 8 {
+            let word = |at: usize| u32::from_le_bytes(rest[at..at + 4].try_into().unwrap());
+            let (object, header) = (word(0), word(4));
+            sent.push((object, (header & 0xffff) as u16));
+            rest = &rest[(header >> 16) as usize..];
+        }
+        sent
     }
 }

@@ -463,6 +463,7 @@ impl<Message: Clone> Widget<Message, iced::Theme, iced::Renderer> for Slide<'_, 
         };
         let mut glass = false;
         if let Some(input) = &self.input {
+            let _commit = input.commit_together();
             let island = self.reveal.is_some_and(crate::reveal::Reveal::is_island);
             let frame = self.frame(
                 tree.state.downcast_ref::<SlideState>(),

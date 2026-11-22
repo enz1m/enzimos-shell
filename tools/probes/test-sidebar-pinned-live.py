@@ -15,7 +15,9 @@ ready = json.loads((RUNTIME / "ready.json").read_text())
 assert config["exit_with_shell"] and ready["runtime"] == str(RUNTIME)
 unit = "enzui-sidebar-pinned-qa-" + secrets.token_hex(5) + ".service"
 env = {**os.environ, "XDG_RUNTIME_DIR": config["xdg_runtime"],
-       "LD_LIBRARY_PATH": config["build"] + "/prefix/lib", "WAYLAND_DISPLAY": ready["display"]}
+       "WAYLAND_DISPLAY": ready["display"]}
+env.pop("LD_LIBRARY_PATH", None)
+ctl_env = {**env, "LD_LIBRARY_PATH": config["build"] + "/prefix/lib"}
 ctl = [config["build"] + "/hyprland-current-build/hyprctl/hyprctl", "-i", ready["instance"]]
 artifacts = ROOT / ".build/sidebar-pinned-qa" / RUNTIME.name
 artifacts.mkdir(parents=True, exist_ok=True)
@@ -24,7 +26,7 @@ def run(*args, environment=None):
     return subprocess.check_output(args, env=environment, text=True, timeout=15).strip()
 
 def hypr(*args):
-    return run(*ctl, *args, environment=env)
+    return run(*ctl, *args, environment=ctl_env)
 
 def window():
     matches = [w for w in json.loads(hypr("-j", "clients")) if w["class"] == "enzui-sidebar-pinned-qa"]
@@ -194,6 +196,8 @@ try:
     assert window()["size"] == grown, "Hiding lost pinned size"
     lua('assert(enzui_sidebar_unpin(enzui_sidebar.entries[1].id,false).ok)')
     wait(lambda: not state()["entries"], "Original app failed to unpin")
+    failure = hypr("--batch", "repl return hl.plugin.enzui_sidebar_scene.pocket_state(enzui_sidebar.owner).failure")
+    assert failure == "none", f"Ordinary restore required recovery: {failure}"
     assert not client_resize_disabled(window()["address"]), "Unpinned app still blocks its own resize"
     assert all(abs(now - before) <= 1 for now, before in zip(window()["size"], original["size"])), "Unpin lost original desktop size"
     print("resized pinned:", grown, "unpin restored:", window()["size"])

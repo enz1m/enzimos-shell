@@ -250,6 +250,10 @@ end
 local function original(w)
     return {at=w.at,size=w.size,workspace=w.workspace.id,floating=w.floating}
 end
+local function remove_sidebar_tags(e)
+    checked(hl.dsp.window.tag({window=e.window,tag="-enzui-sidebar-"..e.id}))
+    checked(hl.dsp.window.tag({window=e.window,tag="-enzui-sidebar-app"}))
+end
 local function restore(e,detached)
     assert(owned(e),"Sidebar app is unavailable")
     local target=hl.get_active_workspace(s.output)
@@ -274,14 +278,14 @@ local function restore(e,detached)
     end
     if scene() then
         assert(scene().restore(e.window.address,s.owner,at.x,at.y,e.original.size.x,e.original.size.y),"Native restoration rejected")
+        e.restoring=true;s.restoring=e.id;s.after_close=nil
     end
     checked(hl.dsp.window.pin({window=e.window,action="off"}))
     checked(hl.dsp.window.float({window=e.window,action="on"}))
     checked(hl.dsp.window.move({window=e.window,workspace=workspace,follow=false}))
     checked(hl.dsp.window.resize({window=e.window,x=e.original.size.x,y=e.original.size.y}))
     checked(hl.dsp.window.move({window=e.window,x=at.x,y=at.y}))
-    checked(hl.dsp.window.tag({window=e.window,tag="-enzui-sidebar-"..e.id}))
-    checked(hl.dsp.window.tag({window=e.window,tag="-enzui-sidebar-app"}))
+    remove_sidebar_tags(e)
     if tiling and scene() and scene().place_tile then
         local point=drop or {x=at.x+e.original.size.x/2,y=at.y+e.original.size.y/2}
         assert(scene().tiling_mode(s.owner,true),"Native tiling mode rejected")
@@ -310,7 +314,7 @@ function enzui_sidebar_unpin(id,detached)
     local ok=pcall(restore,e,detached)
     if not ok then e.restore_pending=true;s.error="restore-needed";emit();return {ok=false} end
     if scene() then
-        e.restoring=true;e.restore_pending=nil;s.restoring=e.id;s.after_close=nil;emit();return {ok=true}
+        e.restore_pending=nil;emit();return {ok=true}
     end
     if s.shown==id then s.shown=nil end
     table.remove(s.entries,index);s.error="";emit();return {ok=true}
@@ -351,6 +355,7 @@ function enzui_sidebar_hide()
         s.next_show=nil
         if e.restoring then return {ok=true} end
         local phase=scene().status(e.window.address)
+        if phase=="failed" then return enzui_sidebar_unpin(e.id,false) end
         if phase=="dragging" or phase=="detached" then return enzui_sidebar_unpin(e.id,true) end
         if s.after_close and s.after_close.id==e.id and (phase=="closing" or phase=="closed") then
             return {ok=true}
@@ -424,10 +429,7 @@ function enzui_sidebar_pin_window(w,before)
     end)
     if not ok then
         e.restore_pending=true;s.error="restore-needed"
-        if pcall(restore,e,false) then
-            if scene() then e.restoring=true;s.restoring=e.id
-            else table.remove(s.entries,#s.entries) end
-        end
+        if pcall(restore,e,false) and not scene() then table.remove(s.entries,#s.entries) end
         emit();return {ok=false}
     end
     s.error="";emit();return {ok=true}
@@ -602,10 +604,18 @@ local function native_tick()
             elseif e.restoring then
                 if phase=="restored" then
                     assert(api.finish(e.window.address),"Native restoration release rejected")
+                    local cleaned=pcall(remove_sidebar_tags,e)
                     if s.shown==e.id then s.shown=nil end
                     if s.restoring==e.id then s.restoring=nil end
-                    table.remove(s.entries,index);s.error=e.desktop_return and "desktop-return" or "";emit()
+                    if cleaned then
+                        table.remove(s.entries,index);s.error=e.desktop_return and "desktop-return" or ""
+                    else
+                        e.restoring=nil;e.restore_pending=true;s.error="restore-needed"
+                    end
+                    emit()
                 elseif phase=="failed" then
+                    local ok,released=pcall(api.finish,e.window.address)
+                    if ok and released and s.shown==e.id then s.shown=nil end
                     e.restoring=nil;e.restore_pending=true;s.restoring=nil;s.error="restore-needed";emit()
                 end
             elseif s.shown==e.id then
@@ -859,7 +869,7 @@ function enzui_sidebar_configure(output,side,bar,owner,metrics,motion,behavior,p
     end
     hl.window_rule({name="sidebar-app-chrome",match={tag="enzui-sidebar-app"},border_size=0,no_shadow=true,no_anim=true,no_xdg_drags=true})
     for _,e in ipairs(s.entries)do
-        if owned(e) then
+        if owned(e) and not e.restoring then
             local tagged=false
             for _,tag in ipairs(e.window.tags or {})do if tag=="enzui-sidebar-app"then tagged=true;break end end
             if not tagged then checked(hl.dsp.window.tag({window=e.window,tag="+enzui-sidebar-app"})) end

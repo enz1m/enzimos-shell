@@ -253,15 +253,16 @@ static void init(HANDLE handle) {
                                 w->backend().metadata().appID == "dev.enzui.Sidebar" && w->m_monitor == output &&
                                 g_pHyprRenderer->m_renderData.pMonitor == output;
         const bool controlShape = shapedControl(w.lock()) && g_pHyprRenderer->m_renderData.pMonitor == output;
-        const bool target = active && owned() && !foreign && w == app &&
+        const bool target = active && owned() && !foreign && !(restoring && failed) && w == app &&
                             g_pHyprRenderer->m_renderData.pMonitor == output;
         if (stage == RENDER_PRE_WINDOW && target)
             paintResizeBackdrop();
         const bool retained = target && (detached || restoreFrame.has_value()) && !liveResize;
+        const bool restored = target && restoredContentReady();
         // The frame's panels and the rail's pane are drawn above the frame,
         // which would otherwise shade them along their join.
         const bool liftedPanel = joinedPanel(w.lock()) && g_pHyprRenderer->m_renderData.pMonitor == output;
-        const bool liftedPane = target && !detached && !liveResize;
+        const bool liftedPane = target && !detached && !liveResize && (!restored || retained);
         const bool lifted = liftedPanel || liftedPane;
         const auto place = [lifted](UP<IPassElement> element) {
             if (lifted)
@@ -282,7 +283,7 @@ static void init(HANDLE handle) {
              stage == RENDER_POST_WINDOWS))
             liftedPasses.push_back(std::move(pocketPass));
         if (stage == RENDER_PRE_WINDOW &&
-            (railWindow || controlShape || hidden || bg || retained || lifted || (target && !liveResize && !restoredContentReady()))) {
+            (railWindow || controlShape || hidden || bg || retained || lifted || (target && !liveResize && !restored))) {
             if (redirect) {
                 fail("nested-pass");
                 return;
@@ -300,7 +301,7 @@ static void init(HANDLE handle) {
             else if (!bg && !hidden) {
                 if (retained)
                     place(makeUnique<RetainedWindow>(std::move(captured)));
-                else if (target && !liveResize && !restoredContentReady())
+                else if (target && !liveResize && !restored)
                     place(makeUnique<Group>(std::move(captured)));
                 else
                     place(makeUnique<LiftedWindow>(std::move(captured)));
@@ -324,7 +325,7 @@ static void init(HANDLE handle) {
                 w->backend().surface()->presentFeedback(Time::steadyNow(), w->m_monitor.lock(),
                                                         true);
             captured.reset();
-        } else if (stage == RENDER_POST_WINDOW && target && restoredContentReady())
+        } else if (stage == RENDER_POST_WINDOW && restored)
             g_pHyprRenderer->addPassElement(makeUnique<Marker>());
     });
 }

@@ -2,7 +2,7 @@
 local output={name="TEST",width=1440,height=900,scale=1,x=0,y=0,refresh_rate=60,enabled=true,transform=0,is_mirror=false}
 local workspace={id=1,monitor=output}
 local app={address="0x123",stable_id="abc",pid=777,mapped=true,hidden=false,monitor=output,workspace=workspace,class="app",pinned=false,fullscreen=0,floating=true,at={x=370,y=218},size={x=700,y=500},tags={}}
-local windows={app};local point={x=500,y=300};local fail_park=false;local bindings={};local events=0
+local windows={app};local point={x=500,y=300};local fail_park=false;local fail_resize=false;local bindings={};local events=0
 hl={dsp={window={},cursor={}},plugin={enzui_pointer_events={version=function()return 1 end}}}
 local no_warps,follow_mouse=false,1
 function hl.get_config(key)if key=="cursor.no_warps"then return no_warps elseif key=="input.follow_mouse"then return follow_mouse end end
@@ -53,7 +53,9 @@ function hl.dispatch(args)
         if not no_warps then point={x=w.at.x+w.size.x/2,y=w.at.y+w.size.y/2} end
     elseif args.action_name=="pin" then pin_calls=pin_calls+1;w.pinned=args.action=="on"
     elseif args.action_name=="float" then w.floating=args.action=="on"
-    elseif args.action_name=="resize" then resize_calls=resize_calls+1;w.size={x=args.x,y=args.y}
+    elseif args.action_name=="resize" then
+        if fail_resize and w==app then return {ok=false} end
+        resize_calls=resize_calls+1;w.size={x=args.x,y=args.y}
     elseif args.action_name=="move" then
         if args.workspace then
             if type(args.workspace)=="string" then if fail_park then return{ok=false}end;w.workspace={name="special:enzui-miniapps",monitor=output}
@@ -189,6 +191,12 @@ assert(phase=="restoring" and #enzui_sidebar.entries==1 and enzui_sidebar.restor
 assert(app.at.x==before_native.x and app.at.y==before_native.y and app.size.x==before_native.w and app.size.y==before_native.h)
 phase="restored";enzui_sidebar_tick()
 assert(phase=="idle" and #enzui_sidebar.entries==0 and enzui_sidebar.shown==nil and enzui_sidebar.restoring==nil)
+assert(enzui_sidebar_pin_window(app).ok);id=enzui_sidebar.entries[1].id
+fail_resize=true
+assert(not enzui_sidebar_unpin(id,false).ok and app.workspace.id==1 and not app.pinned)
+fail_resize=false
+phase="restored";enzui_sidebar_tick()
+assert(phase=="idle" and #enzui_sidebar.entries==0 and enzui_sidebar.restoring==nil and #app.tags==0)
 assert(enzui_sidebar_pin_window(app).ok);id=enzui_sidebar.entries[1].id
 assert(enzui_sidebar_toggle(id,400).ok);phase="failed";enzui_sidebar_tick()
 assert(enzui_sidebar.entries[1].restore_pending and enzui_sidebar.error=="restore-needed")

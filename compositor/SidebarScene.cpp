@@ -831,6 +831,11 @@ static void alignResizeBacking(PHLWINDOW window = nullptr) {
         for (auto &w : Desktop::windowState()->windows())
             align(w);
 }
+static bool restoreOnDesktop() {
+    return owned() && restoring && app->m_workspace &&
+           app->m_workspace->type() == Workspace::eWorkspaceType::NORMAL &&
+           !bool(app->m_state & Desktop::View::WINDOW_STATE_PINNED);
+}
 static void refresh() {
     quiescePopups();
     if (!active)
@@ -874,23 +879,34 @@ static void refresh() {
         desktopRequired = true;
         fail("additional-window");
     }
-    gate.advance(Time::steadyNow());
-    if (restoring && !relocationConfirmed && Time::steadyNow() >= deadline)
+    const auto now = Time::steadyNow();
+    gate.advance(now);
+    if (restoring && !relocationConfirmed && now >= deadline)
         fail("relocation-timeout");
     if (restoring && relocationConfirmed &&
-        bool(app->m_state & Desktop::View::WINDOW_STATE_PINNED) && Time::steadyNow() >= deadline)
+        bool(app->m_state & Desktop::View::WINDOW_STATE_PINNED) && now >= deadline)
         fail("unpin-timeout");
     if (!restoring && (!ownerAlive() || !supported(app.lock())))
         fail("unsupported-owner-or-window");
     if (gate.ready() && Enzui::placementState(
             targetBox(app->geometricBox(Desktop::View::IGeometric::GEOMETRIC_CURRENT)),
-            started && !restoring, Time::steadyNow() >= deadline) == Enzui::PlacementState::Failed)
+            started && !restoring, now >= deadline) == Enzui::PlacementState::Failed)
         fail("geometry");
     if (!restoring && started && !backingReady())
         fail("backing");
     if (gate.state() == Enzui::ContentReadiness::State::Changed ||
         gate.state() == Enzui::ContentReadiness::State::TimedOut)
         fail("content-changed-or-timeout");
+    if (restoring && blocked) {
+        if (now >= deadline + std::chrono::seconds(1))
+            fail("restore-presentation-timeout");
+        if (failed) {
+            clearPictures();
+            gate.cancel();
+            unblock();
+            damage();
+        }
+    }
 }
 static void clear() {
     chromeHeld = false;
@@ -914,8 +930,7 @@ static void clear() {
 }
 
 static bool restoredContentReady() {
-    return owned() && restoring && relocationConfirmed && gate.ready() && !failed &&
-           !bool(app->m_state & Desktop::View::WINDOW_STATE_PINNED) &&
+    return restoreOnDesktop() && relocationConfirmed && gate.ready() && !failed &&
            targetBox(app->geometricBox(Desktop::View::IGeometric::GEOMETRIC_CURRENT));
 }
 static bool rasterSupported() {

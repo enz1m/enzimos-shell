@@ -492,6 +492,8 @@ static const char *phase() {
         return draggingApp() ? "dragging" : "detached";
     if (desktopRequired)
         return "dialog";
+    if (failed && !blocked && restoreOnDesktop())
+        return "restored";
     if (failed)
         return "failed";
     if (goal == 0)
@@ -507,8 +509,9 @@ static int status(lua_State *L) {
 }
 static int finish(lua_State *L) {
     const auto p = std::string_view(phase());
+    const bool cancelledRestore = p == "failed" && restoring && !blocked;
     if (app && app->mapped() &&
-        (!selected(L) || (p != "closed" && p != "restored" && p != "foreign")))
+        (!selected(L) || (p != "closed" && p != "restored" && p != "foreign" && !cancelledRestore)))
         return result(L, false);
     clear();
     return result(L, true);

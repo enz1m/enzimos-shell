@@ -9,7 +9,7 @@ use iced::advanced::overlay;
 use iced::advanced::renderer;
 use iced::advanced::widget;
 use iced::advanced::{Layout, Shell, Widget};
-use iced::{Element, Event, Length, Rectangle, Size, Vector};
+use iced::{Element, Event, Length, Rectangle, Size, Vector, touch};
 
 pub struct NaturalHeight<'a, Message, Theme = iced::Theme, Renderer = iced::Renderer> {
     content: Element<'a, Message, Theme, Renderer>,
@@ -24,6 +24,14 @@ pub fn natural_height<'a, Message, Theme, Renderer>(
     NaturalHeight {
         content: content.into(),
         height: height.max(0.0),
+    }
+}
+
+fn visible_cursor(cursor: mouse::Cursor, viewport: Rectangle) -> mouse::Cursor {
+    if cursor.is_over(viewport) {
+        cursor
+    } else {
+        cursor.obstruct()
     }
 }
 
@@ -90,13 +98,39 @@ where
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
+        let viewport = layout.bounds().intersection(viewport).unwrap_or_default();
+        // A clipped row must not take input from the footer covering its old bounds.
+        let lost;
+        let event = match event {
+            Event::Touch(touch::Event::FingerPressed { position, .. })
+                if !viewport.contains(*position) =>
+            {
+                return;
+            }
+            Event::Touch(touch::Event::FingerLifted { id, position })
+                if !viewport.contains(*position) =>
+            {
+                lost = Event::Touch(touch::Event::FingerLost {
+                    id: *id,
+                    position: *position,
+                });
+                &lost
+            }
+            _ => event,
+        };
         let (layout, tree) = layout
             .iter_mut(&mut tree.children)
             .next()
             .expect("the content is the only child");
-        self.content
-            .as_widget_mut()
-            .update(tree, event, layout, cursor, renderer, shell, viewport);
+        self.content.as_widget_mut().update(
+            tree,
+            event,
+            layout,
+            visible_cursor(cursor, viewport),
+            renderer,
+            shell,
+            &viewport,
+        );
     }
 
     fn mouse_interaction(
@@ -107,13 +141,20 @@ where
         viewport: &Rectangle,
         renderer: &Renderer,
     ) -> mouse::Interaction {
+        let Some(viewport) = layout.bounds().intersection(viewport) else {
+            return mouse::Interaction::default();
+        };
         let (layout, tree) = layout
             .iter(&tree.children)
             .next()
             .expect("the content is the only child");
-        self.content
-            .as_widget()
-            .mouse_interaction(tree, layout, cursor, viewport, renderer)
+        self.content.as_widget().mouse_interaction(
+            tree,
+            layout,
+            visible_cursor(cursor, viewport),
+            &viewport,
+            renderer,
+        )
     }
 
     fn draw(
@@ -126,6 +167,7 @@ where
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
+        let cursor = visible_cursor(cursor, *viewport);
         let (layout, tree) = layout
             .iter(&tree.children)
             .next()

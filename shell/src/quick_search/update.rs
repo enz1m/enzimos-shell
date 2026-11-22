@@ -387,11 +387,15 @@ impl Shell {
                     && self.search_height_motion_enabled()
                 {
                     self.search.pending_browse_collapse = true;
+                    // A frame-attached card keeps its join at the closed height.
                     let compact = self
                         .search
                         .geometry
                         .as_ref()
-                        .map_or(BLANK_HEIGHT, |geometry| geometry.0.height.min(BLANK_HEIGHT));
+                        .map_or(BLANK_HEIGHT, |geometry| geometry.0.height.min(BLANK_HEIGHT))
+                        + self.search.island.map_or(0.0, |island| {
+                            island.attachment.join(f32::from(self.metrics.radius))
+                        });
                     self.animate_search_height(from, compact);
                     return iced::widget::operation::focus("quick-search-input");
                 }

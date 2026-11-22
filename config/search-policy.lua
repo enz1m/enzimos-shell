@@ -151,11 +151,19 @@ function enzui_search_resize(owner,output,width,height,epoch,island)
     assert(type(width)=="number" and type(height)=="number" and width%1==0 and height%1==0 and width>=240 and width<=1024 and height>=80 and height<=900,"Invalid search dimensions")
     local x,y,scene=placement(m,width,height,island,owner)
     preserve_pointer(function()
-        if scene then assert(scene.anchor_panel(w.address,owner,x,y,width,height,island.bottom),"Island Search anchor rejected") end
+        if not scene then
+            dispatch(hl.dsp.window.resize({window=w,x=width,y=height}))
+            dispatch(hl.dsp.window.move({window=w,x=x,y=y}))
+            return
+        end
+        -- The compositor resizes a floating window about its centre, which moved the card by
+        -- half the change until the scene's anchor caught up a frame later. In the same call,
+        -- put it where the anchor holds it until the new buffer lands: at the bar's edge, with
+        -- the shown picture (the old height while growing) touching it.
+        local at_x,shown=w.at.x,math.min(w.size.y,height)
+        assert(scene.anchor_panel(w.address,owner,x,y,width,height,island.bottom),"Island Search anchor rejected")
         dispatch(hl.dsp.window.resize({window=w,x=width,y=height}))
-        -- The scene owns anchored placement from committed buffers; a second writer would race
-        -- old geometry.
-        if not scene then dispatch(hl.dsp.window.move({window=w,x=x,y=y})) end
+        dispatch(hl.dsp.window.move({window=w,x=at_x,y=island.bottom and y+height-shown or y}))
     end)
     return {ok=true}
 end

@@ -47,8 +47,11 @@ pub(crate) fn source_chord(
 // The expanded card's height apart from its result rows: field, footer and
 // padding.
 pub(super) const SEARCH_CHROME: f32 = 116.0;
-/// What the recommended apps and the All apps row add above the full list.
+/// The height added by the recommended apps above the full list.
 pub(super) const RECOMMENDED_HEIGHT: f32 = 84.0;
+/// The gap and height of the Settings and All apps row at the card's foot.
+pub(super) const FOOTER_GAP: f32 = 6.0;
+pub(super) const FOOTER_HEIGHT: f32 = 32.0;
 
 /// A result row's height with the gap below it.
 pub(super) fn row_pitch(compact: bool) -> f32 {

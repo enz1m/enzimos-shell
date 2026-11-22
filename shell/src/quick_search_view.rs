@@ -142,8 +142,8 @@ impl Shell {
             .spacing(6)
             .width(Length::Fill)
             .height(Length::Fill);
-        // Settings and All apps, at the card's foot under the apps.
-        let mut apps_row: Option<Element<'_, ShellMessage>> = None;
+        // Settings and All apps follow the bottom edge of the card.
+        let mut footer: Option<Element<'_, ShellMessage>> = None;
         if blank_apps {
             let top = &state.top_apps;
             // Equal-width app slots fill the row; names remain visible for pointer and keys.
@@ -225,7 +225,7 @@ impl Shell {
                 ));
             }
             let browsing = state.browse_all_apps;
-            apps_row = Some(
+            footer = Some(
                 row![
                     // Not "Settings": the Settings app is often among the apps.
                     enz_toolbar_icon("settings", message(Message::Settings))
@@ -319,11 +319,6 @@ impl Shell {
                     .into()
             };
             body = body.push(list);
-        }
-        if let Some(apps_row) = apps_row {
-            body = body
-                .push(iced::widget::space().height(Length::Fill))
-                .push(apps_row);
         }
         let mut alias_footer: Option<Element<'_, ShellMessage>> = None;
         if let Some((id, title)) = &state.alias {
@@ -546,45 +541,64 @@ impl Shell {
             + 0.0722 * palette.surface_elevated.b
             > 0.5;
         let card_radius = f32::from(self.metrics.radius);
-        // The content keeps the layout of the card's final height while the
-        // card grows or shrinks to it, and the card reveals it.
+        // Keep the app rows at their final layout and reveal them through the
+        // space above the footer. The footer itself uses the current height.
         let settled = self.search_surface_size().height - join - 16.0 - CARD_PADDING.y();
-        let card = container(enzui_shell::natural_height::natural_height(
-            content, settled,
-        ))
-        .id("quick-search-visible-card")
-        .padding(CARD_PADDING)
-        .width(Length::Fill)
-        .height(Length::Fixed((paint_height - join - 16.0).max(0.0)))
-        .clip(true)
-        .style(move |_| {
-            if island.is_some() {
-                container::Style::default()
-            } else {
-                container::Style {
-                    background: Some(palette.surface_elevated.into()),
-                    border: iced::Border {
-                        radius: card_radius.into(),
+        let content: Element<'_, ShellMessage> = if let Some(footer) = footer {
+            use super::support::{FOOTER_GAP, FOOTER_HEIGHT};
+            column![
+                container(enzui_shell::natural_height::natural_height(
+                    content,
+                    settled - FOOTER_HEIGHT - FOOTER_GAP,
+                ))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .clip(true),
+                container(footer)
+                    .height(FOOTER_HEIGHT)
+                    .align_y(iced::Alignment::Center),
+            ]
+            .spacing(FOOTER_GAP)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+        } else {
+            enzui_shell::natural_height::natural_height(content, settled).into()
+        };
+        let card = container(content)
+            .id("quick-search-visible-card")
+            .padding(CARD_PADDING)
+            .width(Length::Fill)
+            .height(Length::Fixed((paint_height - join - 16.0).max(0.0)))
+            .clip(true)
+            .style(move |_| {
+                if island.is_some() {
+                    container::Style::default()
+                } else {
+                    container::Style {
+                        background: Some(palette.surface_elevated.into()),
+                        border: iced::Border {
+                            radius: card_radius.into(),
+                            ..Default::default()
+                        },
+                        shadow: if lifted {
+                            iced::Shadow {
+                                color: iced::Color::from_rgba(
+                                    0.0,
+                                    0.0,
+                                    0.0,
+                                    if lit { 0.16 } else { 0.42 },
+                                ),
+                                offset: iced::Vector::new(0.0, 1.0),
+                                blur_radius: 6.0,
+                            }
+                        } else {
+                            iced::Shadow::default()
+                        },
                         ..Default::default()
-                    },
-                    shadow: if lifted {
-                        iced::Shadow {
-                            color: iced::Color::from_rgba(
-                                0.0,
-                                0.0,
-                                0.0,
-                                if lit { 0.16 } else { 0.42 },
-                            ),
-                            offset: iced::Vector::new(0.0, 1.0),
-                            blur_radius: 6.0,
-                        }
-                    } else {
-                        iced::Shadow::default()
-                    },
-                    ..Default::default()
+                    }
                 }
-            }
-        });
+            });
         let id = state.window.unwrap_or(self.panel);
         let epoch = state.epoch;
         let card = iced::widget::mouse_area(card).on_press(message(Message::FocusInput));

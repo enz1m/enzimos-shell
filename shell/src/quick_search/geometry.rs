@@ -57,8 +57,11 @@ impl Shell {
     /// and composition views use. A fixed 520 held six rows whatever the
     /// Rows setting said.
     pub(super) fn search_height_limit(&self) -> f32 {
+        self.search_height_limit_with(self.search_chrome())
+    }
+    fn search_height_limit_with(&self, chrome: f32) -> f32 {
         let row = row_pitch(self.search.preferences.compact);
-        (self.search_chrome()
+        (chrome
             + row * f32::from(self.search.preferences.rows)
             + 2.0 * results::GROUP_HEADING_HEIGHT)
             .max(520.0)
@@ -106,11 +109,22 @@ impl Shell {
     }
     pub(super) fn search_window_extent(&self) -> iced::Size {
         let mut size = self.search_surface_size();
-        size.height = self.search.geometry.as_ref().map_or(520.0, |geometry| {
-            geometry.0.height.min(self.search_height_limit())
-        }) + self.search.island.map_or(0.0, |island| {
-            island.attachment.join(f32::from(self.metrics.radius))
-        });
+        // The window keeps room for the full app list under the recommended apps whether or
+        // not it is open; the card paints and takes input only over its own height. Resizing
+        // the window as All apps opened and closed let the compositor re-centre it for a frame.
+        let limit = if self.search.preferences.shows(Category::Apps) {
+            self.search_height_limit_with(SEARCH_CHROME + RECOMMENDED_HEIGHT)
+        } else {
+            self.search_height_limit()
+        };
+        size.height = self
+            .search
+            .geometry
+            .as_ref()
+            .map_or(520.0, |geometry| geometry.0.height.min(limit))
+            + self.search.island.map_or(0.0, |island| {
+                island.attachment.join(f32::from(self.metrics.radius))
+            });
         // A floating card's window keeps room around it for its shadow.
         if let Some(island) = self.search.island {
             let m = enzui_shell::reveal::margins(island.bottom, island.attachment);
@@ -163,7 +177,7 @@ impl Shell {
         {
             return Task::none();
         }
-        let Some(_) = self.search.window else {
+        let Some(id) = self.search.window else {
             return Task::none();
         };
         let Some((_, output)) = &self.search.geometry else {
@@ -174,6 +188,25 @@ impl Shell {
             return Task::none();
         }
         let output = output.clone();
+        // `resize_chrome` pinned the old size as both limits. Hyprland clamps a floating window
+        // to its limits on every commit and re-centres it, so the compositor's resize would
+        // move the card by half the change until `Resized` pins the new size. Admit both sizes
+        // for the duration; the larger limit goes first so the minimum never exceeds it.
+        let old = self.search.surface_size.unwrap_or(size);
+        let limits = window::set_max_size(
+            id,
+            Some(iced::Size::new(
+                old.width.max(size.width),
+                old.height.max(size.height),
+            )),
+        )
+        .chain(window::set_min_size(
+            id,
+            Some(iced::Size::new(
+                old.width.min(size.width),
+                old.height.min(size.height),
+            )),
+        ));
         self.search.surface_size = Some(size);
         self.search.layout_busy = true;
         self.search.layout_revision = self.search.layout_revision.saturating_add(1);
@@ -181,14 +214,14 @@ impl Shell {
         let epoch = self.search.epoch;
         let compositor = self.compositor.clone();
         let placement = self.search.island;
-        perform(
+        limits.chain(perform(
             async move {
                 compositor
                     .resize_search(&output, size, epoch, placement)
                     .await
             },
             move |result| Message::Resized(epoch, revision, result),
-        )
+        ))
     }
     pub(super) fn search_capacity(&self) -> usize {
         let mut size = self

@@ -51,7 +51,12 @@ function hl.dispatch(action)
         if args.workspace then args.window.workspace={id=type(args.workspace)=="number" and args.workspace or nil,name=args.workspace}
         else args.window.at={x=args.x,y=args.y} end
     end
-    if action.name=="resize" then args.window.size={x=args.x,y=args.y} end
+    -- Like the compositor's floating layout, which resizes a window about its centre.
+    if action.name=="resize" then
+        local w=args.window
+        w.at={x=w.at.x-(args.x-w.size.x)/2,y=w.at.y-(args.y-w.size.y)/2}
+        w.size={x=args.x,y=args.y}
+    end
     return {ok=true}
 end
 dofile(arg[0]:match("^(.*)/").."/../config/output-size.lua")
@@ -168,21 +173,31 @@ assert(enzui_search_present(42,monitor.name,620,90,27,island).ok)
 assert(search.at.x==12 and search.at.y==42 and active==search)
 -- Under a top bar the anchor keeps the card's top at the bar while it
 -- resizes (by its bottom edge a tall card jumped over the bar for a frame).
-for _,height in ipairs({90,600,90}) do
-    before=#actions
-    assert(enzui_search_resize(42,monitor.name,620,height,27,island).ok)
-    local anchor=actions[before+1]
-    assert(anchor.name=="anchor" and anchor.at_bottom==false and anchor.top==42)
+-- Neither the resize's re-centring nor any later frame may move that edge,
+-- whether the card grows or shrinks.
+for _,frame in ipairs({false,true}) do
+    island.frame=frame;island.bottom=false
+    for _,height in ipairs({90,600,90,684,598}) do
+        before=#actions
+        assert(enzui_search_resize(42,monitor.name,620,height,27,island).ok)
+        local anchor=actions[before+1]
+        assert(anchor.name=="anchor" and anchor.at_bottom==false and anchor.top==42)
+        assert(actions[before+2].name=="resize" and actions[before+3].name=="move")
+        assert(search.at.x==12 and search.at.y==42 and search.size.y==height)
+    end
+    island.bottom=true
+    for _,height in ipairs({90,220,600,90}) do
+        local shown=math.min(search.size.y,height)
+        before=#actions
+        assert(enzui_search_resize(42,monitor.name,620,height,27,island).ok)
+        assert(actions[before+1].name=="anchor" and actions[before+2].name=="resize")
+        assert(actions[before+1].bottom==858 and actions[before+1].at_bottom==true)
+        -- Until the new buffer lands the old picture is shown, so its bottom
+        -- stays on the bar's edge: the old height while growing.
+        assert(search.at.x==12 and search.at.y+shown==858 and search.size.y==height)
+    end
 end
-island.bottom=true
-for _,height in ipairs({90,220,600,90}) do
-    before=#actions
-    assert(enzui_search_resize(42,monitor.name,620,height,27,island).ok)
-    assert(actions[before+1].name=="anchor" and actions[before+2].name=="resize")
-    -- The scene owns an anchored panel's position, so the pinned bottom edge
-    -- is the anchor's, not a Lua move the policy deliberately skips.
-    assert(actions[before+1].bottom==858 and actions[before+1].at_bottom==true)
-end
+island.frame=nil;island.bottom=true
 before=#actions;island.x=0
 assert(not pcall(enzui_search_resize,42,monitor.name,620,90,27,island) and #actions==before)
 island.x=12;island.bar_end=math.huge

@@ -3,6 +3,20 @@ enzui_raw_bind = enzui_raw_bind or hl.bind
 enzui_raw_unbind = enzui_raw_unbind or hl.unbind
 enzui_shortcut_map = enzui_shortcut_map or {}
 enzui_shortcut_records = {}
+local terminal_action, terminal_alias
+
+local function bind_terminal_alias()
+    if not terminal_action then return end
+    for _, chord in pairs(enzui_shortcut_map) do
+        if chord:upper():gsub("%s+", "") == "SUPER+T" then return end
+    end
+    terminal_alias = enzui_raw_bind("SUPER + T", terminal_action)
+end
+
+function enzui_bind_terminal_alias(action)
+    terminal_action = action
+    bind_terminal_alias()
+end
 
 local function chosen(key)
     return enzui_shortcut_map[key] or key
@@ -43,6 +57,10 @@ hl.unbind = function(key)
 end
 
 function enzui_set_shortcuts(map)
+    if terminal_alias then
+        terminal_alias:remove()
+        terminal_alias = nil
+    end
     local moved = {}
     for record in pairs(enzui_shortcut_records) do
         if (map[record.key] or record.key) ~= chosen(record.key) then
@@ -55,6 +73,7 @@ function enzui_set_shortcuts(map)
         record.handle = enzui_raw_bind(chosen(record.key), record.action, record.options)
         if record.handle and record.enabled == false then record.handle:set_enabled(false) end
     end
+    bind_terminal_alias()
     return "ok"
 end
 

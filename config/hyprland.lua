@@ -102,7 +102,9 @@ hl.window_rule({
 
 -- Report presses without consuming them so Search can detect outside clicks.
 hl.bind("mouse:272", hl.dsp.event("enzui-command:pointer-press"), { non_consuming = true, ignore_mods = true })
-hl.bind(mod .. " + Return", hl.dsp.exec_cmd('exec "${ENZUI_TERMINAL:-foot}"'))
+local open_terminal = hl.dsp.exec_cmd('exec "${ENZUI_TERMINAL:-foot}"')
+hl.bind(mod .. " + Return", open_terminal)
+enzui_bind_terminal_alias(open_terminal)
 -- Super+Alt+S starts or stops the Orca screen reader, also while locked.
 hl.bind(mod .. " + ALT + S", hl.dsp.exec_cmd('pkill -u "$(id -u)" -x orca || exec orca --replace'), { locked = true })
 for i = 1, 9 do

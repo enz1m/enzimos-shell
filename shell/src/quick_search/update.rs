@@ -656,7 +656,12 @@ impl Shell {
                         ),
                     target => {
                         self.search.action_busy = true;
-                        self.search.feedback = Some(tr("shell-opening").into());
+                        if !matches!(
+                            target,
+                            Target::App(_) | Target::Window(_) | Target::Settings(_)
+                        ) {
+                            self.search.feedback = Some(tr("shell-opening").into());
+                        }
                         let compositor = self.compositor.clone();
                         let root = self.root.clone();
                         let epoch = self.search.epoch;

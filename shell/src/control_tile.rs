@@ -726,50 +726,20 @@ pub fn view<'a, Message: Clone + 'a>(
         && disclosure.is_none()
         && let Some(value) = value
     {
-        let icon = button(
-            enz_icon(info.icon).size(20.0).into_element(),
-            primary,
-            semantics,
-            format!("control-{}-primary", info.action.key()),
-            &theme,
-            false,
+        // Styled as the volume row: the icon, the pill and its percentage.
+        let icon = enzui_widgets::enz_toolbar_icon(info.icon, primary)
+            .aria_label(info.title)
+            .id(format!("control-{}-primary", info.action.key()).into())
+            .enabled(enabled)
+            .into_element();
+        let level = pill_level(
+            value,
+            info.title,
+            format!("control-{}-value", info.action.key()),
             enabled,
-            radius.into(),
-            iced::Padding::from([8.0, 6.0]),
+            &p,
         );
-        let slider = enz_slider(
-            f32::from(value.minimum)..=100.0,
-            f32::from(value.value),
-            value.change,
-        )
-        .step(1.0)
-        .label(info.title)
-        .show_value(true)
-        .value_format(|value| format!("{value:.0}%"))
-        .enabled(enabled)
-        .id(format!("control-{}-value", info.action.key()).into())
-        .into_element();
-        return container(
-            row![
-                container(icon).width(32).height(32),
-                container(slider).width(Length::Fill)
-            ]
-            .spacing(8)
-            .align_y(iced::Alignment::Center),
-        )
-        .padding([4, 10])
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .center_y(Length::Fill)
-        .style(move |_| container::Style {
-            background: Some(p.surface_alt.into()),
-            border: iced::Border {
-                radius: radius.into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        })
-        .into();
+        return value_row(icon, level, None, &p, height);
     }
     let icon = enz_icon(info.icon).size(18.0).tint(ink).into_element();
     let content: Element<'a, Message> = if compact {
@@ -935,37 +905,13 @@ fn volume_row<'a, Message: Clone + 'a>(
         .enabled(enabled)
         .into_element();
     let level: Element<'a, Message> = if let Some(value) = value {
-        let percent = value.value;
-        row![
-            container(
-                // A thick pill whose fill is the level, with a flush round
-                // knob: readable at a glance and easy to grab.
-                enz_slider(0.0..=100.0, f32::from(value.value), value.change)
-                    .step(1.0)
-                    .step_marks(false)
-                    .aria_label(tr("shell-output-volume"))
-                    .show_value(false)
-                    .track_height(20.0)
-                    .thumb_width(20.0)
-                    .thumb_height(20.0)
-                    .tokens(pill_slider(&p))
-                    .enabled(enabled)
-                    .id("control-volume-value".into())
-                    .into_element()
-            )
-            .width(Length::Fill),
-            container(
-                enz_text(format!("{percent}%"))
-                    .size_px(enzui_theme::text_scale::effective().apply_px(13.0))
-                    .color(p.text_muted)
-                    .into_element()
-            )
-            .width(40)
-            .align_x(iced::Alignment::End),
-        ]
-        .spacing(10)
-        .align_y(iced::Alignment::Center)
-        .into()
+        pill_level(
+            value,
+            tr("shell-output-volume"),
+            "control-volume-value".to_owned(),
+            enabled,
+            &p,
+        )
     } else {
         enz_text(tr("shell-no-audio-output"))
             .single_line_elided()
@@ -991,30 +937,89 @@ fn volume_row<'a, Message: Clone + 'a>(
     } else {
         iced::widget::space().width(0).into()
     };
-    let radius = (height / 2.0).min(28.0);
-    container(
-        row![
-            container(mute).width(32),
-            container(level).width(Length::Fill),
-            container(arrow).width(32)
-        ]
-        .spacing(6)
-        .align_y(iced::Alignment::Center),
-    )
-    .padding([0, 8])
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .center_y(Length::Fill)
-    .style(move |_| container::Style {
-        background: Some(p.surface_alt.into()),
-        border: iced::Border {
-            radius: radius.into(),
-            ..Default::default()
-        },
-        text_color: Some(p.text),
-        ..Default::default()
-    })
+    value_row(mute, level, Some(arrow), &p, height)
+}
+
+/// A level as the volume shows it: a thick pill whose fill is the level, with
+/// a flush round knob, and the percentage beside it.
+fn pill_level<'a, Message: Clone + 'a>(
+    value: ValueControl<'a, Message>,
+    label: &str,
+    id: String,
+    enabled: bool,
+    p: &enzui_theme::Palette,
+) -> Element<'a, Message> {
+    let percent = value.value;
+    row![
+        container(
+            enz_slider(
+                f32::from(value.minimum)..=100.0,
+                f32::from(value.value),
+                value.change
+            )
+            .step(1.0)
+            .step_marks(false)
+            .aria_label(label)
+            .show_value(false)
+            .track_height(20.0)
+            .thumb_width(20.0)
+            .thumb_height(20.0)
+            .tokens(pill_slider(p))
+            .enabled(enabled)
+            .id(id.into())
+            .into_element()
+        )
+        .width(Length::Fill),
+        container(
+            enz_text(format!("{percent}%"))
+                .size_px(enzui_theme::text_scale::effective().apply_px(13.0))
+                .color(p.text_muted)
+                .into_element()
+        )
+        .width(40)
+        .align_x(iced::Alignment::End),
+    ]
+    .spacing(10)
+    .align_y(iced::Alignment::Center)
     .into()
+}
+
+/// The volume row's frame around an icon, a level and an optional trailing
+/// control.
+fn value_row<'a, Message: 'a>(
+    icon: Element<'a, Message>,
+    level: Element<'a, Message>,
+    trailing: Option<Element<'a, Message>>,
+    p: &enzui_theme::Palette,
+    height: f32,
+) -> Element<'a, Message> {
+    let radius = (height / 2.0).min(28.0);
+    let background = p.surface_alt;
+    let text = p.text;
+    let mut content = row![
+        container(icon).width(32),
+        container(level).width(Length::Fill)
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center);
+    if let Some(trailing) = trailing {
+        content = content.push(container(trailing).width(32));
+    }
+    container(content)
+        .padding([0, 8])
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center_y(Length::Fill)
+        .style(move |_| container::Style {
+            background: Some(background.into()),
+            border: iced::Border {
+                radius: radius.into(),
+                ..Default::default()
+            },
+            text_color: Some(text),
+            ..Default::default()
+        })
+        .into()
 }
 
 /// The label colour for a tile of colour `bg`: the theme's ink unless the

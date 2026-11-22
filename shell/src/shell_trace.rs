@@ -53,6 +53,8 @@ impl Message {
             Self::ToggleOverview => "ToggleOverview",
             Self::OverviewHidden(..) => "OverviewHidden",
             Self::OverviewAnchor(..) => "OverviewAnchor",
+            Self::OverviewFrame(..) => "OverviewFrame",
+            Self::OverviewRevealCheck(..) => "OverviewRevealCheck",
             Self::LauncherAnchor(..) => "LauncherAnchor",
             Self::LauncherPrepared(..) => "LauncherPrepared",
             Self::LauncherHidden(..) => "LauncherHidden",

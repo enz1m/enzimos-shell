@@ -129,11 +129,12 @@ impl Shell {
             {
                 self.overview_started = true;
                 self.overview_visible = true;
-                if let Some(desktops) = &self.desktops {
+                let focus = if let Some(desktops) = &self.desktops {
                     iced::widget::operation::focus(format!("desktop-card-{}", desktops.active))
                 } else {
                     Task::none()
-                }
+                };
+                Task::batch([focus, self.watch_overview_reveal()])
             }
             Message::Window(id, window::Event::CloseRequested) if Some(id) == self.overview => {
                 self.close_overview()

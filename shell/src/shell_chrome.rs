@@ -304,11 +304,14 @@ impl Shell {
                     self.overview_opening = true;
                     self.overview_generation = self.overview_generation.wrapping_add(1);
                     let generation = self.overview_generation;
-                    // Window contents change without compositor events: the
-                    // overview opens on the previews it has and takes fresh
-                    // copies as they arrive.
+                    // Window contents can change without compositor events.
                     self.preview_dirty = true;
-                    let previews = self.start_previews();
+                    let previews = if self.preview_cache_current() {
+                        self.defer_previews_to_reveal();
+                        Task::none()
+                    } else {
+                        self.start_previews()
+                    };
                     Task::batch([
                         previews,
                         self.close_controls_for_panel(),
@@ -359,6 +362,17 @@ impl Shell {
                 } else {
                     Task::none()
                 }
+            }
+            Message::OverviewFrame(id) => {
+                self.quiet = true;
+                if self.overview == Some(id) && self.preview_after_reveal {
+                    self.overview_frame_at = Some(Instant::now());
+                }
+                Task::none()
+            }
+            Message::OverviewRevealCheck(generation) => {
+                self.quiet = true;
+                self.check_overview_reveal(generation)
             }
             Message::PreviewsReady(generation, _, _) if generation != self.preview_generation => {
                 Task::none()

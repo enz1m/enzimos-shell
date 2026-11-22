@@ -90,6 +90,8 @@ pub(super) enum Message {
     /// The windows settled since previews were last wanted (see
     /// `start_previews`); carries the wait it ends.
     PreviewsDue(u64),
+    OverviewFrame(window::Id),
+    OverviewRevealCheck(u64),
     SelectDesktop(u32),
     FrameStopped(Result<(), String>),
     OutputsChecked(enzui_shell::compositor::OutputChange),

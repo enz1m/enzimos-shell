@@ -298,6 +298,9 @@ struct Shell {
     /// Counts waits for windows to settle before previews are taken.
     preview_wait: u64,
     preview_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    preview_after_reveal: bool,
+    overview_reveal_at: Option<Instant>,
+    overview_frame_at: Option<Instant>,
 }
 
 impl Shell {
@@ -544,6 +547,9 @@ impl Shell {
             preview_generation: 0,
             preview_busy: false,
             preview_wait: 0,
+            preview_after_reveal: false,
+            overview_reveal_at: None,
+            overview_frame_at: None,
             preview_cancel: None,
         };
         // Without a settings file the default style is the one to show.
@@ -998,6 +1004,8 @@ impl Shell {
             | Message::OverviewAnchor(..)
             | Message::PreviewsReady(..)
             | Message::PreviewsDue(..)
+            | Message::OverviewFrame(..)
+            | Message::OverviewRevealCheck(..)
             | Message::OverviewPrepared(..)
             | Message::SelectDesktop(..)
             | Message::Tick

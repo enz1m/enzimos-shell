@@ -25,6 +25,7 @@ impl Shell {
     pub(crate) fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
             self.tick_subscription(),
+            self.overview_frame_subscription(),
             if self.control_frames > 0 {
                 iced::event::listen_raw(|event, _, id| match event {
                     iced::Event::Window(window::Event::RedrawRequested(_)) => {

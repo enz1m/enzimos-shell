@@ -273,6 +273,11 @@ const SECTIONS: &[Section] = &[
         route: "power/memory",
     },
     Section {
+        category: Category::Power,
+        label: "shell-tmp-storage-heading",
+        route: "power/temporary_storage",
+    },
+    Section {
         category: Category::Input,
         label: "shell-mouse",
         route: "windows/pointer_speed",

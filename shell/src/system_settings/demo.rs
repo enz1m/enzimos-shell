@@ -247,6 +247,10 @@ fn initial() -> State {
                 ],
                 risky: vec!["suspend".into(), "ignore".into()],
             }),
+            tmp_storage: Backed::Ready(TemporaryStorage {
+                active: "ram".into(),
+                configured: Some("ram".into()),
+            }),
             memory: Backed::Ready(MemoryPolicy {
                 mode: "balanced".into(),
                 available: vec!["balanced".into(), "responsive".into(), "off".into()],

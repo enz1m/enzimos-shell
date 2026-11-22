@@ -1213,6 +1213,13 @@ pub static ENTRIES: &[Entry] = &[
         "shell-memory-ram-oom-out-of-memory-freeze-earlyoom-close-app-responsive-swap"
     ),
     entry!(
+        Power,
+        "power/temporary_storage",
+        "shell-tmp-storage-title",
+        "shell-tmp-storage-heading",
+        "shell-tmp-storage-keywords"
+    ),
+    entry!(
         Input,
         "windows/pointer_speed",
         "shell-pointer-speed",

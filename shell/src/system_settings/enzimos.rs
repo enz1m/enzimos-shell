@@ -411,6 +411,23 @@ pub fn critical_battery(value: &Value) -> Option<super::CriticalBattery> {
     })
 }
 
+pub(super) fn tmp_storage(value: &Value) -> Option<super::TemporaryStorage> {
+    let mode = |value: &Value| {
+        value
+            .as_str()
+            .filter(|mode| matches!(*mode, "ram" | "disk"))
+            .map(str::to_owned)
+    };
+    let configured = match value.get("configured")? {
+        Value::Null => None,
+        value => Some(mode(value)?),
+    };
+    Some(super::TemporaryStorage {
+        active: mode(&value["active"])?,
+        configured,
+    })
+}
+
 /// `Query memory-policy`: only the fixed preset names are kept.
 pub fn memory_policy(value: &Value) -> Option<super::MemoryPolicy> {
     let known = |mode: &str| super::MEMORY_MODES.contains(&mode);

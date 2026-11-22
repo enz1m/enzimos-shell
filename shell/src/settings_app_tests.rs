@@ -68,7 +68,10 @@ fn settings_app_behaviour() {
                 // window has no system snapshot.
                 let waits = matches!(
                     section.route,
-                    "phone/sharing" | "power/memory" | "updates/generations"
+                    "phone/sharing"
+                        | "power/memory"
+                        | "power/temporary_storage"
+                        | "updates/generations"
                 ) || section.route.starts_with("backups/");
                 if !waits && !app.built_sections.borrow().contains(section.route) {
                     missing.push(section.route);

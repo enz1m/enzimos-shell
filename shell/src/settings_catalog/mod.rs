@@ -208,6 +208,7 @@ pub fn icon(route: &str) -> Option<&'static str> {
         "power/lid" => "laptop",
         "power/critical" => "battery-warning",
         "power/memory" => "memory-stick",
+        "power/temporary_storage" => "hard-drive",
         "power/game_priority" => "chevrons-up",
         "controllers/notify" => "bell",
         "datetime/clock_24h" => "clock-3",

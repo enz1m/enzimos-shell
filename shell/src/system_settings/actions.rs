@@ -502,6 +502,22 @@ impl SystemSettings {
                     .map(drop)
                     .map_err(|r| r.message())
             }
+            Request::TemporaryStorage(mode) => {
+                let backend = self
+                    .enzimos()
+                    .await
+                    .ok_or_else(|| enzimos::Refusal::Unavailable.message())?;
+                backend
+                    .run(
+                        33,
+                        "tmp-storage-set",
+                        Some(serde_json::json!({"mode": mode})),
+                        Duration::from_secs(180),
+                    )
+                    .await
+                    .map(drop)
+                    .map_err(|r| r.message())
+            }
             Request::HomeHistory(on) => {
                 let backend = self
                     .enzimos()

@@ -171,7 +171,7 @@ pub fn features(route: &str) -> &'static [Feature] {
         "network/firewall" => &[Feature::Network, Feature::FirewallSwitch],
         "sound/output" | "sound/input" => &[Feature::AudioDevices],
         "power/mode" => &[Feature::PowerModes],
-        "power/critical" | "power/memory" => &[Feature::SystemService],
+        "power/critical" | "power/memory" | "power/temporary_storage" => &[Feature::SystemService],
         "power/game_mode" | "power/game_priority" | "controls/game_mode" => &[Feature::GameMode],
         "apps/background" => &[Feature::BackgroundApps],
         _ => match route.split('/').next().unwrap_or(route) {

@@ -333,6 +333,13 @@ pub struct Power {
     pub critical: Backed<CriticalBattery>,
     /// enzimOS: the memory exhaustion guard and whether it really runs.
     pub memory: Backed<MemoryPolicy>,
+    pub tmp_storage: Backed<TemporaryStorage>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TemporaryStorage {
+    pub active: String,
+    pub configured: Option<String>,
 }
 
 /// enzimOS `memory-policy`: the configured preset and the guard's actual

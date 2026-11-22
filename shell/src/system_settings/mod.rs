@@ -138,6 +138,7 @@ pub enum Request {
         mode: String,
         risk_acknowledged: bool,
     },
+    TemporaryStorage(String),
     AgentRevokeIdentity(String),
     AgentRevokePermission {
         agent: String,
@@ -235,7 +236,8 @@ impl Request {
                 | Self::HomeHistory(_)
                 | Self::BackupSchedule(_)
                 | Self::CriticalBattery { .. }
-                | Self::MemoryPolicy { .. },
+                | Self::MemoryPolicy { .. }
+                | Self::TemporaryStorage(_),
                 _,
             ) => std::mem::discriminant(self) == std::mem::discriminant(other),
             // One-off actions on different targets must all run.
@@ -505,6 +507,13 @@ impl Reading {
                 }),
                 Request::CriticalBattery { action, .. },
             ) => c.configured.clone_from(action),
+            (
+                Self::Power(Power {
+                    tmp_storage: Backed::Ready(storage),
+                    ..
+                }),
+                Request::TemporaryStorage(mode),
+            ) => storage.configured = Some(mode.clone()),
             _ => {}
         }
     }

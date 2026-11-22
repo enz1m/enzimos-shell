@@ -302,6 +302,7 @@ impl SettingsApp {
                 .into_element(),
         )
         .push(self.memory_card(power.as_ref()))
+        .push(self.tmp_storage_card(power.as_ref()))
     }
     fn game_mode_card<'a>(&'a self, power: Option<&Power>) -> Element<'a, Parent> {
         use enzui_shell::game_mode::preferences::OptionKey;
@@ -502,8 +503,8 @@ impl SettingsApp {
         rows = rows.push(match &policy.protected_names {
             Some(_) if desktop_kept => self.info_row(
                 "monitor-check",
-                tr("shell-the-desktop-is-always-kept-running"),
-                tr("shell-only-apps-are-ever-closed-never-the-desktop-or-its-system-helpers"),
+                tr("shell-memory-guard-protects-desktop"),
+                tr("shell-memory-guard-protects-system-processes"),
             ),
             Some(_) => self.info_row(
                 "shield-alert",
@@ -519,6 +520,70 @@ impl SettingsApp {
         self.section_card_for(route, rows)
             .title(tr("shell-memory-protection"))
             .description(tr("shell-when-memory-runs-out-an-app-may-be-closed-so-the-desktop-stays-usable-unsave"))
+            .into_element()
+    }
+
+    fn tmp_storage_card<'a>(&'a self, power: Option<&Power>) -> Element<'a, Parent> {
+        let route = "power/temporary_storage";
+        let rows = match power.map(|power| &power.tmp_storage) {
+            Some(Backed::Ready(storage)) => {
+                let label = |mode: &str| {
+                    if mode == "ram" {
+                        tr("shell-tmp-storage-memory")
+                    } else {
+                        tr("shell-tmp-storage-disk")
+                    }
+                };
+                let busy =
+                    self.busy_with(|request| matches!(request, Request::TemporaryStorage(_)));
+                let row = if let Some(configured) = &storage.configured {
+                    let detail = if storage.active != *configured {
+                        tr!("shell-tmp-storage-pending", "backend" => label(&storage.active))
+                    } else {
+                        tr("shell-tmp-storage-description").to_owned()
+                    };
+                    crate::settings_app::settings_row(tr("shell-tmp-storage-title"))
+                        .icon("hard-drive")
+                        .id_prefix("tmp-storage")
+                        .subtitle(detail)
+                        .value_menu(
+                            label(configured).to_owned(),
+                            self.menu.as_deref() == Some(route),
+                            Parent::Menu(route.into(), true),
+                            Parent::Menu(route.into(), false),
+                            ["ram", "disk"]
+                                .into_iter()
+                                .map(|mode| {
+                                    (
+                                        label(mode).to_owned(),
+                                        Self::request(Request::TemporaryStorage(mode.into())),
+                                    )
+                                })
+                                .collect(),
+                        )
+                        .enabled(self.system_writes() && !busy)
+                        .into_element()
+                } else {
+                    self.info_row(
+                        "hard-drive",
+                        label(&storage.active),
+                        tr("shell-tmp-storage-custom"),
+                    )
+                };
+                column![self.mark_setting(route, row)]
+            }
+            Some(Backed::Refused(error)) => column![self.mark_setting(
+                route,
+                self.info_row(
+                    "hard-drive",
+                    tr("shell-tmp-storage-unavailable"),
+                    error.clone()
+                ),
+            )],
+            _ => return self.mark_control_anchor(route, Space::new()),
+        };
+        self.section_card_for(route, rows)
+            .title(tr("shell-tmp-storage-heading"))
             .into_element()
     }
 

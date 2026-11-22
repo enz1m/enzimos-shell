@@ -477,6 +477,19 @@ impl SystemSettings {
                 Err(refusal) => Backed::Refused(refusal.message()),
             },
         };
+        let tmp_storage = match self.enzimos().await {
+            None => Backed::Missing,
+            Some(backend) => match backend.query("tmp-storage").await {
+                Ok(value) => enzimos::tmp_storage(&value).map_or_else(
+                    || Backed::Refused(enzimos::Refusal::Invalid.message()),
+                    Backed::Ready,
+                ),
+                Err(enzimos::Refusal::Code(code)) if code == "operation-unavailable" => {
+                    Backed::Missing
+                }
+                Err(refusal) => Backed::Refused(refusal.message()),
+            },
+        };
         let (game_mode, game_preferences) = tokio::join!(
             crate::game_mode::read(),
             tokio::task::spawn_blocking(crate::game_mode::preferences::read)
@@ -487,6 +500,7 @@ impl SystemSettings {
             profiles,
             critical,
             memory,
+            tmp_storage,
             game_mode,
             game_preferences: game_preferences.unwrap_or_default(),
         }

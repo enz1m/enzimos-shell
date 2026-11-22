@@ -16,14 +16,14 @@ path = "src/bin/enzui-greeter-preview.rs"
 required-features = ["greeter-preview"]
 
 [dependencies]
-enzui-core = { git = "https://github.com/enz1m/enzui.git", rev = "6130b31dab1c154272b26974dcd360d38b493ed6" }
-enzui-theme = { git = "https://github.com/enz1m/enzui.git", rev = "6130b31dab1c154272b26974dcd360d38b493ed6" }
+enzui-core = { git = "https://github.com/enz1m/enzui.git", rev = "29840ef7fb455fc0eb61113d5a9253bf1c018be7" }
+enzui-theme = { git = "https://github.com/enz1m/enzui.git", rev = "29840ef7fb455fc0eb61113d5a9253bf1c018be7" }
 enzui-shell = { path = "../shell" }
-enzui-widgets = { git = "https://github.com/enz1m/enzui.git", rev = "6130b31dab1c154272b26974dcd360d38b493ed6" }
-iced = { git = "https://github.com/enz1m/enzim-iced.git", rev = "94eb56df238b88391b375b34672b9373e3ed8e8f", features = ["wgpu", "tiny-skia", "crisp", "web-colors", "thread-pool", "linux-theme-detection", "wayland", "tokio", "advanced", "image-without-codecs"], default-features = false }
-iced_runtime = { git = "https://github.com/enz1m/enzim-iced.git", rev = "94eb56df238b88391b375b34672b9373e3ed8e8f" }
-iced_wgpu = { git = "https://github.com/enz1m/enzim-iced.git", rev = "94eb56df238b88391b375b34672b9373e3ed8e8f" }
-iced_tiny_skia = { git = "https://github.com/enz1m/enzim-iced.git", rev = "94eb56df238b88391b375b34672b9373e3ed8e8f", features = ["image"] }
+enzui-widgets = { git = "https://github.com/enz1m/enzui.git", rev = "29840ef7fb455fc0eb61113d5a9253bf1c018be7" }
+iced = { git = "https://github.com/enz1m/enzim-iced.git", rev = "38d9e6c1a2ac8b5f87b902a9a6a71c4c258caffb", features = ["wgpu", "tiny-skia", "crisp", "web-colors", "thread-pool", "linux-theme-detection", "wayland", "tokio", "advanced", "image-without-codecs"], default-features = false }
+iced_runtime = { git = "https://github.com/enz1m/enzim-iced.git", rev = "38d9e6c1a2ac8b5f87b902a9a6a71c4c258caffb" }
+iced_wgpu = { git = "https://github.com/enz1m/enzim-iced.git", rev = "38d9e6c1a2ac8b5f87b902a9a6a71c4c258caffb" }
+iced_tiny_skia = { git = "https://github.com/enz1m/enzim-iced.git", rev = "38d9e6c1a2ac8b5f87b902a9a6a71c4c258caffb", features = ["image"] }
 tiny-skia = "0.12"
 resvg = { version = "=0.45.1", default-features = false }
 serde_json = "1"

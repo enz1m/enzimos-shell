@@ -673,8 +673,8 @@ static int filterReduction(float sigma) { return sigma >= 8.F ? 4 : sigma >= 4.F
 // at full resolution, or into `small` at a reduced one. A reduced result is
 // exactly `gl.source`'s size divided down, so the material shader, which
 // addresses every texture by the source's normalized coordinates, reads both
-// alike.
-static GLuint filterCopy(Target& full, Target& small, int cw, int ch, float sigma) {
+// alike. Reset `reduced` when writing `gl.source`.
+static GLuint filterCopy(Target& full, Target& small, int cw, int ch, float sigma, int& reduced) {
     const int reduction = filterReduction(sigma);
     if (reduction == 1) {
         full.ensure(cw, ch);
@@ -690,9 +690,12 @@ static GLuint filterCopy(Target& full, Target& small, int cw, int ch, float sigm
         Target& next = *levels[level];
         next.ensureExact(from->w / 2, from->h / 2);
         const int nw = (w + 1) / 2, nh = (h + 1) / 2;
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, from->framebuffer);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, next.framebuffer);
-        glBlitFramebuffer(0, 0, nw * 2, nh * 2, 0, 0, nw, nh, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+        if (level >= reduced) {
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, from->framebuffer);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, next.framebuffer);
+            glBlitFramebuffer(0, 0, nw * 2, nh * 2, 0, 0, nw, nh, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+            reduced = level + 1;
+        }
         from = &next;
         w = nw;
         h = nh;
@@ -1216,12 +1219,13 @@ class GlassPass final : public IPassElement {
                     glBlitFramebuffer(cx0, cy0, cx1, cy1, 0, 0, cw, ch, GL_COLOR_BUFFER_BIT, GL_NEAREST);
                 glDisable(GL_BLEND);
 
+                int reduced = 0;
                 GLuint blurredTexture = gl.source.texture;
                 if (filters(sigma))
-                    blurredTexture = filterCopy(gl.blurred, gl.smallBlurred, cw, ch, sigma);
+                    blurredTexture = filterCopy(gl.blurred, gl.smallBlurred, cw, ch, sigma, reduced);
                 GLuint diffusedTexture = blurredTexture;
                 if (const auto spill = diffusionSigma(r); spill && filters(*spill * scale))
-                    diffusedTexture = filterCopy(gl.diffused, gl.smallDiffused, cw, ch, *spill * scale);
+                    diffusedTexture = filterCopy(gl.diffused, gl.smallDiffused, cw, ch, *spill * scale, reduced);
 
                 const auto onFrame = block(0, 0, fbw, fbh, cx0, cy0);
                 upload(gl.materialBlock, 4, onFrame.data(), onFrame.size());

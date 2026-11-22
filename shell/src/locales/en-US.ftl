@@ -2422,6 +2422,7 @@ shell-finish-the-app-s-dialog-before-hiding-it = Finish the app's dialog before 
 shell-app-returned-to-the-desktop-for-an-additional-window = App returned to the desktop for an additional window
 shell-app-restoration-needs-retrying-right-click-its-icon = App restoration needs retrying; right-click its icon
 shell-this-window-cannot-be-pinned-dialog-fullscreen-group-or-app-limit = This window cannot be pinned (dialog, fullscreen, group or app limit)
+shell-sidebar-window-size-limits = This window’s size limits don’t fit the sidebar
 shell-drag-an-application-window-here-to-pin-it = Drag an application window here to pin it
 shell-shared-across-desktops = Shared across desktops
 shell-only-on-the-desktop-where-pinned = Only on the desktop where pinned

@@ -481,6 +481,25 @@ print("Pane inset: all radii and selected canvases/edges contain square app buff
 phase="open";enzui_sidebar_tick()
 assert(enzui_sidebar_unpin(retained[1].id,false).ok);phase="closed";enzui_sidebar_tick()
 phase="restored";enzui_sidebar_tick();assert(#enzui_sidebar.entries==0)
+local limits={min_w=500,min_h=160,max_w=900,max_h=580}
+native.size_limits=function(addr,pid)assert(addr==app.address and pid==888);return limits end
+assert(enzui_sidebar_configure("TEST","right","top",888,floating).ok)
+assert(enzui_sidebar_pin_window(app).ok);id=enzui_sidebar.entries[1].id
+output.width=500
+assert(not enzui_sidebar_toggle(id).ok and enzui_sidebar.error=="size-limits" and app.workspace.id==nil)
+output.width=1440
+assert(enzui_sidebar_toggle(id).ok)
+local px,py,pw,ph=pane_bounds()
+assert(app.size.x==500 and app.size.y==580)
+assert(app.at.x==px+prepared_inset and app.at.y==py+prepared_inset)
+assert(pw==500+2*prepared_inset and ph==580+2*prepared_inset)
+phase="open";enzui_sidebar_tick()
+assert(enzui_sidebar_unpin(id,false).ok);phase="closed";enzui_sidebar_tick()
+phase="restored";enzui_sidebar_tick();assert(#enzui_sidebar.entries==0)
+output.width=500
+assert(not enzui_sidebar_pin_window(app).ok and enzui_sidebar.error=="size-limits")
+assert(app.workspace.id==1 and not app.pinned and #app.tags==0 and #enzui_sidebar.entries==0)
+native.size_limits=nil;enzui_sidebar_clear_error()
 output.width=800;output.height=480;app.at={x=200,y=100};app.size={x=360,y=240}
 floating.radius=16;floating.islands.radius=16
 assert(enzui_sidebar_configure("TEST","left","top",888,floating).ok)

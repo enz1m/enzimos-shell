@@ -262,6 +262,23 @@ static int clientResizeDisabled(lua_State *L) {
     lua_pushboolean(L, w && w->m_ruleApplicator && w->m_ruleApplicator->noXdgDrags().valueOrDefault());
     return 1;
 }
+static int sizeLimits(lua_State *L) {
+    auto w = find(L);
+    if (!ownerAlive() || !lua_isinteger(L, 2) || lua_tointeger(L, 2) != ownerPid ||
+        !supported(w) || w->m_monitor != output)
+        return 0;
+    const auto hints = w->backend().geometryHints(Desktop::View::eBackendState::BACKEND_STATE_CURRENT);
+    const auto clientMin = hints.minSize.value_or(Vector2D{});
+    const auto clientMax = hints.maxSize.value_or(Vector2D{8192, 8192});
+    const auto targetMin = w->minSize().value_or(Vector2D{});
+    const auto targetMax = w->maxSize().value_or(Vector2D{8192, 8192});
+    lua_createtable(L, 0, 4);
+    lua_pushnumber(L, std::ceil(std::max({80., clientMin.x, targetMin.x}))); lua_setfield(L, -2, "min_w");
+    lua_pushnumber(L, std::ceil(std::max({80., clientMin.y, targetMin.y}))); lua_setfield(L, -2, "min_h");
+    lua_pushnumber(L, std::floor(std::min({8192., clientMax.x, targetMax.x}))); lua_setfield(L, -2, "max_w");
+    lua_pushnumber(L, std::floor(std::min({8192., clientMax.y, targetMax.y}))); lua_setfield(L, -2, "max_h");
+    return 1;
+}
 static int supports(lua_State *L) {
     auto w = find(L);
     if (!ownerAlive() || !lua_isinteger(L, 2) || lua_tointeger(L, 2) != ownerPid || !supported(w) ||

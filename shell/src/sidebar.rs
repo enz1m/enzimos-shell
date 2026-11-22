@@ -206,6 +206,7 @@ impl Snapshot {
                         | "multi-window"
                         | "restore-needed"
                         | "ineligible"
+                        | "size-limits"
                         | "desktop-return"
                 )
             })
@@ -336,6 +337,7 @@ impl Snapshot {
             "multi-window" => tr("shell-finish-the-app-s-dialog-before-hiding-it"),
             "desktop-return" => tr("shell-app-returned-to-the-desktop-for-an-additional-window"),
             "restore-needed" => tr("shell-app-restoration-needs-retrying-right-click-its-icon"),
+            "size-limits" => tr("shell-sidebar-window-size-limits"),
             "ineligible" => {
                 tr("shell-this-window-cannot-be-pinned-dialog-fullscreen-group-or-app-limit")
             }

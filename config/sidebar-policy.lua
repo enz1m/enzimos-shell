@@ -51,16 +51,35 @@ local function monitor()
         if m.name==s.output and m.enabled and not m.is_mirror then return m end
     end
 end
-local function geometry()
+local function read_size_limits(w)
+    local api=scene()
+    if api and api.size_limits then return api.size_limits(w.address,s.owner) end
+end
+local function fit_pane(w,h,max_w,max_h,limits)
+    if limits then
+        local upper_w,upper_h=math.min(max_w,limits.max_w),math.min(max_h,limits.max_h)
+        if limits.min_w<=upper_w and limits.min_h<=upper_h then
+            return math.min(math.max(w,limits.min_w),upper_w),math.min(math.max(h,limits.min_h),upper_h),true
+        end
+    end
+    return math.min(w,max_w),math.min(h,max_h),not limits
+end
+local function geometry(entry,anchor)
     local m=monitor();if not m then return end
     local w,h=enzui_output_w(m),enzui_output_h(m)
     if w<320 or h<240 then return end
     local metrics=s.metrics or enzui_resolve_metrics()
     local entries=visible_entries()
+    local has_error=not entry and s.error~=""
     local desired={x=360,y=640}
-    for _,entry in ipairs(entries)do
-        if entry.id==s.positioned then desired=entry.pending_size or entry.pinned_size or s.saved_sizes[entry.stable_id] or desired;break end
+    if not entry then
+        anchor=s.anchor
+        for _,item in ipairs(entries)do
+            if item.id==s.positioned then entry=item;break end
+        end
     end
+    if entry then desired=entry.pending_size or entry.pinned_size or s.saved_sizes[entry.stable_id] or desired end
+    local limits=entry and entry.size_limits
     local desired_w=type(desired.x)=="number" and desired.x>=80 and desired.x<=8192 and desired.x%1==0 and desired.x or 360
     local desired_h=type(desired.y)=="number" and desired.y>=80 and desired.y<=8192 and desired.y%1==0 and desired.y or 640
     if metrics.islands then
@@ -69,40 +88,43 @@ local function geometry()
         local bottom=h-(s.bar=="bottom" and enzui_bar_band(metrics) or style.edge_gap)
         local available=bottom-top
         local slot=metrics.rail-4
-        local count=math.max(1,#entries+(s.error~="" and 1 or 0)+(adding() and #entries>0 and 1 or 0))
-        local rail_h=math.min(available,#entries==0 and s.error=="" and 120 or 16+count*slot+(count-1)*6)
+        local count=math.max(1,#entries+(has_error and 1 or 0)+(adding() and #entries>0 and 1 or 0))
+        local rail_h=math.min(available,#entries==0 and not has_error and 120 or 16+count*slot+(count-1)*6)
         local rail_y=math.floor(m.y+top+(available-rail_h)/2+0.5)
         local rail_x=s.side=="left" and m.x+style.side_gap or m.x+w-style.side_gap-metrics.rail
         local inset=math.max(6,math.ceil(style.radius*(1-math.sqrt(0.5))))
-        local aw,ah=math.min(desired_w,1536-2*inset,w-2*style.side_gap-metrics.rail-8-2*inset),math.min(desired_h,1024-2*inset,available-2*inset)
+        local aw,ah,fits=fit_pane(desired_w,desired_h,
+            math.min(1536-2*inset,w-2*style.side_gap-metrics.rail-8-2*inset),
+            math.min(1024-2*inset,available-2*inset),limits)
         if aw<1 or ah<1 or rail_h<1 then return end
         local index=1
-        for i,e in ipairs(entries)do if e.id==s.positioned then index=i;break end end
+        for i,e in ipairs(entries)do if entry and e.id==entry.id then index=i;break end end
         local group_top=8+math.max(0,(rail_h-16-count*slot-(count-1)*6)/2)
-        local anchor=s.anchor or (rail_y+group_top+(index-1)*(slot+6)+slot/2)
+        local anchor=anchor or (rail_y+group_top+(index-1)*(slot+6)+slot/2)
         local ay=math.floor(math.max(m.y+top+inset,math.min(anchor-ah/2,m.y+bottom-inset-ah))+0.5)
         local pane_x=s.side=="left" and rail_x+metrics.rail+8 or rail_x-8-aw-2*inset
         return {monitor=m,rail_x=rail_x,rail_y=rail_y,rail_w=metrics.rail,rail_h=rail_h,
             surface_x=rail_x,surface_w=metrics.rail,canvas_y=m.y+top,canvas_h=available,app_x=pane_x+inset,app_y=ay,app_w=aw,app_h=ah,
             pane_x=pane_x,pane_y=ay-inset,pane_w=aw+2*inset,pane_h=ah+2*inset,pane_inset=inset,
-            icon_x=rail_x+metrics.rail/2,icon_y=anchor}
+            icon_x=rail_x+metrics.rail/2,icon_y=anchor,fits=fits}
     end
     local top=s.bar=="top" and metrics.bar or metrics.frame
-    local aw,ah=math.min(desired_w,1536-12,w-2*metrics.rail-12),math.min(desired_h,1024-12,h-metrics.bar-metrics.frame-12)
+    local aw,ah,fits=fit_pane(desired_w,desired_h,math.min(1536-12,w-2*metrics.rail-12),
+        math.min(1024-12,h-metrics.bar-metrics.frame-12),limits)
     local index=1
-    for i,e in ipairs(entries) do if e.id==s.positioned then index=i;break end end
+    for i,e in ipairs(entries) do if entry and e.id==entry.id then index=i;break end end
     local slot=metrics.rail-4
-    local count=math.max(1,#entries+(s.error~="" and 1 or 0))
+    local count=math.max(1,#entries+(has_error and 1 or 0))
     local rail_h=h-metrics.bar-metrics.frame
     local group_top=8+math.max(0,(rail_h-16-count*slot-(count-1)*6)/2)
-    local anchor=s.anchor or (m.y+top+group_top+(index-1)*(slot+6)+slot/2)
+    local anchor=anchor or (m.y+top+group_top+(index-1)*(slot+6)+slot/2)
     local bottom=m.y+h-(s.bar=="bottom" and metrics.bar or metrics.frame)
     local ay=math.max(m.y+top+6,math.min(anchor-ah/2,bottom-6-ah))
     local ax=s.side=="left" and m.x+metrics.rail+6 or m.x+w-metrics.rail-6-aw
     if s.native then ax=math.floor(ax+0.5);ay=math.floor(ay+0.5) end
     return {monitor=m,rail_x=s.side=="left" and m.x or m.x+w-metrics.rail,rail_y=m.y+top,
         rail_w=metrics.rail,rail_h=rail_h,surface_x=s.side=="left" and m.x or m.x+w-metrics.rail-metrics.radius,surface_w=metrics.rail+metrics.radius,app_x=ax,app_y=ay,app_w=aw,app_h=ah,
-        pane_x=s.side=="left" and m.x+metrics.rail or m.x+w-metrics.rail-12-aw,pane_y=ay-6,pane_w=aw+12,pane_h=ah+12,pane_inset=6}
+        pane_x=s.side=="left" and m.x+metrics.rail or m.x+w-metrics.rail-12-aw,pane_y=ay-6,pane_w=aw+12,pane_h=ah+12,pane_inset=6,fits=fits}
 end
 local function update_visibility(g)
     if s.enabled==false then
@@ -389,9 +411,11 @@ function enzui_sidebar_toggle(id,anchor)
     if scene() and (s.shown or (s.restoring and find(s.restoring))) then
         s.next_show={id=id,anchor=anchor};return {ok=true}
     end
-    s.anchor=anchor;s.positioned=id
-    local g=geometry();local ws=hl.get_active_workspace(s.output)
+    e.size_limits=read_size_limits(e.window)
+    local g=geometry(e,anchor);local ws=hl.get_active_workspace(s.output)
     if not g or not ws or type(ws.id)~="number" or ws.id<=0 then return {ok=false} end
+    if not g.fits then s.error="size-limits";emit();return {ok=false} end
+    s.anchor=anchor;s.positioned=id
     local ok=pcall(function()
         if scene() then
             assert(scene().prepare(e.window.address,s.owner,g.app_x,g.app_y,g.app_w,g.app_h,s.side=="right",g.pane_inset,g.icon_x,g.icon_y),"Native preparation rejected")
@@ -420,6 +444,9 @@ function enzui_sidebar_pin_window(w,before)
     end
     for _,e in ipairs(s.entries) do if known(e) and e.window.address==w.address then return {ok=true} end end
     local e={window=w,id=s.next_id,pid=w.pid,stable_id=w.stable_id,original=before or original(w),desktop=w.workspace.id,pinned_size=s.saved_sizes[w.stable_id]}
+    e.size_limits=read_size_limits(w)
+    local g=geometry(e)
+    if g and not g.fits then s.error="size-limits";emit();return {ok=false} end
     s.next_id=s.next_id+1;s.entries[#s.entries+1]=e
     local ok=pcall(function()
         checked(hl.dsp.window.tag({window=w,tag="+enzui-sidebar-"..e.id}))
@@ -485,13 +512,15 @@ local function repin_entry(id)
     local phase=api.status(e.window.address)
     if phase=="dragging" then return false,true end
     if phase~="detached" then return false end
-    if another_window(e.window) then e.desktop_return=true;return enzui_sidebar_unpin(id,true).ok end
+    if another_window(e.window) then e.return_error="desktop-return";return enzui_sidebar_unpin(id,true).ok end
     if e.resize_pending then
         local size=e.released_size or e.window.size
         if size and type(size.x)=="number" and type(size.y)=="number" and size.x>=80 and size.x<=8192 and size.y>=80 and size.y<=8192
             and size.x%1==0 and size.y%1==0 then e.pending_size={x=size.x,y=size.y} end
     end
+    e.size_limits=read_size_limits(e.window)
     local g=geometry();if not g then return false end
+    if not g.fits then e.return_error="size-limits";return enzui_sidebar_unpin(id,true).ok end
     local ok=pcall(function()
         assert(api.repin(e.window.address,s.owner,g.app_x,g.app_y,g.app_w,g.app_h,s.side=="right",g.pane_inset),"Native repin rejected")
         if e.window.size.x~=g.app_w or e.window.size.y~=g.app_h then
@@ -608,7 +637,7 @@ local function native_tick()
                     if s.shown==e.id then s.shown=nil end
                     if s.restoring==e.id then s.restoring=nil end
                     if cleaned then
-                        table.remove(s.entries,index);s.error=e.desktop_return and "desktop-return" or ""
+                        table.remove(s.entries,index);s.error=e.return_error or ""
                     else
                         e.restoring=nil;e.restore_pending=true;s.error="restore-needed"
                     end
@@ -622,7 +651,7 @@ local function native_tick()
                 if phase=="detached" then
                     if not (s.pending and s.pending.repin==e.id) and not (s.drag and s.drag.entry==e.id) then enzui_sidebar_unpin(e.id,true) end
                 elseif phase=="dialog" then
-                    e.desktop_return=true
+                    e.return_error="desktop-return"
                     enzui_sidebar_unpin(e.id,false)
                 elseif phase=="open" and not e.focused and owned(e) then
                     focus_preserving_pointer(e.window);e.focused=true

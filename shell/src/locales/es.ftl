@@ -2477,6 +2477,7 @@ shell-finish-the-app-s-dialog-before-hiding-it = Terminar el diálogo de la apli
 shell-app-returned-to-the-desktop-for-an-additional-window = La aplicación regresó al escritorio para una ventana adicional
 shell-app-restoration-needs-retrying-right-click-its-icon = La restauración de aplicaciones necesita volver a probar; haga clic derecho en su icono
 shell-this-window-cannot-be-pinned-dialog-fullscreen-group-or-app-limit = Esta ventana no se puede fijar (diálogo, pantalla completa, grupo o límite de aplicación)
+shell-sidebar-window-size-limits = Los límites de tamaño de esta ventana no caben en la barra lateral
 shell-drag-an-application-window-here-to-pin-it = Arrastre una ventana de aplicación aquí para fijarla
 shell-shared-across-desktops = Compartido en todos los escritorios
 shell-only-on-the-desktop-where-pinned = Sólo en el escritorio donde se encuentra

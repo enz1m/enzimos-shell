@@ -397,10 +397,8 @@ impl App {
         if let Some(mut dialog) = self.dialogs.remove(&window) {
             dialog.answer(outcome);
         }
-        // A consent window that goes away without an answer refuses.
-        if let Some(reply) = self.consents.remove(&window).and_then(|c| c.reply) {
-            let _ = reply.send(false);
-        }
+        // Dropping an unanswered consent reply signals dismissal without an explicit decision.
+        self.consents.remove(&window);
         window::close(window)
     }
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -428,7 +426,7 @@ impl App {
                     }
                     Some(Event::Access(request, reply)) => {
                         if self.closed.remove(&request.id) {
-                            let _ = reply.send(false);
+                            drop(reply);
                             return Task::none();
                         }
                         let (window, open) = window::open(window::Settings {

@@ -295,6 +295,7 @@ struct Chooser {
 struct PortalRequest {
     id: u64,
     events: mpsc::UnboundedSender<Event>,
+    cancel: Option<std::sync::Arc<tokio::sync::Notify>>,
 }
 
 #[zbus::interface(name = "org.freedesktop.impl.portal.Request")]
@@ -305,6 +306,9 @@ impl PortalRequest {
     )]
     async fn close(&self) {
         let _ = self.events.send(Event::Close(self.id));
+        if let Some(cancel) = &self.cancel {
+            cancel.notify_one();
+        }
     }
 }
 
@@ -336,6 +340,7 @@ impl Chooser {
                 PortalRequest {
                     id,
                     events: self.events.clone(),
+                    cancel: None,
                 },
             )
             .await;
@@ -486,6 +491,7 @@ impl Access {
                 PortalRequest {
                     id,
                     events: chooser.events.clone(),
+                    cancel: None,
                 },
             )
             .await;
@@ -595,10 +601,10 @@ fn set_autostart(id: &str, enable: bool, commandline: &[String]) -> bool {
     std::fs::write(&staged, entry).is_ok() && std::fs::rename(&staged, &path).is_ok()
 }
 
-// The shell's window feed as app id -> state (1 running); apps it does not
-// list have no window, which the frontend counts as background.
-async fn app_states(connection: &zbus::Connection) -> HashMap<String, OwnedValue> {
-    let reply = connection
+type WindowFeedRow = (String, String, u32, u64, u32, u32);
+
+async fn mapped_apps(connection: &zbus::Connection) -> Option<Vec<String>> {
+    let (_, known, apps) = connection
         .call_method(
             Some(crate::window_feed::SERVICE),
             crate::window_feed::PATH,
@@ -607,19 +613,33 @@ async fn app_states(connection: &zbus::Connection) -> HashMap<String, OwnedValue
             &(),
         )
         .await
-        .ok()
-        .and_then(|message| {
-            message
-                .body()
-                .deserialize::<(u64, bool, Vec<(String, String, u32, u64, u32, u32)>)>()
-                .ok()
-        });
+        .ok()?
+        .body()
+        .deserialize::<(u64, bool, Vec<WindowFeedRow>)>()
+        .ok()?;
+    known.then(|| {
+        apps.into_iter()
+            .filter_map(|(app, _, _, _, mapped, _)| {
+                (mapped > 0 && valid_app_id(&app)).then_some(app)
+            })
+            .collect()
+    })
+}
+
+async fn app_has_mapped_window(connection: &zbus::Connection, app_id: &str) -> bool {
+    valid_app_id(app_id)
+        && mapped_apps(connection)
+            .await
+            .is_some_and(|apps| apps.iter().any(|app| app == app_id))
+}
+
+// The shell's window feed as app id -> state (1 running); apps it does not
+// list have no window, which the frontend counts as background.
+async fn app_states(connection: &zbus::Connection) -> HashMap<String, OwnedValue> {
     let mut states = HashMap::new();
-    if let Some((_, true, apps)) = reply {
-        for (app, _, _, _, mapped, _) in apps {
-            if mapped > 0 && valid_app_id(&app) {
-                states.insert(app, OwnedValue::from(1u32));
-            }
+    if let Some(apps) = mapped_apps(connection).await {
+        for app in apps {
+            states.insert(app, OwnedValue::from(1u32));
         }
     }
     states
@@ -627,6 +647,15 @@ async fn app_states(connection: &zbus::Connection) -> HashMap<String, OwnedValue
 
 struct Background {
     chooser: std::sync::Arc<Chooser>,
+    windows_changed: tokio::sync::watch::Receiver<u64>,
+}
+
+fn background_result<E>(choice: Result<bool, E>) -> u32 {
+    match choice {
+        Ok(true) => 1,
+        Ok(false) => 0,
+        Err(_) => 2,
+    }
 }
 
 #[zbus::interface(name = "org.freedesktop.impl.portal.Background")]
@@ -641,11 +670,22 @@ impl Background {
     // Background response codes: 1 allows, 0 closes the app, and 2 allows only this request.
     async fn notify_background(
         &self,
+        #[zbus(connection)] connection: &zbus::Connection,
         #[zbus(object_server)] server: &zbus::ObjectServer,
         handle: ObjectPath<'_>,
         app_id: &str,
         name: &str,
     ) -> (u32, HashMap<String, OwnedValue>) {
+        // Snapshot the change counter before querying so an intervening window map is not missed.
+        let mut windows_changed = self.windows_changed.clone();
+        windows_changed.borrow_and_update();
+        if app_has_mapped_window(connection, app_id).await {
+            return (
+                0,
+                HashMap::from([("result".to_owned(), OwnedValue::from(2u32))]),
+            );
+        }
+
         let chooser = &self.chooser;
         let id = chooser.next_id();
         let name: String = name.chars().filter(|c| !c.is_control()).take(80).collect();
@@ -665,21 +705,48 @@ impl Background {
             deny_label: tr("shell-close-it").into(),
         };
         let handle: OwnedObjectPath = handle.into();
+        let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
         let _ = server
             .at(
                 &handle,
                 PortalRequest {
                     id,
                     events: chooser.events.clone(),
+                    cancel: Some(std::sync::Arc::clone(&cancel)),
                 },
             )
             .await;
-        let (reply, answer) = oneshot::channel();
+        let (reply, mut answer) = oneshot::channel();
         let result = if chooser.events.send(Event::Access(request, reply)).is_ok() {
-            match answer.await {
-                Ok(true) => 1u32,
-                Ok(false) => 0,
-                Err(_) => 2,
+            loop {
+                tokio::select! {
+                    biased;
+                    choice = &mut answer => {
+                        break background_result(choice);
+                    }
+                    () = cancel.notified() => {
+                        break background_result(answer.try_recv());
+                    }
+                    changed = windows_changed.changed() => {
+                        if changed.is_err() {
+                            break tokio::select! {
+                                biased;
+                                choice = &mut answer => background_result(choice),
+                                () = cancel.notified() => background_result(answer.try_recv()),
+                            };
+                        }
+                        if app_has_mapped_window(connection, app_id).await {
+                            break match answer.try_recv() {
+                                Ok(true) => 1u32,
+                                Ok(false) => 0,
+                                Err(_) => {
+                                    let _ = chooser.events.send(Event::Close(id));
+                                    2
+                                }
+                            };
+                        }
+                    }
+                }
             }
         } else {
             2
@@ -715,14 +782,16 @@ mod settings_portal;
 use settings_portal::{Appearance, Preferences};
 pub use settings_portal::{color_scheme, selects};
 
-/// Serves the backend on the session bus until the connection drops.
-pub async fn run(events: mpsc::UnboundedSender<Event>) -> Result<(), String> {
+async fn serve_on(
+    builder: zbus::connection::Builder<'_>,
+    events: mpsc::UnboundedSender<Event>,
+) -> Result<zbus::Connection, String> {
     let chooser = std::sync::Arc::new(Chooser {
-        events: events.clone(),
+        events,
         next: Mutex::new(0),
     });
-    let connection = zbus::connection::Builder::session()
-        .map_err(|_| tr("shell-no-session-bus"))?
+    let (windows_tx, windows_rx) = tokio::sync::watch::channel(0u64);
+    let connection = builder
         .serve_at(PATH, Files(std::sync::Arc::clone(&chooser)))
         .map_err(|_| tr("shell-could-not-publish-the-file-chooser"))?
         .serve_at(
@@ -732,7 +801,13 @@ pub async fn run(events: mpsc::UnboundedSender<Event>) -> Result<(), String> {
             },
         )
         .map_err(|_| tr("shell-could-not-publish-the-access-dialog"))?
-        .serve_at(PATH, Background { chooser })
+        .serve_at(
+            PATH,
+            Background {
+                chooser,
+                windows_changed: windows_rx,
+            },
+        )
         .map_err(|_| tr("shell-could-not-publish-the-background-portal"))?
         .serve_at(
             PATH,
@@ -746,30 +821,33 @@ pub async fn run(events: mpsc::UnboundedSender<Event>) -> Result<(), String> {
         .build()
         .await
         .map_err(|_| tr("shell-another-file-chooser-backend-already-runs"))?;
-    // The frontend re-reads app states when the shell's window feed changes.
+    // Install the window-feed subscription before returning so no change signal is lost.
     if let Ok(background) = connection
         .object_server()
         .interface::<_, Background>(PATH)
         .await
+        && let Ok(rule) = zbus::MatchRule::builder()
+            .msg_type(zbus::message::Type::Signal)
+            .interface("dev.enzui.Shell.Windows1")
+            .and_then(|rule| rule.member("Changed"))
+        && let Ok(mut changes) =
+            zbus::MessageStream::for_match_rule(rule.build(), &connection, Some(16)).await
     {
-        let feed = connection.clone();
         tokio::spawn(async move {
             use iced::futures::StreamExt;
-            let rule = zbus::MatchRule::builder()
-                .msg_type(zbus::message::Type::Signal)
-                .interface("dev.enzui.Shell.Windows1")
-                .and_then(|rule| rule.member("Changed"));
-            let Ok(rule) = rule else { return };
-            let Ok(mut changes) =
-                zbus::MessageStream::for_match_rule(rule.build(), &feed, Some(16)).await
-            else {
-                return;
-            };
             while changes.next().await.is_some() {
+                windows_tx.send_modify(|revision| *revision = revision.wrapping_add(1));
                 let _ = Background::running_applications_changed(background.signal_emitter()).await;
             }
         });
     }
+    Ok(connection)
+}
+
+/// Serves the backend on the session bus until the connection drops.
+pub async fn run(events: mpsc::UnboundedSender<Event>) -> Result<(), String> {
+    let builder = zbus::connection::Builder::session().map_err(|_| tr("shell-no-session-bus"))?;
+    let connection = serve_on(builder, events.clone()).await?;
     settings_portal::follow(&connection, events).await
 }
 
@@ -857,5 +935,353 @@ mod tests {
             assert!(autostart_entry("bad", &["app".into()]).is_none());
             assert!(autostart_entry("org.example.App", &[]).is_none());
         }
+    }
+
+    struct PrivateBus {
+        address: String,
+        child: std::process::Child,
+    }
+
+    impl PrivateBus {
+        fn start() -> Self {
+            use std::io::{BufRead, BufReader};
+            use std::process::{Command, Stdio};
+            let mut child = Command::new("dbus-daemon")
+                .args([
+                    "--session",
+                    "--nopidfile",
+                    "--nosyslog",
+                    "--print-address=1",
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("dbus-daemon should start for portal tests");
+            let mut address = String::new();
+            BufReader::new(child.stdout.take().expect("dbus-daemon stdout"))
+                .read_line(&mut address)
+                .expect("dbus-daemon should print its address");
+            Self {
+                address: address.trim().to_owned(),
+                child,
+            }
+        }
+    }
+
+    impl Drop for PrivateBus {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    #[derive(Default)]
+    struct MockFeedState {
+        generation: u64,
+        known: bool,
+        apps: Vec<WindowFeedRow>,
+    }
+
+    struct MockWindowsFeed(std::sync::Arc<Mutex<MockFeedState>>);
+
+    #[zbus::interface(name = "dev.enzui.Shell.Windows1")]
+    impl MockWindowsFeed {
+        fn get_apps(&self) -> (u64, bool, Vec<WindowFeedRow>) {
+            let state = self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (state.generation, state.known, state.apps.clone())
+        }
+
+        #[zbus(signal)]
+        async fn changed(
+            emitter: &zbus::object_server::SignalEmitter<'_>,
+            generation: u64,
+        ) -> zbus::Result<()>;
+    }
+
+    fn calendar_row(app_id: &str, mapped: u32) -> WindowFeedRow {
+        (
+            app_id.to_owned(),
+            format!("app-flatpak-{app_id}-1.scope"),
+            414_151,
+            13_345_381,
+            mapped,
+            0,
+        )
+    }
+
+    fn notify_result(reply: &(u32, HashMap<String, OwnedValue>)) -> u32 {
+        assert_eq!(reply.0, 0);
+        u32::try_from(reply.1.get("result").expect("result key")).expect("result u32")
+    }
+
+    #[tokio::test]
+    async fn background_prompt_respects_live_windows_and_close_lifecycle() {
+        use std::time::Duration;
+
+        let bus = PrivateBus::start();
+        let feed_state = std::sync::Arc::new(Mutex::new(MockFeedState {
+            generation: 1,
+            known: true,
+            apps: vec![calendar_row("io.github.enzui.Calendar", 1)],
+        }));
+        let feed_conn = zbus::connection::Builder::address(bus.address.as_str())
+            .expect("feed address")
+            .serve_at(
+                crate::window_feed::PATH,
+                MockWindowsFeed(std::sync::Arc::clone(&feed_state)),
+            )
+            .expect("serve mock feed")
+            .name(crate::window_feed::SERVICE)
+            .expect("feed bus name")
+            .build()
+            .await
+            .expect("connect mock feed");
+        let feed_iface = feed_conn
+            .object_server()
+            .interface::<_, MockWindowsFeed>(crate::window_feed::PATH)
+            .await
+            .expect("feed interface");
+
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let portal_builder =
+            zbus::connection::Builder::address(bus.address.as_str()).expect("portal address");
+        let _portal_conn = serve_on(portal_builder, events_tx)
+            .await
+            .expect("serve portal");
+
+        let client = zbus::connection::Builder::address(bus.address.as_str())
+            .expect("client address")
+            .build()
+            .await
+            .expect("connect client");
+
+        let call_notify = |client: zbus::Connection, handle: &'static str, app_id: &'static str| {
+            tokio::spawn(async move {
+                let path = ObjectPath::try_from(handle).expect("handle path");
+                client
+                    .call_method(
+                        Some(BUS_NAME),
+                        PATH,
+                        Some("org.freedesktop.impl.portal.Background"),
+                        "NotifyBackground",
+                        &(path, app_id, "Calendar"),
+                    )
+                    .await
+                    .expect("NotifyBackground call")
+                    .body()
+                    .deserialize::<(u32, HashMap<String, OwnedValue>)>()
+                    .expect("NotifyBackground reply")
+            })
+        };
+
+        let reply = tokio::time::timeout(
+            Duration::from_secs(5),
+            call_notify(
+                client.clone(),
+                "/org/freedesktop/portal/desktop/notify/background1",
+                "io.github.enzui.Calendar",
+            ),
+        )
+        .await
+        .expect("stale prompt timeout")
+        .expect("stale prompt join");
+        assert_eq!(notify_result(&reply), 2);
+        assert!(events_rx.try_recv().is_err());
+
+        {
+            let mut state = feed_state.lock().unwrap();
+            state.generation = 2;
+            state.known = true;
+            state.apps.clear();
+        }
+        let mut pending = call_notify(
+            client.clone(),
+            "/org/freedesktop/portal/desktop/notify/background2",
+            "io.github.enzui.Calendar",
+        );
+        let (request_id, _kept_reply) =
+            match tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+                .await
+                .expect("access event timeout")
+                .expect("access event")
+            {
+                Event::Access(req, reply) => {
+                    assert_eq!(req.app_id, "io.github.enzui.Calendar");
+                    (req.id, reply)
+                }
+                other => panic!("unexpected event: {other:?}"),
+            };
+
+        {
+            let mut state = feed_state.lock().unwrap();
+            state.generation = 3;
+            state.apps = vec![calendar_row("io.github.enzui.Notes", 1)];
+        }
+        MockWindowsFeed::changed(feed_iface.signal_emitter(), 3)
+            .await
+            .expect("emit changed 3");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(150), &mut pending)
+                .await
+                .is_err(),
+            "unrelated app mapping must not dismiss Calendar prompt"
+        );
+        assert!(events_rx.try_recv().is_err());
+
+        {
+            let mut state = feed_state.lock().unwrap();
+            state.generation = 4;
+            state.apps = vec![
+                calendar_row("io.github.enzui.Notes", 1),
+                calendar_row("io.github.enzui.Calendar", 1),
+            ];
+        }
+        MockWindowsFeed::changed(feed_iface.signal_emitter(), 4)
+            .await
+            .expect("emit changed 4");
+        let reply = tokio::time::timeout(Duration::from_secs(5), pending)
+            .await
+            .expect("auto-dismiss timeout")
+            .expect("auto-dismiss join");
+        assert_eq!(notify_result(&reply), 2);
+        match tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+            .await
+            .expect("close event timeout")
+            .expect("close event")
+        {
+            Event::Close(closed_id) => assert_eq!(closed_id, request_id),
+            other => panic!("expected Close({request_id}), got {other:?}"),
+        }
+
+        {
+            let mut state = feed_state.lock().unwrap();
+            state.generation = 5;
+            state.known = false;
+            state.apps = vec![calendar_row("io.github.enzui.Calendar", 1)];
+        }
+        let pending = call_notify(
+            client.clone(),
+            "/org/freedesktop/portal/desktop/notify/background3",
+            "io.github.enzui.Calendar",
+        );
+        match tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+            .await
+            .expect("unknown inventory event timeout")
+            .expect("unknown inventory event")
+        {
+            Event::Access(_, reply) => reply.send(true).expect("send allow"),
+            other => panic!("unexpected event: {other:?}"),
+        }
+        let reply = tokio::time::timeout(Duration::from_secs(5), pending)
+            .await
+            .expect("allow timeout")
+            .expect("allow join");
+        assert_eq!(notify_result(&reply), 1);
+
+        {
+            let mut state = feed_state.lock().unwrap();
+            state.generation = 6;
+            state.known = true;
+            state.apps.clear();
+        }
+        let pending = call_notify(
+            client.clone(),
+            "/org/freedesktop/portal/desktop/notify/background4",
+            "io.github.enzui.Calendar",
+        );
+        match tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+            .await
+            .expect("deny event timeout")
+            .expect("deny event")
+        {
+            Event::Access(_, reply) => reply.send(false).expect("send deny"),
+            other => panic!("unexpected event: {other:?}"),
+        }
+        let reply = tokio::time::timeout(Duration::from_secs(5), pending)
+            .await
+            .expect("deny timeout")
+            .expect("deny join");
+        assert_eq!(notify_result(&reply), 0);
+
+        let handle5 = "/org/freedesktop/portal/desktop/notify/background5";
+        let pending = call_notify(client.clone(), handle5, "io.github.enzui.Calendar");
+        let (request_id, _kept_reply) =
+            match tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+                .await
+                .expect("close-test event timeout")
+                .expect("close-test event")
+            {
+                Event::Access(req, reply) => (req.id, reply),
+                other => panic!("unexpected event: {other:?}"),
+            };
+        client
+            .call_method(
+                Some(BUS_NAME),
+                handle5,
+                Some("org.freedesktop.impl.portal.Request"),
+                "Close",
+                &(),
+            )
+            .await
+            .expect("Request.Close call");
+        let reply = tokio::time::timeout(Duration::from_secs(5), pending)
+            .await
+            .expect("request close timeout")
+            .expect("request close join");
+        assert_eq!(notify_result(&reply), 2);
+        match tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+            .await
+            .expect("request close event timeout")
+            .expect("request close event")
+        {
+            Event::Close(closed_id) => assert_eq!(closed_id, request_id),
+            other => panic!("expected Close({request_id}), got {other:?}"),
+        }
+
+        let access_handle = "/org/freedesktop/portal/desktop/request/access1";
+        let access_call = {
+            let client = client.clone();
+            tokio::spawn(async move {
+                let path = ObjectPath::try_from(access_handle).expect("access handle");
+                let options: HashMap<String, OwnedValue> = HashMap::new();
+                client
+                    .call_method(
+                        Some(BUS_NAME),
+                        PATH,
+                        Some("org.freedesktop.impl.portal.Access"),
+                        "AccessDialog",
+                        &(
+                            path,
+                            "io.github.enzui.Calendar",
+                            "",
+                            "Allow access?",
+                            "",
+                            "",
+                            options,
+                        ),
+                    )
+                    .await
+                    .expect("AccessDialog call")
+                    .body()
+                    .deserialize::<(u32, HashMap<String, OwnedValue>)>()
+                    .expect("AccessDialog reply")
+            })
+        };
+        match tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+            .await
+            .expect("access dialog event timeout")
+            .expect("access dialog event")
+        {
+            Event::Access(_, reply) => drop(reply),
+            other => panic!("unexpected event: {other:?}"),
+        }
+        let (access_response, _) = tokio::time::timeout(Duration::from_secs(5), access_call)
+            .await
+            .expect("access dialog timeout")
+            .expect("access dialog join");
+        assert_eq!(access_response, 1);
     }
 }

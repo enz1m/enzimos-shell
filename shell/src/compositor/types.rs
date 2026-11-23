@@ -36,13 +36,26 @@ pub struct ControlGeometry {
 #[derive(Clone, Debug)]
 pub struct ControlContent {
     pub grid: crate::control_layout::VisibleLayout,
-    pub measured: Option<iced::Size>,
+    pub collapsed: Option<iced::Size>,
+    pub disclosures: Vec<crate::settings::QuickAction>,
 }
 impl ControlContent {
-    pub fn preferred_height(&self, width: f32, row: f32, padding: f32, join: f32) -> f32 {
-        let minimum = self.grid.height(width, row) + crate::control_layout::ACTIONS_ROW;
+    pub fn reserved_height(&self, width: f32, row: f32, padding: f32, join: f32) -> f32 {
+        let closed = self.grid.height(width, row, None);
+        let expanded = self
+            .disclosures
+            .iter()
+            .copied()
+            .fold(closed, |height, action| {
+                height.max(self.grid.height(
+                    width,
+                    row,
+                    Some((action, crate::control_tile::detail_height(action))),
+                ))
+            });
+        let minimum = closed + crate::control_layout::ACTIONS_ROW;
         let body = self
-            .measured
+            .collapsed
             .filter(|size| {
                 size.width.is_finite()
                     && size.height.is_finite()
@@ -50,18 +63,9 @@ impl ControlContent {
                     && (0.0..=65536.0).contains(&size.height)
             })
             .map_or(minimum, |size| size.height.max(minimum));
-        (body + padding * 2.0 + join).max(180.0)
+        (body + (expanded - closed) + padding * 2.0 + join).max(180.0)
     }
 }
-impl From<crate::control_layout::VisibleLayout> for ControlContent {
-    fn from(grid: crate::control_layout::VisibleLayout) -> Self {
-        Self {
-            grid,
-            measured: None,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct PopupPlacement {
     pub bar: crate::settings::BarEdge,

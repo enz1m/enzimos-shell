@@ -152,7 +152,6 @@ pub(super) enum Message {
     Confirm(Action),
     Inhibitors(Action, Vec<enzui_shell::inhibitors::Inhibitor>),
     ControlDetails(Option<enzui_shell::settings::QuickAction>),
-    ControlDetailsSettled(u64, u64),
     ControlSettings,
     CancelConfirm,
     ShowPower,

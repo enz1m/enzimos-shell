@@ -119,7 +119,6 @@ impl Message {
             Self::Confirm(..) => "Confirm",
             Self::Inhibitors(..) => "Inhibitors",
             Self::ControlDetails(..) => "ControlDetails",
-            Self::ControlDetailsSettled(..) => "ControlDetailsSettled",
             Self::ControlSettings => "ControlSettings",
             Self::CancelConfirm => "CancelConfirm",
             Self::ShowPower => "ShowPower",

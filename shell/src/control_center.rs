@@ -281,6 +281,15 @@ pub(super) fn info(shell: &Shell, action: QuickAction) -> Info {
     }
     info
 }
+fn can_disclose(shell: &Shell, action: QuickAction, disclosure: bool) -> bool {
+    let shape = shell.desired_settings.controls.shape(action);
+    disclosure
+        && control_tile::has_disclosure(shape)
+        && (action == QuickAction::Volume
+            || !control_tile::inline_value(shape)
+            || value(shell, action).is_none())
+}
+
 fn controls(shell: &Shell) -> Element<'_, Message> {
     let theme = shell.window_tokens(shell.control_center);
     let font = f32::from(shell.metrics.text);
@@ -291,11 +300,7 @@ fn controls(shell: &Shell) -> Element<'_, Message> {
     {
         let info = info(shell, action);
         let shape = shell.desired_settings.controls.shape(action);
-        let disclosure = info.disclosure
-            && control_tile::has_disclosure(shape)
-            && (action == QuickAction::Volume
-                || !control_tile::inline_value(shape)
-                || value(shell, action).is_none());
+        let disclosure = can_disclose(shell, action, info.disclosure);
         let theme = theme.clone();
         let child = responsive(move |size| {
             control_tile::view(
@@ -346,10 +351,7 @@ fn controls(shell: &Shell) -> Element<'_, Message> {
                 theme.palette.surface_alt
             },
             content: details(shell, action),
-        }))
-        .on_settled(shell.control_detail_epoch, move || {
-            Message::ControlDetailsSettled(shell.control_generation, shell.control_detail_epoch)
-        }),
+        })),
     )
     .id("control-grid-extent")
     .into()

@@ -21,7 +21,6 @@ pub struct Grid<'a, Message> {
     pub(super) surface: iced::Color,
     pub(super) selected: Option<QuickAction>,
     pub(super) detail: Option<Detail<'a, Message>>,
-    pub(super) on_settled: Option<(u64, Box<dyn Fn() -> Message + 'a>)>,
     pub(super) edit: Box<dyn Fn(Edit) -> Message + 'a>,
 }
 impl<'a, Message> Grid<'a, Message> {
@@ -59,7 +58,6 @@ impl<'a, Message> Grid<'a, Message> {
             surface: theme.palette.surface_alt,
             selected: None,
             detail: None,
-            on_settled: None,
             edit: Box::new(edit),
         }
     }
@@ -76,11 +74,6 @@ impl<'a, Message> Grid<'a, Message> {
     #[must_use]
     pub fn detail(mut self, detail: Option<Detail<'a, Message>>) -> Self {
         self.detail = detail.filter(|detail| self.keys.contains(&detail.action));
-        self
-    }
-    #[must_use]
-    pub fn on_settled(mut self, key: u64, callback: impl Fn() -> Message + 'a) -> Self {
-        self.on_settled = Some((key, Box::new(callback)));
         self
     }
     pub(super) fn phase_detail(&self, phase: DetailPhase) -> Option<(QuickAction, f32)> {

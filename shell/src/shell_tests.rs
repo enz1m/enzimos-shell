@@ -16,6 +16,47 @@ fn controls_shell() -> Shell {
     shell
 }
 #[test]
+fn expanding_controls_keeps_the_reserved_window_size() {
+    use enzui_shell::{control_layout::Shape, settings::QuickAction};
+
+    let mut shell = controls_shell();
+    shell.control_visible = true;
+    shell.system.network.ethernet_present = true;
+    shell.system.bluetooth = Some(true);
+    let layout = std::sync::Arc::make_mut(&mut shell.desired_settings.controls);
+    layout.set_shape(QuickAction::Network, Shape::Triple);
+    layout.set_shape(QuickAction::Bluetooth, Shape::Wide);
+    let reserve = |shell: &Shell| {
+        shell
+            .control_content()
+            .reserved_height(376.0, 44.0, 16.0, 0.0)
+    };
+    let expected = reserve(&shell);
+    let size = shell.control_size;
+    for (action, open) in [
+        (QuickAction::Network, true),
+        (QuickAction::Network, false),
+        (QuickAction::Bluetooth, true),
+        (QuickAction::Bluetooth, false),
+    ] {
+        let _ = shell.update_chrome(Message::ControlDetails(Some(action)));
+        assert_eq!(shell.control_details_open, open);
+        assert!(!shell.control_placing);
+        assert_eq!(shell.control_size, size);
+        assert_eq!(reserve(&shell), expected);
+    }
+
+    shell.control_details = None;
+    let id = shell.control_center.unwrap();
+    let key = shell.control_body_key();
+    let measured = iced::Size::new(shell.control_body_width(), 300.0);
+    shell.control_body = Some((key, measured));
+    shell.control_body_pending = Some((id, key));
+    let _ = shell.update_chrome(Message::ControlBodyMeasured(id, key, Some(measured)));
+    assert!(!shell.control_placing);
+}
+
+#[test]
 fn shell_behaviour() {
     // Panel action dispatch is once only and new intent rejects an already queued completion.
     {

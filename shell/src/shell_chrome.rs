@@ -1004,27 +1004,29 @@ impl Shell {
                     Task::none()
                 } else {
                     self.control_body_pending = None;
-                    let settling = self
-                        .control_detail_since
-                        .map(|at| Duration::from_millis(700).saturating_sub(at.elapsed()))
-                        .filter(|left| !left.is_zero());
-                    if self.control_center != Some(id) || !self.control_visible {
-                        Task::none()
-                    } else if self.control_deferred_reflow
-                        || settling.is_some()
-                        || self.control_body_key() != key
+                    if self.control_center != Some(id)
+                        || !self.control_visible
+                        || !self.controls_measure_collapsed()
                     {
-                        control_body_retry(settling.unwrap_or(Duration::from_millis(50)))
+                        Task::none()
+                    } else if self.control_body_key() != key {
+                        control_body_retry(Duration::from_millis(50))
                     } else if let Some(size) = size.filter(|size| {
                         size.width.is_finite()
                             && size.height.is_finite()
                             && (size.width - self.control_body_width()).abs() <= 0.75
                             && (1.0..=65536.0).contains(&size.height)
                     }) {
-                        self.control_body = Some((key, size));
                         self.control_body_retry = None;
+                        // The work area can cap the window below the measured reserve.
+                        if self.control_body.is_some_and(|(last_key, last_size)| {
+                            last_key == key && (last_size.height - size.height).abs() <= 0.75
+                        }) {
+                            return Task::none();
+                        }
+                        self.control_body = Some((key, size));
                         let radius = f32::from(self.metrics.radius);
-                        let preferred = self.control_content().preferred_height(
+                        let preferred = self.control_content().reserved_height(
                             size.width,
                             enzui_shell::control_layout::row_height(f32::from(self.metrics.text)),
                             enzui_shell::panel_style::INSET,
@@ -1196,24 +1198,6 @@ impl Shell {
                     Task::none()
                 }
             }
-            Message::ControlDetailsSettled(generation, epoch) => {
-                if generation == self.control_generation && epoch == self.control_detail_epoch {
-                    self.control_detail_since = None;
-                }
-                if generation == self.control_generation
-                    && epoch == self.control_detail_epoch
-                    && self.control_deferred_reflow
-                {
-                    self.control_deferred_reflow = false;
-                    self.control_detail_capacity = self
-                        .control_details
-                        .filter(|_| self.control_details_open)
-                        .map_or(0.0, enzui_shell::control_tile::detail_height);
-                    self.reflow_controls()
-                } else {
-                    Task::none()
-                }
-            }
             Message::ControlDetails(action) => {
                 if action.is_some_and(|action| {
                     !self.system.available(action)
@@ -1223,11 +1207,8 @@ impl Shell {
                 }) {
                     return Task::none();
                 }
-                let before = self.visible_controls();
-                self.control_detail_since = Some(Instant::now());
                 self.audio_request = self.audio_request.wrapping_add(1);
                 self.control_connections.reset();
-                self.control_detail_epoch = self.control_detail_epoch.wrapping_add(1);
                 self.control_details_open = action.is_some()
                     && !(self.control_details == action && self.control_details_open);
                 if action.is_some() {
@@ -1235,13 +1216,7 @@ impl Shell {
                 }
                 self.confirm = None;
                 self.power_menu = false;
-                let next_height = self
-                    .control_details
-                    .filter(|_| self.control_details_open)
-                    .map_or(0.0, enzui_shell::control_tile::detail_height);
-                self.control_deferred_reflow =
-                    self.controls_need_shrink(&before, &self.visible_controls());
-                let devices = if self.control_details_open {
+                if self.control_details_open {
                     match action {
                         Some(enzui_shell::settings::QuickAction::Volume) => {
                             self.audio_devices = None;
@@ -1257,14 +1232,7 @@ impl Shell {
                     }
                 } else {
                     Task::none()
-                };
-                let reflow = if self.control_deferred_reflow {
-                    Task::none()
-                } else {
-                    self.control_detail_capacity = next_height;
-                    self.reflow_controls()
-                };
-                Task::batch([reflow, devices])
+                }
             }
             Message::Confirm(action) => {
                 self.control_connections.clear_forms();
@@ -1385,22 +1353,13 @@ impl Shell {
                     self.control_details_open = false;
                 }
                 let after = self.visible_controls();
-                let reflow = if before.actions != after.actions || before.detail != after.detail {
-                    if !self.control_visible {
-                        self.control_body = None;
-                    }
-                    self.control_detail_epoch = self.control_detail_epoch.wrapping_add(1);
-                    self.control_deferred_reflow = self.controls_need_shrink(&before, &after);
-                    if !self.control_deferred_reflow {
-                        self.control_detail_capacity =
-                            after.detail.map_or(0.0, |(_, height)| height);
-                    }
+                let reflow = if before.actions != after.actions {
+                    self.control_body = None;
                     self.reflow_controls()
                 } else {
                     Task::none()
                 };
-                self.quiet =
-                    unchanged && before.actions == after.actions && before.detail == after.detail;
+                self.quiet = unchanged && before.actions == after.actions;
                 let next = if let Some(action) = self.system_queue.pop() {
                     self.refresh_system(Some(action))
                 } else {

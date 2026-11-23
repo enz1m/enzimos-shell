@@ -469,7 +469,7 @@ impl<Message: Clone> Widget<Message, iced::Theme, iced::Renderer> for Slide<'_, 
                 tree.state.downcast_ref::<SlideState>(),
                 layout.bounds().size(),
             );
-            if island {
+            if island || self.fit.is_some() {
                 match &frame {
                     Some(frame) if self.interactive && frame.extended => {
                         input.shape(frame, layout.bounds().size());

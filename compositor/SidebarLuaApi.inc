@@ -40,7 +40,6 @@ static int inputAt(lua_State* L) {
     }
     const auto& name = w->backend().metadata().appID;
     if (name == "dev.enzui.Desktop" && barFullscreenSuppressed) return result(L, false);
-    if (!barRegions.enabled) { lua_pushnil(L); return 1; }
     if (name != "dev.enzui.Desktop" && name != "dev.enzui.ControlCenter" && name != "dev.enzui.PluginPanel" &&
         name != "dev.enzui.NotificationCenter" && name != "dev.enzui.WorkspaceOverview" && name != "dev.enzui.QuickSearch" && name != "dev.enzui.Launcher") {
         lua_pushnil(L); return 1;
@@ -48,6 +47,9 @@ static int inputAt(lua_State* L) {
     const Vector2D point{lua_tonumber(L, 3), lua_tonumber(L, 4)};
     if (!std::isfinite(point.x) || !std::isfinite(point.y)) { lua_pushnil(L); return 1; }
     const auto surface = w->backend().surface();
+    if (!barRegions.enabled && (name == "dev.enzui.Desktop" || !surface || surface->m_current.inputIsInfinite)) {
+        lua_pushnil(L); return 1;
+    }
     return result(L, surface && w->geometricBox(Desktop::View::IGeometric::GEOMETRIC_GOAL).containsPoint(point) &&
         surface->at(point - w->position(Desktop::View::IGeometric::GEOMETRIC_GOAL), true).first != nullptr);
 }

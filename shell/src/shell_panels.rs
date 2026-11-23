@@ -264,8 +264,6 @@ impl Shell {
         self.control_details = None;
         self.control_details_open = false;
         self.control_menu = None;
-        self.control_deferred_reflow = false;
-        self.control_detail_capacity = 0.0;
         let compositor = self.compositor.clone();
         let park = Task::perform(
             async move { compositor.park_control_center().await },
@@ -338,8 +336,6 @@ impl Shell {
         self.control_details = None;
         self.control_details_open = false;
         self.control_menu = None;
-        self.control_deferred_reflow = false;
-        self.control_detail_capacity = 0.0;
         self.control_reflow_pending = false;
         self.control_placing = false;
         self.control_center

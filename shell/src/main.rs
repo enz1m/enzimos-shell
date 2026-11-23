@@ -170,11 +170,6 @@ struct Shell {
     control_menu: Option<control_center::TileMenu>,
     desktop_modes_sent: Option<(bool, std::collections::BTreeMap<u32, bool>)>,
     control_details_open: bool,
-    control_detail_epoch: u64,
-    control_deferred_reflow: bool,
-    // Wait for detail animation settlement before resizing the panel.
-    control_detail_since: Option<Instant>,
-    control_detail_capacity: f32,
     notice: Option<String>,
     setup_errors: SetupErrors,
     settings_shortcut_busy: bool,
@@ -435,10 +430,6 @@ impl Shell {
             control_menu: None,
             desktop_modes_sent: None,
             control_details_open: false,
-            control_detail_epoch: 0,
-            control_deferred_reflow: false,
-            control_detail_since: None,
-            control_detail_capacity: 0.0,
             notice: None,
             setup_errors: SetupErrors::default(),
             settings_shortcut_busy: false,
@@ -1059,7 +1050,6 @@ impl Shell {
             | Message::IdleInhibited(..)
             | Message::PowerPolicy(..)
             | Message::ControlSettings
-            | Message::ControlDetailsSettled(..)
             | Message::ControlDetails(..)
             | Message::Confirm(..)
             | Message::CancelConfirm

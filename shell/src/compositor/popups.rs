@@ -139,7 +139,7 @@ impl Compositor {
             anchor,
         )?;
         let (left, right) = attachment.insets(radius);
-        let preferred = controls.preferred_height(
+        let preferred = controls.reserved_height(
             width - left - right - padding * 2.0,
             crate::control_layout::row_height(f32::from(metrics.text)),
             padding,

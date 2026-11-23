@@ -86,6 +86,13 @@ which exact binaries changed. Keep owned QA and builds serialized. The helper
 reports actual wall time and exit code; a timed-out outer invocation is not a
 successful build, even if earlier tests completed.
 
+## Expandable desktop panels
+
+Size a popup's native window for its usable content before revealing it.
+Use the fitted popup renderer for disclosure animations. Layout, paint and
+the Wayland input region follow the visible card inside the reserved window.
+On small outputs, cap the window at the available height and scroll the body.
+
 ## Test scope
 
 Keep tests for distinct product behavior: persisted settings and migrations,

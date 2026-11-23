@@ -27,9 +27,6 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Grid<'_, Message>
             section_from: Rectangle::default(),
             section_target: Rectangle::default(),
             pending_section: None,
-            report_key: None,
-            reported: true,
-            settled_layout: false,
             authority: std::sync::Arc::clone(&self.model),
             from: Vec::new(),
             target: Vec::new(),
@@ -90,13 +87,6 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Grid<'_, Message>
             state.change_detail(next_detail, next_open);
             state.needs_frame = true;
         }
-        let report_key = self.on_settled.as_ref().map(|(key, _)| *key);
-        if report_key != state.report_key {
-            state.report_key = report_key;
-            state.reported = report_key.is_none();
-            state.settled_layout = false;
-            state.needs_frame = true;
-        }
         state.detail = next_detail;
         state.detail_open = next_open;
         state.keys.clone_from(&self.keys);
@@ -109,7 +99,6 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Grid<'_, Message>
     fn frame_interest(&self, tree: &Tree) -> bool {
         tree.state.downcast_ref::<State>().transitioning()
             || tree.state.downcast_ref::<State>().needs_frame
-            || !tree.state.downcast_ref::<State>().reported
             || tree.children.iter().any(Tree::has_frame_interest)
     }
     fn layout(&mut self, tree: &mut Tree, renderer: &iced::Renderer, limits: &layout::Limits) {
@@ -159,7 +148,6 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Grid<'_, Message>
         };
         state.retarget(targets, duration, self.easing);
         state.phase_armed = true;
-        state.settled_layout = !state.transitioning();
         let section = state.section_pose();
         let height = state
             .target
@@ -468,17 +456,7 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Grid<'_, Message>
             shell.request_redraw();
         }
         if matches!(event, Event::Window(window::Event::RedrawRequested(_)))
-            && !state.transitioning()
-            && state.settled_layout
-            && !state.reported
-        {
-            state.reported = true;
-            if let Some((_, callback)) = &self.on_settled {
-                shell.publish(callback());
-            }
-        }
-        if matches!(event, Event::Window(window::Event::RedrawRequested(_)))
-            && (state.transitioning() || state.needs_frame || !state.reported)
+            && (state.transitioning() || state.needs_frame)
         {
             state.needs_frame = false;
             shell.invalidate_layout();

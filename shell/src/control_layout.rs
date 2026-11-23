@@ -124,24 +124,22 @@ impl Default for Layout {
 pub struct VisibleLayout {
     pub layout: std::sync::Arc<Layout>,
     pub actions: Vec<QuickAction>,
-    pub detail: Option<(QuickAction, f32)>,
 }
 impl VisibleLayout {
-    pub fn height(&self, width: f32, row_height: f32) -> f32 {
+    pub fn height(&self, width: f32, row_height: f32, detail: Option<(QuickAction, f32)>) -> f32 {
         self.layout
             .placements_with_detail(
                 width,
                 row_height,
                 |action| self.actions.contains(&action),
-                self.detail,
+                detail,
                 None,
             )
             .iter()
             .map(|p| {
                 p.bounds.y
                     + p.bounds.height
-                    + self
-                        .detail
+                    + detail
                         .filter(|(action, _)| *action == p.action)
                         .map_or(0.0, |(_, height)| height)
             })

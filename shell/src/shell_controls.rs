@@ -19,7 +19,6 @@ impl Shell {
         self.control_connections.reset();
         self.control_details = None;
         self.control_details_open = false;
-        self.control_detail_capacity = 0.0;
         enzui_shell::widget_bounds::bounds(self.panel, self.control_trigger())
             .map(move |rect| Message::ControlsAnchor(generation, rect))
     }
@@ -58,29 +57,6 @@ impl Shell {
         .chain(geometry)
     }
 
-    pub(crate) fn controls_need_shrink(
-        &self,
-        before: &enzui_shell::control_layout::VisibleLayout,
-        after: &enzui_shell::control_layout::VisibleLayout,
-    ) -> bool {
-        let radius = f32::from(self.metrics.radius);
-        let padding = enzui_shell::panel_style::INSET;
-        let (left, right) = self.control_attachment.insets(radius);
-        let width = (self.control_size.width - left - right - padding * 2.0).max(1.0);
-        let row = enzui_shell::control_layout::row_height(f32::from(self.metrics.text));
-        let capacity = (self.control_size.height
-            - padding * 2.0
-            - enzui_shell::control_layout::ACTIONS_ROW
-            - radius)
-            .max(before.height(width, row));
-        self.control_started
-            && self.control_visible
-            && self.confirm.is_none()
-            && !self.power_menu
-            && !after.actions.is_empty()
-            && after.height(width, row) < capacity
-    }
-
     pub(crate) fn visible_controls(&self) -> enzui_shell::control_layout::VisibleLayout {
         enzui_shell::control_layout::VisibleLayout {
             layout: std::sync::Arc::clone(&self.desired_settings.controls),
@@ -90,10 +66,6 @@ impl Shell {
                     self.desired_settings.shows(*action) && self.system.available(*action)
                 })
                 .collect(),
-            detail: self
-                .control_details
-                .filter(|_| self.control_details_open)
-                .map(|action| (action, enzui_shell::control_tile::detail_height(action))),
         }
     }
 
@@ -269,9 +241,21 @@ impl Shell {
     }
 
     pub(crate) fn control_content(&self) -> enzui_shell::compositor::ControlContent {
+        let grid = self.visible_controls();
+        let disclosures = grid
+            .actions
+            .iter()
+            .copied()
+            .filter(|&action| {
+                enzui_shell::control_tile::has_disclosure(
+                    self.desired_settings.controls.shape(action),
+                ) && super::control_center::info(self, action).disclosure
+            })
+            .collect();
         enzui_shell::compositor::ControlContent {
-            grid: self.visible_controls(),
-            measured: self.control_body.map(|(_, size)| size),
+            grid,
+            disclosures,
+            collapsed: self.control_body.map(|(_, size)| size),
         }
     }
 
@@ -290,8 +274,18 @@ impl Shell {
         }
     }
 
+    pub(crate) fn controls_measure_collapsed(&self) -> bool {
+        self.control_details.is_none()
+            && !self.accessibility_menu
+            && !self.power_menu
+            && self.confirm.is_none()
+    }
+
     pub(crate) fn measure_control_body(&mut self) -> Task<Message> {
-        let Some(id) = self.control_center.filter(|_| self.control_visible) else {
+        let Some(id) = self
+            .control_center
+            .filter(|_| self.control_visible && self.controls_measure_collapsed())
+        else {
             return Task::none();
         };
         if self.control_body_pending.is_some() {
@@ -330,7 +324,7 @@ impl Shell {
             self.control_reflow_pending = true;
             return Task::none();
         }
-        if self.control_center.is_none() || self.control_deferred_reflow {
+        if self.control_center.is_none() {
             return Task::none();
         }
         if self.control_placing {

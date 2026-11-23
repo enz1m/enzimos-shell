@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Welcome
+Name[es]=Bienvenida
+Icon=distributor-logo-enzimos
+Exec=/usr/lib/enzui/bin/enzui-welcome --first-login
+NoDisplay=true
+OnlyShowIn=enzUI;
+X-GNOME-Autostart-Condition=unless-exists enzimos/welcome.json

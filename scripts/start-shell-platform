@@ -423,8 +423,8 @@ def prepare_desktop(config):
                 ready.update({"remote_session": config["remote_session"], "render_node": config["render_node"]})
             publish(runtime / "ready.json", ready)
             if config.get("installed"):
-                # Start generated XDG autostart units only after the desktop is ready.
-                subprocess.run(["systemctl", "--user", "start", "--no-block", "xdg-desktop-autostart.target"], capture_output=True, timeout=10)
+                # Generated XDG autostart units start only after the desktop is ready.
+                start_ready_target()
             return identity
         time.sleep(.1)
     raise RuntimeError("Desktop frame is incomplete; session is not ready")
@@ -793,9 +793,24 @@ def start_session_target():
         pass
 
 
+READY_TARGET = "enzui-session-ready.target"
+
+
+def start_ready_target():
+    """Starts enzui-session-ready.target, which pulls in graphical-session.target
+    and xdg-desktop-autostart.target; the stock targets refuse a direct start."""
+    try:
+        result = subprocess.run(["systemctl", "--user", "start", "--no-block", READY_TARGET], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"start-shell-platform: {READY_TARGET} was not started: {error}", file=sys.stderr)
+        return
+    if result.returncode:
+        print(f"start-shell-platform: {READY_TARGET} was not started: {result.stderr.strip()}", file=sys.stderr)
+
+
 def stop_session_target():
     try:
-        subprocess.run(["systemctl", "--user", "stop", SESSION_TARGET], capture_output=True, timeout=10)
+        subprocess.run(["systemctl", "--user", "stop", READY_TARGET, SESSION_TARGET], capture_output=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         pass
 

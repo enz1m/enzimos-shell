@@ -129,6 +129,7 @@ pub mod user_switch;
 pub mod virtual_keyboard;
 pub mod vpn_manual;
 pub mod vpn_profile;
+pub mod welcome;
 pub mod widget_bounds;
 pub mod window_feed;
 pub mod workspaces;

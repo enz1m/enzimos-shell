@@ -432,6 +432,18 @@ pub fn restored(displays: &Displays, saved: &[Saved]) -> Option<Vec<Change>> {
 
 pub const SCALES: [f64; 9] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
 
+/// Whether `scale` leaves a usable desktop on `mode`. The compositor accepts any listed scale
+/// and rounds the logical size, so fractional results such as 1804.8 pixels are fine; the
+/// limit matches the automatic scale policy in `config/desktop-scale.lua`.
+#[must_use]
+pub fn supports_scale(mode: Mode, scale: f64) -> bool {
+    let (w, h) = (
+        (f64::from(mode.width) / scale).round(),
+        (f64::from(mode.height) / scale).round(),
+    );
+    (scale <= 1.0 && w.max(h) <= 16384.0) || (w.max(h) >= 1024.0 && w.min(h) >= 640.0)
+}
+
 #[derive(Default)]
 struct State {
     manager: Option<ZwlrOutputManagerV1>,

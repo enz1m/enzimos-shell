@@ -5,6 +5,8 @@ use std::{collections::BTreeMap, sync::OnceLock};
 
 const ENGLISH: &str = include_str!("locales/en-US.ftl");
 const SPANISH: &str = include_str!("locales/es.ftl");
+const WELCOME_ENGLISH: &str = include_str!("locales/welcome/en-US.ftl");
+const WELCOME_SPANISH: &str = include_str!("locales/welcome/es.ftl");
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Language {
@@ -57,6 +59,12 @@ fn catalog() -> Catalog {
             builder
                 .add_resource("es", SPANISH)
                 .expect("valid embedded Spanish messages");
+            builder
+                .add_resource("en-US", WELCOME_ENGLISH)
+                .expect("valid embedded English Welcome messages");
+            builder
+                .add_resource("es", WELCOME_SPANISH)
+                .expect("valid embedded Spanish Welcome messages");
             builder.build()
         })
         .clone()
@@ -105,6 +113,7 @@ fn texts() -> &'static [BTreeMap<&'static str, String>; 2] {
             let localizer = Localizer::new(catalog(), vec![locale], Locale::default());
             ENGLISH
                 .lines()
+                .chain(WELCOME_ENGLISH.lines())
                 .filter_map(|line| {
                     line.split_once(" = ")
                         .filter(|(_, value)| !value.contains('$'))
@@ -281,7 +290,7 @@ mod tests {
         // Catalogs resolve without fallback or format errors.
         {
             let mut arguments = Arguments::new();
-            for source in [ENGLISH, SPANISH] {
+            for source in [ENGLISH, SPANISH, WELCOME_ENGLISH, WELCOME_SPANISH] {
                 for word in source.split('$').skip(1) {
                     let name: String = word
                         .chars()
@@ -290,7 +299,10 @@ mod tests {
                     arguments.set(name, 2);
                 }
             }
-            for (locale, sources) in [("en-US", [ENGLISH]), ("es", [SPANISH])] {
+            for (locale, sources) in [
+                ("en-US", [ENGLISH, WELCOME_ENGLISH]),
+                ("es", [SPANISH, WELCOME_SPANISH]),
+            ] {
                 let localizer =
                     Localizer::new(catalog(), vec![locale.parse().unwrap()], Locale::default());
                 for source in sources {

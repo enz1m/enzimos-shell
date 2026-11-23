@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Welcome
+Name[es]=Bienvenida
+Comment=Desktop layout, appearance and optional AI
+Comment[es]=Diseño del escritorio, apariencia e IA opcional
+Icon=distributor-logo-enzimos
+Exec=/usr/lib/enzui/bin/enzui-welcome
+Categories=Settings;System;
+Keywords=welcome;setup;first;start;
+Keywords[es]=bienvenida;configuración;inicio;
+OnlyShowIn=enzUI;

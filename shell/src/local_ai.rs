@@ -494,16 +494,9 @@ fn apply_at(
 }
 
 fn disabled_path() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .filter(|path| path.is_absolute())
-                .map(|home| home.join(".config"))
-        })
-        .map(|config| config.join("enzimos/local-ai-disabled"))
+    crate::welcome::record_path()?
+        .parent()
+        .map(|config| config.join("local-ai-disabled"))
 }
 
 pub fn enabled() -> bool {

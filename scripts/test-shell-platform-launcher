@@ -56,11 +56,32 @@ class PlatformTests(unittest.TestCase):
             platform.enroll_components(self.root)
             platform.stop_session_target()
         self.assertEqual(calls, [["systemctl", "--user", "start", "--no-block", "enzui-session.target"],
-                                 ["systemctl", "--user", "stop", "enzui-session.target"]])
+                                 ["systemctl", "--user", "stop", "enzui-session-ready.target", "enzui-session.target"]])
         target = (SCRIPT.parent.parent / "config/systemd/enzui-session.target").read_text()
         wants = next(line for line in target.splitlines() if line.startswith("Wants=")).split("=", 1)[1].split()
         for unit in ("enzui-center.service", "enzimos-ai-setup.service", "enzimos-inference.service", "enzimos-ai-gateway.service"):
             self.assertIn(unit, wants)
+
+    def test_autostart_starts_through_the_ready_target(self):
+        calls = []
+
+        def run(args, **_):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with mock.patch.object(platform.subprocess, "run", side_effect=run):
+            platform.start_ready_target()
+        self.assertEqual(calls, [["systemctl", "--user", "start", "--no-block", "enzui-session-ready.target"]])
+        fields = {}
+        for line in (SCRIPT.parent.parent / "config/systemd/enzui-session-ready.target").read_text().splitlines():
+            key, sep, value = line.partition("=")
+            if sep:
+                fields.setdefault(key, []).extend(value.split())
+        self.assertEqual(fields["BindsTo"], ["graphical-session.target"])
+        self.assertIn("xdg-desktop-autostart.target", fields["Wants"])
+        self.assertIn("xdg-desktop-autostart.target", fields["Before"])
+        self.assertEqual(fields["PartOf"], ["enzui-session.target"])
+        self.assertEqual(fields["RefuseManualStart"], ["no"])
 
     def test_compositor_state_lives_apart_from_hyprlands(self):
         home = self.root / "home"

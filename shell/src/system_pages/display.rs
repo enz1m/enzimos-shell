@@ -1,7 +1,7 @@
 use super::*;
 use enzui_shell::i18n::{self, tr};
 use enzui_shell::system_settings::display::{
-    self, Change, Displays, Mode, Output, Rotation, SCALES, Side,
+    self, Change, Displays, Mode, Output, Rotation, SCALES, Side, supports_scale,
 };
 use enzui_shell::tr;
 use enzui_widgets::pressable::{PressableStyle, enz_pressable};
@@ -69,17 +69,6 @@ pub(super) fn dropped_layout(
     let sides = display::sides(&layout);
     display::pack(&mut layout, &sides);
     Some(layout)
-}
-
-/// Whether `scale` leaves a usable desktop on `mode`. The compositor accepts any listed scale
-/// and rounds the logical size, so fractional results such as 1804.8 pixels are fine; the
-/// limit matches the automatic scale policy in `config/desktop-scale.lua`.
-fn supports_scale(mode: Mode, scale: f64) -> bool {
-    let (w, h) = (
-        (f64::from(mode.width) / scale).round(),
-        (f64::from(mode.height) / scale).round(),
-    );
-    (scale <= 1.0 && w.max(h) <= 16384.0) || (w.max(h) >= 1024.0 && w.min(h) >= 640.0)
 }
 
 fn scale_label(scale: f64) -> String {

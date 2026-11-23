@@ -27,9 +27,11 @@ stage (then recorded in the manifest). Layout:
   PREFIX/bin/enzui-session     the login session command
   PREFIX/share/wayland-sessions/enzui.desktop
   etc/greetd/config.toml, etc/pam.d/enzui-lock, etc/pam.d/enzui-fingerprint, PREFIX/lib/tmpfiles.d/enzui-greeter.conf
-  PREFIX/share/enzui/agent-apps/, PREFIX/lib/systemd/user/ (with enzui-session.target),
+  PREFIX/share/enzui/agent-apps/, PREFIX/lib/systemd/user/ (with enzui-session.target and enzui-session-ready.target),
   PREFIX/share/dbus-1/services/, PREFIX/share/enzimos/background-apps/
                                Settings' on-demand agent worker (config/agent)
+  PREFIX/share/applications/dev.enzui.Welcome.desktop, etc/xdg/autostart/dev.enzui.Welcome.desktop
+                               Welcome and its first-login start (config/welcome)
 """
 import argparse
 import hashlib
@@ -45,7 +47,7 @@ import sys
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
 
-EXECUTABLES = ["enzui-shell", "enzui-settings", "enzui-shell-command", "enzui-desktop-frame", "enzui-maximize-preview", "enzui-idle-inhibit",
+EXECUTABLES = ["enzui-shell", "enzui-settings", "enzui-welcome", "enzui-shell-command", "enzui-desktop-frame", "enzui-maximize-preview", "enzui-idle-inhibit",
                "enzui-wallpaper", "enzui-polkit-agent", "enzui-location-agent", "enzui-keyring-prompt", "enzui-drive-unlock", "enzui-agent-consent", "enzui-assistant", "enzui-network-secrets", "enzui-portal", "enzui-lock", "enzui-greeter", "enzui-dev-tools", "enzwall",
                "enzui-plugin-worker", "window-snapshot", "xdg-desktop-portal-enzui-remote"]
 DESKTOP_SCRIPTS = ["start-shell-platform", "run-wallpaper", "launch-desktop-app"]
@@ -379,6 +381,16 @@ def main():
         path.chmod(0o644)
         track(path, "agent")
 
+    # systemd's autostart generator ignores the entry's condition; Welcome checks its own record.
+    welcome = ROOT / "config/welcome"
+    for source, target in ((welcome / "dev.enzui.Welcome.desktop", prefix / "share/applications/dev.enzui.Welcome.desktop"),
+                           (welcome / "dev.enzui.Welcome.autostart.desktop", Path("/etc/xdg/autostart/dev.enzui.Welcome.desktop"))):
+        path = at(target)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source.read_text().replace("/usr/lib/enzui/bin/", f"{prefix}/lib/enzui/bin/"))
+        path.chmod(0o644)
+        track(path, "welcome")
+
     # Settings' own app icon (from the enzimOS icon set), named by its desktop entry.
     settings_icon = at(prefix / "share/icons/hicolor/scalable/apps/dev.enzui.Settings.svg")
     settings_icon.parent.mkdir(parents=True, exist_ok=True)
@@ -393,11 +405,12 @@ def main():
         path.chmod(0o644)
         track(path, "session")
 
-    # The session's own target; see config/systemd/enzui-session.target.
-    session_target = at(prefix / "lib/systemd/user/enzui-session.target")
-    session_target.parent.mkdir(parents=True, exist_ok=True)
-    copy(ROOT / "config/systemd/enzui-session.target", session_target, 0o644)
-    track(session_target, "session")
+    # The session's own targets; see config/systemd/.
+    for name in ("enzui-session.target", "enzui-session-ready.target"):
+        session_target = at(prefix / "lib/systemd/user" / name)
+        session_target.parent.mkdir(parents=True, exist_ok=True)
+        copy(ROOT / "config/systemd" / name, session_target, 0o644)
+        track(session_target, "session")
 
     notices = at(prefix / "share/licenses/enzui-desktop")
     notices.mkdir(parents=True, exist_ok=True)

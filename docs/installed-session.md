@@ -27,7 +27,11 @@ Startup proceeds in this order:
 4. Start wallpaper and shell. The shell owns notifications, clipboard services,
    plugin workers and the session's authorization dialogs.
 5. Publish `ready.json` after the shell frame covers its selected output, then
-   start the generated `xdg-desktop-autostart.target`.
+   start `enzui-session-ready.target`. The stock `graphical-session.target`
+   and `xdg-desktop-autostart.target` refuse manual starts; the ready target
+   binds the first and wants the second, so generated autostart units start
+   only after the frame is ready. Logout stops it with `enzui-session.target`,
+   and both stock targets stop once no desktop needs them.
 
 Private receipts include compositor PID/start identity, instance, display,
 `launch.json`, session-bus address/peer and shell PID/start identity. The installed
@@ -125,6 +129,26 @@ Each account receives its own enrolled app credentials when the broker is
 available. Existing credentials are not replaced to bypass revocation. The
 framework's provisioning overrides select credentials and broker sockets for
 isolated development.
+
+## First-login Welcome
+
+`enzui-welcome` sets the desktop layout, appearance and optional AI once per
+account. `/etc/xdg/autostart/dev.enzui.Welcome.desktop` starts it with
+`--first-login` through `enzui-session-ready.target`. It opens only in a local
+installed session and only while `$XDG_CONFIG_HOME/enzimos/welcome.json` is
+absent. systemd's generator ignores the entry's `X-GNOME-Autostart-Condition`,
+so the app's own check decides. Finishing or
+cancelling writes that record atomically; its presence alone ends first-login
+launches. The Welcome app entry reopens it on demand.
+
+Layout and appearance choices go through the shell settings store and shared
+theme file. A scale change uses the display path from Settings and returns to
+the previous layout after 15 seconds unless kept. On-device AI defaults to
+off when completing setup for the first time. Cancelling preserves the
+current AI preference. Providers use the gateway configuration that Settings writes.
+Chosen models are passed to `enzui-settings --queue-models ID...`. Settings
+owns those downloads and their bar progress. Welcome records completion only
+after Settings accepts the job.
 
 ## Portals and remote control
 

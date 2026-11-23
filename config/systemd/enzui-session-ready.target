@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: MIT
+[Unit]
+Description=enzUI desktop ready for applications
+# The stock session and XDG autostart targets refuse manual starts.
+BindsTo=graphical-session.target
+Before=graphical-session.target
+Wants=graphical-session-pre.target xdg-desktop-autostart.target
+After=graphical-session-pre.target enzui-session.target
+Before=xdg-desktop-autostart.target
+PartOf=enzui-session.target
+RefuseManualStart=no
+RefuseManualStop=no

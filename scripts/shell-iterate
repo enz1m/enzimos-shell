@@ -8,7 +8,7 @@ import time
 import tomllib
 
 ROOT = Path(__file__).resolve().parent.parent
-TARGETS = {"lib": ["--lib"], "settings": ["--bin", "enzui-settings"], "shell": ["--bin", "enzui-shell"]}
+TARGETS = {"lib": ["--lib"], "settings": ["--bin", "enzui-settings"], "welcome": ["--bin", "enzui-welcome"], "shell": ["--bin", "enzui-shell"]}
 
 
 def cargo_arguments(mode, target=None, test_filter=None):

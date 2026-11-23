@@ -1,8 +1,8 @@
-use super::{Message as ParentMessage, SettingsApp};
+use super::{Message as ParentMessage, SettingsApp, model_downloads};
 use enzui_shell::i18n::tr;
 use enzui_shell::local_ai::{
-    self, Change, ChatGpt, Failure, Gateway, Inference, Online, PRESETS, ProviderEdit, Service,
-    SpeechOffer,
+    self, Change, ChatGpt, Failure, Gateway, Inference, ModelOffer, Online, PRESETS, ProviderEdit,
+    Service,
 };
 use enzui_shell::tr;
 use enzui_widgets::button::{ButtonKind, enz_button};
@@ -20,8 +20,10 @@ pub(super) struct State {
     busy: Option<Service>,
     notice: Option<(Service, String)>,
     chatgpt: Option<ChatGpt>,
-    /// Speech models the model tool can download; empty without the runtime.
-    offers: Vec<SpeechOffer>,
+    offers: Vec<ModelOffer>,
+    downloads: Vec<model_downloads::Reading>,
+    advanced: bool,
+    enabled: bool,
     /// The provider being added: preset (past the presets: another), name, address, key.
     preset: usize,
     name: String,
@@ -34,7 +36,9 @@ type Readings = (
     Result<Inference, Failure>,
     Result<Gateway, Failure>,
     Option<ChatGpt>,
-    Vec<SpeechOffer>,
+    Vec<ModelOffer>,
+    Vec<model_downloads::Reading>,
+    bool,
 );
 
 #[derive(Clone, Debug)]
@@ -58,20 +62,18 @@ pub(super) enum Message {
     Dropped(enzui_widgets::file_drop::FileDrop),
     /// Dictation uses this speech model.
     SpeechDefault(String),
-    /// Download and add a speech model from the catalog.
     Fetch(String),
+    Queued(Result<(), String>),
+    RefreshStatus,
+    ToggleAdvanced,
+    SetEnabled(bool),
+    Enabled(Result<(), String>),
     /// The model tool's answer to a choice or a download.
     ToolDone(Result<String, String>),
 }
 
-/// Where the model registry tool is installed.
-const MODELS_TOOL: &str = "/usr/bin/enzimos-inference-models";
-/// The runtime the downloadable speech models need.
-const SPEECH_ONNX: &str = "/usr/lib/enzimos-inference/speech-onnx/sherpa-onnx-offline";
-
-/// Runs the model registry tool; its message without the tool's name.
 fn models_tool(args: &[&std::ffi::OsStr]) -> Result<String, String> {
-    let output = std::process::Command::new(MODELS_TOOL)
+    let output = std::process::Command::new(local_ai::MODELS_TOOL)
         .args(args)
         .stdin(std::process::Stdio::null())
         .output()
@@ -127,21 +129,19 @@ fn read() -> Task<ParentMessage> {
                     .is_ok_and(|g| g.providers.iter().any(|p| p.kind == "chatgpt-login"))
                     .then(|| local_ai::chatgpt().ok())
                     .flatten();
-                let offers = if std::path::Path::new(SPEECH_ONNX).is_file() {
-                    std::process::Command::new(MODELS_TOOL)
-                        .arg("catalog")
-                        .stdin(std::process::Stdio::null())
-                        .output()
-                        .ok()
-                        .filter(|output| output.status.success())
-                        .map(|output| {
-                            local_ai::parse_catalog(&String::from_utf8_lossy(&output.stdout))
-                        })
-                        .unwrap_or_default()
-                } else {
-                    Vec::new()
-                };
-                (local_ai::read_inference(), gateway, chatgpt, offers)
+                let catalog = local_ai::read_model_catalog();
+                let downloads = catalog
+                    .iter()
+                    .filter_map(|offer| model_downloads::reading(&offer.id))
+                    .collect();
+                (
+                    local_ai::read_inference(),
+                    gateway,
+                    chatgpt,
+                    catalog,
+                    downloads,
+                    local_ai::enabled(),
+                )
             })
             .await
             .unwrap_or((
@@ -149,6 +149,8 @@ fn read() -> Task<ParentMessage> {
                 Err(Failure::Unavailable),
                 None,
                 Vec::new(),
+                Vec::new(),
+                false,
             ))
         },
         |readings| send(Message::Read(Box::new(readings))),
@@ -225,10 +227,16 @@ fn seconds(n: u32) -> String {
     }
 }
 
+impl State {
+    fn model_busy(&self) -> bool {
+        self.busy.is_some() || self.downloads.iter().any(model_downloads::Reading::pending)
+    }
+}
+
 impl SettingsApp {
     /// Adds the model file the user chose to this account's registry.
     pub(super) fn local_ai_add_model(&mut self, path: std::path::PathBuf) -> Task<ParentMessage> {
-        if self.local_ai.busy.is_some() {
+        if self.local_ai.model_busy() || !self.controls_live() {
             return Task::none();
         }
         self.local_ai.busy = Some(Service::Inference);
@@ -244,7 +252,7 @@ impl SettingsApp {
     pub(super) fn model_import_offered(&self) -> bool {
         match &self.local_ai.inference {
             Some(Ok(_)) => true,
-            Some(Err(_)) => self.offers(enzui_shell::platform::Feature::LocalAiModels),
+            Some(Err(_)) => std::path::Path::new(local_ai::MODELS_TOOL).is_file(),
             None => false,
         }
     }
@@ -263,12 +271,50 @@ impl SettingsApp {
         let state = &mut self.local_ai;
         match message {
             Message::Read(readings) => {
-                let (inference, gateway, chatgpt, offers) = *readings;
+                let (inference, gateway, chatgpt, offers, downloads, enabled) = *readings;
                 state.reading = false;
+                if state.inference.as_ref() == Some(&inference)
+                    && state.gateway.as_ref() == Some(&gateway)
+                    && state.chatgpt == chatgpt
+                    && state.offers == offers
+                    && state.downloads == downloads
+                    && state.enabled == enabled
+                {
+                    return iced::window::invalidate(iced::window::Invalidation::none());
+                }
+                state.downloads = downloads;
+                state.enabled = enabled;
                 state.offers = offers;
                 state.inference = Some(inference);
                 state.gateway = Some(gateway);
                 state.chatgpt = chatgpt;
+            }
+            Message::RefreshStatus => {
+                let task = if live && !state.reading && state.busy.is_none() {
+                    state.reading = true;
+                    read()
+                } else {
+                    Task::none()
+                };
+                return Task::batch([
+                    task,
+                    iced::window::invalidate(iced::window::Invalidation::none()),
+                ]);
+            }
+            Message::ToggleAdvanced => state.advanced = !state.advanced,
+            Message::SetEnabled(enabled) => {
+                if state.model_busy() || !live {
+                    return Task::none();
+                }
+                state.busy = Some(Service::Inference);
+                state.notice = None;
+                return blocking(move || local_ai::set_enabled(enabled), Message::Enabled);
+            }
+            Message::Enabled(result) => {
+                state.busy = None;
+                state.notice = result.err().map(|error| (Service::Inference, error));
+                state.reading = true;
+                return read();
             }
             Message::Preset(index) => {
                 state.preset = index;
@@ -343,6 +389,9 @@ impl SettingsApp {
                     return Task::none();
                 }
                 let service = change.service();
+                if service == Service::Inference && state.model_busy() {
+                    return Task::none();
+                }
                 let known = match service {
                     Service::Inference => state
                         .inference
@@ -374,7 +423,7 @@ impl SettingsApp {
             Message::Dropped(drop) => {
                 if !live
                     || !import_offered
-                    || state.busy.is_some()
+                    || state.model_busy()
                     || state.native_drop.is_some()
                     || drop.paths().len() != 1
                     || drop
@@ -405,27 +454,28 @@ impl SettingsApp {
                 return read();
             }
             Message::SpeechDefault(id) => {
-                if state.busy.is_some() || !live {
+                if state.model_busy() || !live {
                     return Task::none();
                 }
                 state.busy = Some(Service::Inference);
                 return tool_task(vec!["default".into(), id.into()], Message::ToolDone);
             }
             Message::Fetch(id) => {
-                if state.busy.is_some() || !live {
+                if state.model_busy() || !live {
                     return Task::none();
                 }
-                let title = state
-                    .offers
-                    .iter()
-                    .find(|o| o.id == id)
-                    .map_or_else(|| id.clone(), |o| o.title.clone());
                 state.busy = Some(Service::Inference);
-                state.notice = Some((
-                    Service::Inference,
-                    tr!("shell-downloading-speech-model", "arg0" => title),
-                ));
-                return tool_task(vec!["fetch".into(), id.into()], Message::ToolDone);
+                state.notice = None;
+                return blocking(
+                    move || model_downloads::queue(&[id], false),
+                    Message::Queued,
+                );
+            }
+            Message::Queued(result) => {
+                state.busy = None;
+                state.notice = result.err().map(|error| (Service::Inference, error));
+                state.reading = true;
+                return read();
             }
             Message::ToolDone(result) => {
                 state.busy = None;
@@ -473,13 +523,20 @@ impl SettingsApp {
         .into()
     }
 
-    fn inference_rows<'a>(&self, inference: &Inference) -> iced::widget::Column<'a, ParentMessage> {
+    fn inference_rows<'a>(
+        &self,
+        mut rows: iced::widget::Column<'a, ParentMessage>,
+        inference: &Inference,
+    ) -> iced::widget::Column<'a, ParentMessage> {
         let p = &inference.preferences;
-        let live = inference.persistent && self.local_ai.busy.is_none() && self.controls_live();
+        let live = inference.persistent && !self.local_ai.model_busy() && self.controls_live();
         let (title, mut details) = match &inference.loaded_model {
-            Some(model) => (tr!("shell-using", "arg0" => model.clone()), Vec::new()),
+            Some(model) => (
+                tr!("shell-model-loaded", "arg0" => self.model_title(model).to_owned()),
+                Vec::new(),
+            ),
             None => (
-                tr("shell-ready").to_owned(),
+                tr("shell-model-standby").to_owned(),
                 vec![tr("shell-no-model-loaded-one-loads-when-something-asks").to_owned()],
             ),
         };
@@ -495,17 +552,16 @@ impl SettingsApp {
         if let Some(peak) = inference.peak_rss_mib {
             details.push(tr!("shell-used-up-to-mb", "arg0" => format!("{:}", peak)));
         }
-        let mut rows = column![
+        rows = rows.push(
             self.mark_setting(
                 "agents/local-ai",
                 crate::settings_app::settings_row(title)
                     .subtitle(details.join(" · "))
                     .subtitle_wrap(true)
                     .icon("cpu")
-                    .into_element()
-            )
-        ]
-        .spacing(2);
+                    .into_element(),
+            ),
+        );
         if let Some(failure) = &inference.failure {
             rows = rows.push(
                 crate::settings_app::settings_row(tr("shell-the-last-request-failed"))
@@ -537,16 +593,41 @@ impl SettingsApp {
                 .control(control)
                 .into_element()
         };
-        let models = inference.models.clone();
-        let current_model = models.iter().position(|m| *m == p.default_model);
-        rows = rows.push(choice(
-            enzui_shell::i18n::tr("shell-model"),
-            tr("shell-used-when-an-app-or-the-assistant-does-not-ask-for-one"),
-            "local-ai-model",
-            models.clone(),
-            current_model,
-            Box::new(move |index| models.get(index).cloned().map(Change::DefaultModel)),
-        ));
+        if !inference.models.is_empty() {
+            let models = inference.models.clone();
+            let current_model = models.iter().position(|m| *m == p.default_model);
+            rows = rows.push(choice(
+                tr("shell-model-default-text"),
+                tr("shell-used-when-an-app-or-the-assistant-does-not-ask-for-one"),
+                "local-ai-model",
+                models
+                    .iter()
+                    .map(|model| self.model_title(model).to_owned())
+                    .collect(),
+                current_model,
+                Box::new(move |index| models.get(index).cloned().map(Change::DefaultModel)),
+            ));
+        }
+        rows = rows.push(
+            crate::settings_app::settings_row(tr("shell-model-runtime-options"))
+                .icon("sliders-horizontal")
+                .control(
+                    enz_button(
+                        if self.local_ai.advanced {
+                            tr("shell-hide")
+                        } else {
+                            tr("shell-show")
+                        },
+                        send(Message::ToggleAdvanced),
+                    )
+                    .kind(ButtonKind::Secondary)
+                    .into_element(),
+                )
+                .into_element(),
+        );
+        if !self.local_ai.advanced {
+            return rows;
+        }
         let threads: [Option<u8>; 3] = [None, Some(1), Some(2)];
         rows = rows.push(choice(
             tr("shell-processor-threads"),
@@ -791,12 +872,85 @@ impl SettingsApp {
         form.into()
     }
 
+    fn model_title<'a>(&'a self, id: &'a str) -> &'a str {
+        self.local_ai
+            .offers
+            .iter()
+            .find(|offer| offer.id == id)
+            .map_or(id, |offer| offer.title.as_str())
+    }
+
+    fn available_model_rows<'a>(
+        &self,
+        mut rows: iced::widget::Column<'a, ParentMessage>,
+        speech: bool,
+    ) -> iced::widget::Column<'a, ParentMessage> {
+        let state = &self.local_ai;
+        let live = state.enabled && !state.model_busy() && self.controls_live();
+        for offer in state.offers.iter().filter(|offer| offer.speech == speech) {
+            let current = state
+                .downloads
+                .iter()
+                .find(|download| download.model == offer.id);
+            let status = current.map(|download| match &download.phase {
+                model_downloads::Phase::Downloading { done, total } if *total > 0 =>
+                    tr!("shell-model-downloading-percent", "arg0" => (done.saturating_mul(100) / total).min(100).to_string()),
+                model_downloads::Phase::Downloading { .. } => tr("shell-model-downloading").to_owned(),
+                model_downloads::Phase::Queued => tr("shell-model-download-queued").to_owned(),
+                model_downloads::Phase::Verifying => tr("shell-model-verifying").to_owned(),
+                model_downloads::Phase::Installed => tr("shell-model-installed").to_owned(),
+                model_downloads::Phase::Failed(error) => error.clone(),
+            });
+            let mut row = crate::settings_app::settings_row(offer.title.clone())
+                .subtitle(status.unwrap_or_else(|| {
+                    let availability = if offer.added {
+                        tr("shell-model-installed")
+                    } else if offer.needs_runtime {
+                        tr("shell-model-runtime-required")
+                    } else {
+                        offer.size.as_str()
+                    };
+                    format!("{} · {availability}", offer.description)
+                }))
+                .subtitle_wrap(true)
+                .icon(if speech { "mic" } else { "cpu" });
+            if !offer.added {
+                let action = if matches!(
+                    current.map(|download| &download.phase),
+                    Some(model_downloads::Phase::Failed(_))
+                ) {
+                    tr("shell-retry")
+                } else {
+                    tr("shell-download")
+                };
+                row = row.control(
+                    enz_button(action, send(Message::Fetch(offer.id.clone())))
+                        .kind(ButtonKind::Secondary)
+                        .enabled(live && !offer.needs_runtime)
+                        .into_element(),
+                );
+            }
+            rows = rows.push(row.into_element());
+        }
+        rows
+    }
+
     pub(super) fn local_ai_sections<'a>(
         &'a self,
         body: iced::widget::Column<'a, ParentMessage>,
     ) -> iced::widget::Column<'a, ParentMessage> {
         let state = &self.local_ai;
         let mut on_device = column![].spacing(2);
+        if self.model_import_offered() {
+            on_device = on_device.push(
+                crate::settings_app::settings_row(tr("shell-model-enable-local"))
+                    .icon("cpu")
+                    .subtitle(tr("shell-model-enable-local-description"))
+                    .switch(state.enabled, |enabled| send(Message::SetEnabled(enabled)))
+                    .enabled(!state.model_busy() && self.controls_live())
+                    .into_element(),
+            );
+        }
         match &state.inference {
             None => {
                 on_device = on_device.push(
@@ -808,6 +962,7 @@ impl SettingsApp {
                     ),
                 );
             }
+            Some(Err(_)) if !state.enabled => {}
             Some(Err(failure)) => {
                 let (title, subtitle) = match failure {
                     Failure::Unavailable => (tr("shell-not-running"), tr("shell-the-on-device-ai-service-runs-for-this-login-once-enzimos-provides-a-model").to_owned()),
@@ -824,81 +979,106 @@ impl SettingsApp {
                     ),
                 );
             }
-            Some(Ok(inference)) => on_device = self.inference_rows(inference),
+            Some(Ok(inference)) if state.enabled => {
+                on_device = self.inference_rows(on_device, inference);
+            }
+            Some(Ok(_)) => {}
         }
         if self.model_import_offered() {
             let add = enzui_widgets::button::enz_button(
-                tr("shell-add-a-model"),
+                tr("shell-model-browse"),
                 ParentMessage::FileChooser(super::settings_file_chooser::Message::OpenModel),
             )
             .kind(enzui_widgets::button::ButtonKind::Secondary)
-            .enabled(state.busy.is_none() && self.controls_live())
+            .enabled(!state.model_busy() && self.controls_live())
             .into_element();
-            let target: Element<'_, ParentMessage> = crate::settings_app::settings_row(tr(
-                "shell-models-on-this-computer",
-            ))
-            .subtitle(tr(
-                "shell-add-a-gguf-model-such-as-minicpm-or-a-whisper-speech-model-from-a-file",
-            ))
-            .subtitle_wrap(true)
-            .icon("package")
-            .control(add)
-            .into_element();
+            let target: Element<'_, ParentMessage> =
+                crate::settings_app::settings_row(tr("shell-model-import-file"))
+                    .subtitle(tr("shell-model-import-file-description"))
+                    .subtitle_wrap(true)
+                    .icon("package")
+                    .control(add)
+                    .into_element();
             on_device = on_device.push(
                 enzui_widgets::file_drop::enz_file_drop_target_with_receipt(target, |drop| {
                     send(Message::Dropped(drop))
                 })
-                .enabled(
-                    state.busy.is_none() && state.native_drop.is_none() && self.controls_live(),
-                )
+                .enabled(!state.model_busy() && state.native_drop.is_none() && self.controls_live())
                 .copy_only(true)
                 .key("local-ai-model-import"),
             );
         }
-        // Dictation (Super+H) is the speech model's user.
-        if let Some(Ok(inference)) = &state.inference {
-            let voice = inference.voice_model();
-            let subtitle = match voice {
-                Some(model) => tr!("shell-voice-typing-uses", "arg0" => model.to_owned()),
+        on_device = self.available_model_rows(on_device, false);
+
+        let inference = state
+            .inference
+            .as_ref()
+            .and_then(|result| result.as_ref().ok());
+        let voice = inference.and_then(Inference::voice_model);
+        let subtitle = match &state.inference {
+            _ if !state.enabled => tr("shell-off").to_owned(),
+            None => tr("shell-checking").to_owned(),
+            Some(Err(_)) => tr("shell-not-available").to_owned(),
+            Some(Ok(_)) => match voice {
+                Some(model) => {
+                    tr!("shell-voice-typing-uses", "arg0" => self.model_title(model).to_owned())
+                }
                 None => tr("shell-voice-typing-needs-a-speech-model").to_owned(),
-            };
-            let mut row = crate::settings_app::settings_row(tr("shell-voice-typing"))
-                .subtitle(subtitle)
-                .subtitle_wrap(true)
-                .icon("mic");
-            if inference.speech_models.len() > 1 {
-                let models = inference.speech_models.clone();
-                let selected = models.iter().position(|m| Some(m.as_str()) == voice);
-                row = row.control(
-                    enz_combo_box("", models.clone(), None, |_| ParentMessage::Noop)
-                        .aria_label(tr("shell-speech-model"))
-                        .on_select_index(move |index| {
-                            models.get(index).map_or(ParentMessage::Noop, |id| {
-                                send(Message::SpeechDefault(id.clone()))
-                            })
-                        })
-                        .selected_index(selected)
-                        .enabled(state.busy.is_none() && self.controls_live())
-                        .width(220)
-                        .into_element(),
-                );
-            }
-            on_device = on_device.push(row.into_element());
-            for offer in state.offers.iter().filter(|offer| !offer.added) {
-                let download =
-                    enz_button(tr("shell-download"), send(Message::Fetch(offer.id.clone())))
+            },
+        };
+        let mut row = crate::settings_app::settings_row(tr("shell-model-default-speech"))
+            .subtitle(subtitle)
+            .subtitle_wrap(true)
+            .icon("mic");
+        if let Some(inference) = inference
+            && !inference.speech_models.is_empty()
+        {
+            let models = inference.speech_models.clone();
+            let selected = models.iter().position(|m| Some(m.as_str()) == voice);
+            row = row.control(
+                enz_combo_box(
+                    "",
+                    models
+                        .iter()
+                        .map(|model| self.model_title(model).to_owned())
+                        .collect::<Vec<_>>(),
+                    None,
+                    |_| ParentMessage::Noop,
+                )
+                .aria_label(tr("shell-speech-model"))
+                .on_select_index(move |index| {
+                    models.get(index).map_or(ParentMessage::Noop, |id| {
+                        send(Message::SpeechDefault(id.clone()))
+                    })
+                })
+                .selected_index(selected)
+                .enabled(state.enabled && !state.model_busy() && self.controls_live())
+                .width(220)
+                .into_element(),
+            );
+        }
+        let mut speech =
+            column![self.mark_setting("agents/voice-typing", row.into_element())].spacing(2);
+        speech = self.available_model_rows(speech, true);
+        if self.model_import_offered() {
+            speech = speech.push(
+                crate::settings_app::settings_row(tr("shell-model-import-speech-folder"))
+                    .subtitle(tr("shell-model-import-speech-folder-description"))
+                    .subtitle_wrap(true)
+                    .icon("folder-open")
+                    .control(
+                        enz_button(
+                            tr("shell-model-browse"),
+                            ParentMessage::FileChooser(
+                                super::settings_file_chooser::Message::OpenModelFolder,
+                            ),
+                        )
                         .kind(ButtonKind::Secondary)
-                        .enabled(state.busy.is_none() && self.controls_live())
-                        .into_element();
-                on_device = on_device.push(
-                    crate::settings_app::settings_row(offer.title.clone())
-                        .subtitle(tr!("shell-speech-model-offer", "arg0" => offer.size.clone(), "arg1" => offer.languages.clone()))
-                        .subtitle_wrap(true)
-                        .icon("download")
-                        .control(download)
+                        .enabled(!state.model_busy() && self.controls_live())
                         .into_element(),
-                );
-            }
+                    )
+                    .into_element(),
+            );
         }
         if let Some(notice) = self.local_ai_notice(Service::Inference) {
             on_device = on_device.push(notice);
@@ -940,8 +1120,14 @@ impl SettingsApp {
         }
         body.push(
             self.section_card_for("agents/local-ai", on_device)
-                .title(tr("shell-on-device-ai"))
-                .description(tr("shell-runs-models-on-this-computer-changes-apply-to-the-next-request-work-in-progr"))
+                .title(tr("shell-model-local-text"))
+                .description(tr("shell-model-local-text-description"))
+                .into_element(),
+        )
+        .push(
+            self.section_card_for("agents/voice-typing", speech)
+                .title(tr("shell-voice-typing"))
+                .description(tr("shell-model-voice-description"))
                 .into_element(),
         )
         .push(

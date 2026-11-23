@@ -1781,6 +1781,13 @@ pub static ENTRIES: &[Entry] = &[
     ),
     entry!(
         Agents,
+        "agents/voice-typing",
+        "shell-voice-typing",
+        "shell-voice-typing",
+        "shell-dictation-voice-typing-speech-quick-action"
+    ),
+    entry!(
+        Agents,
         "agents/ai-providers",
         "shell-ai-providers",
         "shell-ai-providers",

@@ -20,6 +20,7 @@ enum Purpose {
     Vpn,
     SshKey,
     Model,
+    ModelFolder,
     Phone,
     // A folder Search looks in, or leaves out when true.
     SearchFolder(bool),
@@ -29,7 +30,7 @@ impl Purpose {
         match self {
             Self::Vpn => super::Page::Network,
             Self::SshKey => super::Page::Remote,
-            Self::Model => super::Page::Agents,
+            Self::Model | Self::ModelFolder => super::Page::Agents,
             Self::Phone => super::Page::Phone,
             Self::SearchFolder(_) => super::Page::Search,
         }
@@ -40,6 +41,7 @@ pub(super) enum Message {
     OpenVpn,
     OpenSshKey,
     OpenModel,
+    OpenModelFolder,
     OpenPhoneFiles,
     OpenSearchFolder(bool),
     Wake,
@@ -105,11 +107,13 @@ impl SettingsApp {
             Message::OpenVpn
             | Message::OpenSshKey
             | Message::OpenModel
+            | Message::OpenModelFolder
             | Message::OpenPhoneFiles
             | Message::OpenSearchFolder(_) => {
                 let purpose = match message {
                     Message::OpenSshKey => Purpose::SshKey,
                     Message::OpenModel => Purpose::Model,
+                    Message::OpenModelFolder => Purpose::ModelFolder,
                     Message::OpenPhoneFiles => Purpose::Phone,
                     Message::OpenSearchFolder(excluded) => Purpose::SearchFolder(excluded),
                     _ => Purpose::Vpn,
@@ -154,6 +158,8 @@ impl SettingsApp {
                             format!("{} (.pub)", tr("shell-ssh-select-key-file")),
                             ["pub"],
                         ))
+                } else if purpose == Purpose::ModelFolder {
+                    ChooserOptions::new().title(tr("shell-model-import-speech-folder"))
                 } else if purpose == Purpose::Model {
                     ChooserOptions::new().title(tr("shell-add-a-model")).filter(
                         FileFilter::extensions(
@@ -171,7 +177,9 @@ impl SettingsApp {
                 };
                 let operation = match purpose {
                     Purpose::Phone => PortalOperation::OpenMultiple,
-                    Purpose::SearchFolder(_) => PortalOperation::OpenDirectory,
+                    Purpose::SearchFolder(_) | Purpose::ModelFolder => {
+                        PortalOperation::OpenDirectory
+                    }
                     _ => PortalOperation::OpenFile,
                 };
                 let request = FileRequest::new(operation, PortalParent::None).with_options(options);
@@ -217,7 +225,9 @@ impl SettingsApp {
                         if let [path] = paths.as_slice() {
                             match self.file_chooser.purpose {
                                 Purpose::SshKey => return self.remote_key_file(path.clone()),
-                                Purpose::Model => return self.local_ai_add_model(path.clone()),
+                                Purpose::Model | Purpose::ModelFolder => {
+                                    return self.local_ai_add_model(path.clone());
+                                }
                                 Purpose::SearchFolder(excluded) => {
                                     let Some(path) = path.to_str() else {
                                         self.error =

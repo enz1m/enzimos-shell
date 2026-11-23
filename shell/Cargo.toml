@@ -23,6 +23,7 @@ enzui-theme = { git = "https://github.com/enz1m/enzui.git", rev = "ac1a3d759d40c
 enzui-icons = { git = "https://github.com/enz1m/enzui.git", rev = "ac1a3d759d40c9f9f26f3b80b40e508dea086776" }
 enzui-widgets = { features = ["portal-dbus"], git = "https://github.com/enz1m/enzui.git", rev = "ac1a3d759d40c9f9f26f3b80b40e508dea086776" }
 enzui-agent = { features = ["iced-consumer"], git = "https://github.com/enz1m/enzui.git", rev = "ac1a3d759d40c9f9f26f3b80b40e508dea086776" }
+enzui-activity = { git = "https://github.com/enz1m/enzui.git", rev = "ac1a3d759d40c9f9f26f3b80b40e508dea086776" }
 enzui-agent-app = { git = "https://github.com/enz1m/enzui.git", rev = "ac1a3d759d40c9f9f26f3b80b40e508dea086776" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 ttf-parser = "=0.25.1"

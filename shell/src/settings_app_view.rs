@@ -49,6 +49,12 @@ impl SettingsApp {
     pub(super) fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
             iced::time::every(self.tick_period()).map(|_| Message::Tick),
+            if self.page == super::Page::Agents && !self.closing {
+                iced::time::every(std::time::Duration::from_secs(3))
+                    .map(|_| Message::LocalAi(super::local_ai_settings::Message::RefreshStatus))
+            } else {
+                Subscription::none()
+            },
             self.files_watch
                 .as_ref()
                 .map_or_else(Subscription::none, |watch| {

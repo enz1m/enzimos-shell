@@ -188,45 +188,69 @@ impl Inference {
     }
 }
 
-/// A speech model `enzimos-inference-models fetch` can download.
+/// A model available from the installed model registry tool.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SpeechOffer {
+pub struct ModelOffer {
     pub id: String,
     pub title: String,
     /// As the tool prints it, such as `487 MB`.
     pub size: String,
-    pub languages: String,
+    pub description: String,
+    pub speech: bool,
+    pub needs_runtime: bool,
     pub added: bool,
 }
 
-/// Reads `enzimos-inference-models catalog`: id, title, size, languages and
-/// `added` or `available`, tab-separated, one model per line.
+/// Decodes the model registry catalog, including speech-only catalogs.
 #[must_use]
-pub fn parse_catalog(text: &str) -> Vec<SpeechOffer> {
+pub fn parse_catalog(text: &str) -> Vec<ModelOffer> {
     text.lines()
         .filter_map(|line| {
             let fields: Vec<&str> = line.split('\t').collect();
-            let [id, title, size, languages, state] = fields.as_slice() else {
-                return None;
+            let (id, title, size, description, state, speech) = match fields.as_slice() {
+                [id, title, size, description, state]
+                | [id, title, size, description, state, "speech"] => {
+                    (*id, *title, *size, *description, *state, true)
+                }
+                [id, title, size, description, state, "text"] => {
+                    (*id, *title, *size, *description, *state, false)
+                }
+                _ => return None,
             };
             let clean = |s: &str| {
                 (!s.is_empty() && s.len() <= 128 && !s.chars().any(char::is_control))
                     .then(|| s.to_owned())
             };
-            Some(SpeechOffer {
+            Some(ModelOffer {
                 id: clean(id)?,
                 title: clean(title)?,
                 size: clean(size)?,
-                languages: clean(languages)?,
-                added: match *state {
+                description: clean(description)?,
+                speech,
+                needs_runtime: state == "requires-runtime",
+                added: match state {
                     "added" => true,
-                    "available" => false,
+                    "available" | "requires-runtime" => false,
                     _ => return None,
                 },
             })
         })
         .take(16)
         .collect()
+}
+
+pub const MODELS_TOOL: &str = "/usr/bin/enzimos-inference-models";
+
+pub fn read_model_catalog() -> Vec<ModelOffer> {
+    std::process::Command::new(MODELS_TOOL)
+        .arg("catalog")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map_or_else(Vec::new, |output| {
+            parse_catalog(&String::from_utf8_lossy(&output.stdout))
+        })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -284,7 +308,10 @@ pub fn parse_inference(preferences: &Value, status: &Value, models: &Value) -> O
             idle_seconds: number("idle_seconds")?,
             context: number("context")?,
             backend: text(p.get("backend")?, 64)?,
-            default_model: text(p.get("default_model")?, 128)?,
+            default_model: match p.get("default_model")? {
+                Value::Null => String::new(),
+                value => text(value, 128)?,
+            },
         },
         models: models["data"]
             .as_array()
@@ -464,6 +491,76 @@ fn apply_at(
             |e| e.chars().take(200).collect(),
         ))),
     }
+}
+
+fn disabled_path() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .map(|home| home.join(".config"))
+        })
+        .map(|config| config.join("enzimos/local-ai-disabled"))
+}
+
+pub fn enabled() -> bool {
+    disabled_path().is_none_or(|path| !path.exists())
+}
+
+pub fn set_enabled(enabled: bool) -> Result<(), String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let path =
+        disabled_path().ok_or_else(|| tr("shell-model-configuration-unavailable").to_owned())?;
+    let write_marker = |enable: bool| -> std::io::Result<()> {
+        if enable {
+            match std::fs::remove_file(&path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error),
+            }
+        } else {
+            if let Some(config) = path.parent() {
+                std::fs::create_dir_all(config)?;
+            }
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .open(&path)
+                .map(|_| ())
+        }
+    };
+    let was_enabled = !path.exists();
+    write_marker(enabled).map_err(|error| error.to_string())?;
+    let units = ["enzimos-inference.service", "enzimos-dictation.service"]
+        .into_iter()
+        .filter(|unit| {
+            std::path::Path::new("/usr/lib/systemd/user")
+                .join(unit)
+                .is_file()
+        })
+        .collect::<Vec<_>>();
+    if units.is_empty() {
+        return Ok(());
+    }
+    let result = std::process::Command::new("/usr/bin/systemctl")
+        .args([
+            "--user",
+            "--no-block",
+            if enabled { "start" } else { "stop" },
+        ])
+        .args(units)
+        .stdin(std::process::Stdio::null())
+        .output();
+    if result.as_ref().is_ok_and(|output| output.status.success()) {
+        return Ok(());
+    }
+    let _ = write_marker(was_enabled);
+    Err(tr("shell-model-service-change-failed").into())
 }
 
 /// The gateway's provider configuration: `~/.config/enzimos/ai-providers.json`.
@@ -866,9 +963,10 @@ mod tests {
         // Catalog lines become offers and malformed lines are skipped.
         {
             let offers = parse_catalog(
-                "parakeet-tdt-v3\tParakeet TDT 0.6B v3\t487 MB\t25 European\tavailable\nmoonshine-base\tMoonshine base\t251 MB\tEnglish\tadded\nbroken\tline\n",
+                "parakeet-tdt-v3\tParakeet TDT 0.6B v3\t487 MB\t25 European\tavailable\nmoonshine-base\tMoonshine base\t251 MB\tEnglish\tadded\nlfm3-vl-2b\tLFM3-VL-2B\t1099 MB\tText\trequires-runtime\ttext\nbroken\tline\n",
             );
-            assert_eq!(offers.len(), 2);
+            assert_eq!(offers.len(), 3);
+            assert!(offers[2].needs_runtime && !offers[2].speech);
             assert_eq!(offers[0].id, "parakeet-tdt-v3");
             assert!(!offers[0].added);
             assert!(offers[1].added);

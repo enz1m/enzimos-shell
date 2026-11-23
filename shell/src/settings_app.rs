@@ -21,6 +21,8 @@ mod fonts;
 mod local_ai_settings;
 #[path = "settings_lock.rs"]
 mod lock_settings;
+#[path = "model_downloads.rs"]
+mod model_downloads;
 #[path = "settings_navigation.rs"]
 mod navigation;
 #[path = "notifications_settings.rs"]
@@ -483,7 +485,11 @@ fn requested_window_size(width: Option<&str>, height: Option<&str>) -> Option<ic
 }
 pub(crate) fn main() -> std::process::ExitCode {
     use enzui_agent_app::LaunchMode;
-    match LaunchMode::from_args(std::env::args_os().skip(1)) {
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if let Some(code) = model_downloads::cli(&args) {
+        return code;
+    }
+    match LaunchMode::from_args(args) {
         Ok(LaunchMode::ExportManifest) => background::export_manifest(),
         Ok(LaunchMode::Background) => match background::run_background() {
             Ok(Some(app)) => run_gui(Some(app)),

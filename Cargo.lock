@@ -983,6 +983,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "enzui-activity"
+version = "0.3.0-alpha.1"
+source = "git+https://github.com/enz1m/enzui.git?rev=ac1a3d759d40c9f9f26f3b80b40e508dea086776#ac1a3d759d40c9f9f26f3b80b40e508dea086776"
+dependencies = [
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
 name = "enzui-agent"
 version = "0.3.0-alpha.1"
 source = "git+https://github.com/enz1m/enzui.git?rev=ac1a3d759d40c9f9f26f3b80b40e508dea086776#ac1a3d759d40c9f9f26f3b80b40e508dea086776"
@@ -1153,6 +1165,7 @@ dependencies = [
  "base64",
  "chrono",
  "enzimos-phone-client",
+ "enzui-activity",
  "enzui-agent",
  "enzui-agent-app",
  "enzui-core",

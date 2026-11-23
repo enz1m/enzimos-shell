@@ -9,6 +9,7 @@ use enzui_agent_app::{
     AgentProcess, ApplicationIntent, BackgroundApp, BackgroundExit, DEFAULT_IDLE_EXIT,
     LifecycleCallers, SearchProvider, SearchRequest, SearchResult,
 };
+use enzui_core::activation::{ActivationContext, dbus::APPLICATION_CALL_CAPACITY};
 use enzui_shell::i18n::tr;
 use enzui_shell::settings::Store;
 use enzui_shell::settings_agent::APP_ID;
@@ -187,8 +188,6 @@ impl SettingsApp {
         self.process.publish_stop_consequences(Vec::new());
     }
 
-    // Forwarded launches and Search choices: open the requested page and
-    // raise the window. A graceful stop exits once nothing is in flight.
     pub(super) fn application_wake(&mut self) -> Task<Message> {
         if self.process.take_stop().is_some() {
             self.stop_requested = true;
@@ -196,24 +195,54 @@ impl SettingsApp {
                 return self.update(Message::Close);
             }
         }
-        let mut tasks: Vec<Task<Message>> = self
-            .process
-            .take_searches()
-            .into_iter()
-            .map(|activation| match activation.request {
+        let mut tasks = Vec::new();
+        for activation in self.process.take_searches() {
+            tasks.push(match activation.request {
                 SearchRequest::Open { id, .. } => match settings_catalog::find(&id) {
                     Some(entry) => self.update(Message::Reveal(entry.route)),
                     None => Task::none(),
                 },
                 SearchRequest::Search { query } => self.update(Message::Filter(query)),
-            })
-            .collect();
-        let launches = self.process.take_launches();
-        tasks.extend(launches.into_iter().map(|intent| self.open_intent(intent)));
-        if tasks.is_empty() {
+            });
+            tasks.push(self.activate_launch(activation.context));
+        }
+        // The queued call wakes the windowless runtime without consuming its activation context.
+        if !self.process.is_windowless() {
+            for call in self.process.take_application_calls() {
+                tasks.push(self.open_intent(call.intent));
+                tasks.push(self.activate_launch(call.context));
+            }
+        }
+        Task::batch(tasks)
+    }
+
+    fn activate_launch(&mut self, context: Option<ActivationContext>) -> Task<Message> {
+        let Some(context) = context.filter(|_| !self.closing) else {
+            return Task::none();
+        };
+        if let Some(window) = self.window {
+            return context.activate(window, Instant::now()).discard();
+        }
+        let now = Instant::now();
+        self.pending_activation
+            .retain(|token| !token.is_expired(now));
+        if self.pending_activation.len() < APPLICATION_CALL_CAPACITY {
+            self.pending_activation.push(context);
+        }
+        Task::none()
+    }
+
+    pub(super) fn activate_pending_launches(&mut self, window: iced::window::Id) -> Task<Message> {
+        let pending = std::mem::take(&mut self.pending_activation);
+        if self.closing {
             return Task::none();
         }
-        Task::batch(tasks).chain(iced::window::latest().and_then(iced::window::gain_focus))
+        let now = Instant::now();
+        Task::batch(
+            pending
+                .into_iter()
+                .map(|token| token.activate(window, now).discard()),
+        )
     }
 
     fn open_intent(&mut self, intent: ApplicationIntent) -> Task<Message> {
@@ -238,7 +267,7 @@ impl SettingsApp {
     pub(super) fn present(&mut self) -> Task<Message> {
         let (intent, deferred) = self.process.begin_presenting();
         let open = intent.map_or_else(Task::none, |intent| self.open_intent(intent));
-        Task::batch([deferred, self.window_boot(), open])
+        Task::batch([deferred, self.window_boot(), open, self.application_wake()])
     }
 }
 

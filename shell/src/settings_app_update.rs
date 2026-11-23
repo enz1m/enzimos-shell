@@ -136,6 +136,7 @@ impl SettingsApp {
                         .update(enzui_widgets::app_shell::ShellWindowEvent::Observed(id))
                         .map(Message::WindowState),
                     window::size(id).map(move |size| Message::Viewport(id, size)),
+                    self.activate_pending_launches(id),
                 ])
             }
             Message::Viewport(id, size) => {

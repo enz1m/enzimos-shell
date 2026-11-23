@@ -1147,6 +1147,11 @@ impl Shell {
                 Task::none()
             }
             Message::SystemAction(action) => {
+                if matches!(action, Action::Wifi(_) | Action::Bluetooth(_))
+                    && (!self.system.system_writes || self.control_connections.busy())
+                {
+                    return Task::none();
+                }
                 if self.control_placing && self.control_visible {
                     return Task::none();
                 }
@@ -1221,6 +1226,7 @@ impl Shell {
                 let before = self.visible_controls();
                 self.control_detail_since = Some(Instant::now());
                 self.audio_request = self.audio_request.wrapping_add(1);
+                self.control_connections.reset();
                 self.control_detail_epoch = self.control_detail_epoch.wrapping_add(1);
                 self.control_details_open = action.is_some()
                     && !(self.control_details == action && self.control_details_open);
@@ -1235,11 +1241,20 @@ impl Shell {
                     .map_or(0.0, enzui_shell::control_tile::detail_height);
                 self.control_deferred_reflow =
                     self.controls_need_shrink(&before, &self.visible_controls());
-                let devices = if self.control_details_open
-                    && action == Some(enzui_shell::settings::QuickAction::Volume)
-                {
-                    self.audio_devices = None;
-                    Task::done(Message::RefreshAudioDevices)
+                let devices = if self.control_details_open {
+                    match action {
+                        Some(enzui_shell::settings::QuickAction::Volume) => {
+                            self.audio_devices = None;
+                            Task::done(Message::RefreshAudioDevices)
+                        }
+                        Some(
+                            enzui_shell::settings::QuickAction::Network
+                            | enzui_shell::settings::QuickAction::Bluetooth,
+                        ) => Task::done(Message::ControlConnections(
+                            super::control_center::connections::Event::Refresh(false),
+                        )),
+                        _ => Task::none(),
+                    }
                 } else {
                     Task::none()
                 };
@@ -1252,6 +1267,7 @@ impl Shell {
                 Task::batch([reflow, devices])
             }
             Message::Confirm(action) => {
+                self.control_connections.clear_forms();
                 self.notice = None;
                 // A power action's confirmation steps back to the power menu.
                 self.power_menu &=
@@ -1278,6 +1294,7 @@ impl Shell {
                 Task::none()
             }
             Message::ShowPower => {
+                self.control_connections.clear_forms();
                 self.notice = None;
                 self.power_menu = !self.power_menu;
                 self.confirm = None;
@@ -1325,7 +1342,26 @@ impl Shell {
                 let unchanged = action.is_none()
                     && result_ok
                     && format!("{:?}", self.system) == format!("{snapshot:?}");
+                let radio_changed = match self.control_details {
+                    Some(enzui_shell::settings::QuickAction::Network) => {
+                        self.system.network.wifi_enabled != snapshot.network.wifi_enabled
+                            || matches!(action, Some(Action::Wifi(_)))
+                    }
+                    Some(enzui_shell::settings::QuickAction::Bluetooth) => {
+                        self.system.bluetooth != snapshot.bluetooth
+                            || matches!(action, Some(Action::Bluetooth(_)))
+                    }
+                    _ => false,
+                };
                 self.system = snapshot;
+                let connections = if radio_changed && self.control_details_open {
+                    self.control_connections.clear_forms();
+                    Task::done(Message::ControlConnections(
+                        super::control_center::connections::Event::Refresh(false),
+                    ))
+                } else {
+                    Task::none()
+                };
                 let warning = self
                     .battery_warnings
                     .step(self.system.battery.as_ref())
@@ -1344,6 +1380,7 @@ impl Shell {
                     .control_details
                     .is_some_and(|action| !self.system.available(action))
                 {
+                    self.control_connections.reset();
                     self.control_details = None;
                     self.control_details_open = false;
                 }
@@ -1370,7 +1407,7 @@ impl Shell {
                     Task::none()
                 };
                 let notifications = self.notification_preferences();
-                Task::batch([reflow, next, devices, warning, notifications])
+                Task::batch([reflow, next, devices, connections, warning, notifications])
             }
             Message::Screenshot => {
                 let next = Message::CaptureScreenshot;

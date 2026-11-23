@@ -260,6 +260,7 @@ impl Shell {
         self.accessibility_menu = false;
         self.confirm = None;
         self.power_menu = false;
+        self.control_connections.reset();
         self.control_details = None;
         self.control_details_open = false;
         self.control_menu = None;
@@ -285,6 +286,7 @@ impl Shell {
             return Task::none();
         }
         self.control_visible = false;
+        self.control_connections.clear_forms();
         if self.control_started {
             Task::none()
         } else {
@@ -332,6 +334,7 @@ impl Shell {
         self.control_opening = false;
         self.confirm = None;
         self.power_menu = false;
+        self.control_connections.reset();
         self.control_details = None;
         self.control_details_open = false;
         self.control_menu = None;

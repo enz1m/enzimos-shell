@@ -58,52 +58,16 @@ impl SystemSettings {
                 Vec::new()
             }
         };
-        let overview = async {
-            if !run.uses_bus() {
-                return None;
-            }
-            nm_bus::overview(&crate::bus::system().await?).await
-        };
-        let (overview, trust, connectivity) = tokio::join!(overview, trust, self.connectivity());
-        let (networking, wifi_radio, mut interfaces, mut saved) = if let Some(overview) = overview {
-            (
-                overview.networking,
-                overview.wifi_radio,
-                overview.interfaces,
-                overview.connections,
-            )
-        } else {
-            let (state, devices, radio, connections) = tokio::join!(
-                run.run("nmcli", &["-t", "-f", "NETWORKING", "general"]),
-                run.run(
-                    "nmcli",
-                    &[
-                        "-t",
-                        "-f",
-                        "DEVICE,TYPE,STATE,CONNECTION",
-                        "device",
-                        "status"
-                    ]
-                ),
-                run.run("nmcli", &["-t", "-f", "WIFI", "radio"]),
-                run.run(
-                    "nmcli",
-                    &["-t", "-f", "NAME,UUID,TYPE,ACTIVE", "connection", "show"]
-                ),
-            );
-            let Ok(state) = state else {
-                return Network::default();
-            };
-            (
-                state.trim() == "enabled",
-                radio.ok().and_then(|v| match v.trim() {
-                    "enabled" => Some(true),
-                    "disabled" => Some(false),
-                    _ => None,
-                }),
-                parse::interfaces(devices.as_deref().unwrap_or_default()),
-                parse::connections(connections.as_deref().unwrap_or_default()),
-            )
+        let (overview, trust, connectivity) =
+            tokio::join!(self.network_overview(), trust, self.connectivity());
+        let Some(nm_bus::Overview {
+            networking,
+            wifi_radio,
+            mut interfaces,
+            connections: mut saved,
+        }) = overview
+        else {
+            return Network::default();
         };
         let detailed: Vec<_> = interfaces
             .iter()
@@ -179,32 +143,8 @@ impl SystemSettings {
                 }
             }
         }
-        // Saved means a profile for that network name, whatever the profile
-        // itself is called.
-        let wifi_names: Vec<String> = saved
-            .iter()
-            .filter(|c| c.kind == ConnectionKind::Wifi)
-            .map(|c| c.ssid.clone().unwrap_or_else(|| c.name.clone()))
-            .collect();
         let access_points = if interfaces.iter().any(|i| i.kind == InterfaceKind::Wifi) {
-            // --rescan no: a settings page must not trigger radio scans on
-            // every refresh.
-            let list = run
-                .run(
-                    "nmcli",
-                    &[
-                        "-t",
-                        "-f",
-                        "IN-USE,SSID,SIGNAL,SECURITY",
-                        "device",
-                        "wifi",
-                        "list",
-                        "--rescan",
-                        "no",
-                    ],
-                )
-                .await;
-            let points = parse::access_points(list.as_deref().unwrap_or_default(), &wifi_names);
+            let points = self.access_points(&saved, false).await.unwrap_or_default();
             // An empty list usually means no scan has run since the radio
             // came up; ask for one, at most every 30 seconds.
             static LAST_SCAN: std::sync::Mutex<Option<std::time::Instant>> =
@@ -271,6 +211,105 @@ impl SystemSettings {
             connectivity,
         }
     }
+    async fn network_overview(&self) -> Option<nm_bus::Overview> {
+        let run = &self.controls;
+        if run.uses_bus()
+            && let Some(bus) = crate::bus::system().await
+            && let Some(overview) = nm_bus::overview(&bus).await
+        {
+            return Some(overview);
+        }
+        let (state, devices, radio, connections) = tokio::join!(
+            run.run("nmcli", &["-t", "-f", "NETWORKING", "general"]),
+            run.run(
+                "nmcli",
+                &[
+                    "-t",
+                    "-f",
+                    "DEVICE,TYPE,STATE,CONNECTION",
+                    "device",
+                    "status"
+                ]
+            ),
+            run.run("nmcli", &["-t", "-f", "WIFI", "radio"]),
+            run.run(
+                "nmcli",
+                &["-t", "-f", "NAME,UUID,TYPE,ACTIVE", "connection", "show"]
+            ),
+        );
+        Some(nm_bus::Overview {
+            networking: state.ok()?.trim() == "enabled",
+            wifi_radio: radio.ok().and_then(|v| match v.trim() {
+                "enabled" => Some(true),
+                "disabled" => Some(false),
+                _ => None,
+            }),
+            interfaces: parse::interfaces(devices.as_deref().unwrap_or_default()),
+            connections: parse::connections(connections.as_deref().unwrap_or_default()),
+        })
+    }
+
+    async fn access_points(
+        &self,
+        saved: &[SavedConnection],
+        rescan: bool,
+    ) -> Result<Vec<AccessPoint>, String> {
+        let names = saved
+            .iter()
+            .filter(|c| c.kind == ConnectionKind::Wifi)
+            .map(|c| c.ssid.clone().unwrap_or_else(|| c.name.clone()))
+            .collect::<Vec<_>>();
+        let args = [
+            "-t",
+            "-f",
+            "IN-USE,SSID,SIGNAL,SECURITY",
+            "device",
+            "wifi",
+            "list",
+            "--rescan",
+            if rescan { "yes" } else { "no" },
+        ];
+        let output = if rescan {
+            self.controls
+                .run_with("nmcli", &args, None, std::time::Duration::from_secs(12))
+                .await
+                .map_err(|_| tr("shell-network-settings-are-unavailable").to_owned())?
+        } else {
+            self.controls.run("nmcli", &args).await?
+        };
+        Ok(parse::access_points(&output, &names))
+    }
+
+    /// Read the links and access points used by the Control Center.
+    pub async fn control_network(&self, rescan: bool) -> Result<Network, String> {
+        let nm_bus::Overview {
+            networking,
+            wifi_radio,
+            interfaces,
+            connections,
+        } = self
+            .network_overview()
+            .await
+            .ok_or_else(|| tr("shell-network-settings-are-unavailable").to_owned())?;
+        let access_points = if wifi_radio == Some(true)
+            && interfaces
+                .iter()
+                .any(|item| item.kind == InterfaceKind::Wifi)
+        {
+            self.access_points(&connections, rescan && self.writes_allowed)
+                .await?
+        } else {
+            Vec::new()
+        };
+        Ok(Network {
+            networking: Some(networking),
+            wifi_radio,
+            interfaces,
+            access_points,
+            ..Network::default()
+        })
+    }
+
     // Connectivity reads do not trigger NetworkManager probes.
     pub(super) async fn connectivity(&self) -> crate::network_connectivity::Connectivity {
         use crate::network_connectivity::{Connectivity, State, busctl_value, valid_uri};

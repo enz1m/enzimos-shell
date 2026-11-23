@@ -1,4 +1,5 @@
 use super::{Action, Message, Shell};
+pub(crate) mod connections;
 use enzui_core::{
     context_menu::{InvocationKind, Point as MenuPoint},
     menu_model::{CheckState, EntryId, MenuEntryModel, MenuModel},
@@ -249,6 +250,11 @@ pub(super) fn info(shell: &Shell, action: QuickAction) -> Info {
     ) {
         info.enabled &= !shell.system_action_busy;
     }
+    if action == QuickAction::Bluetooth
+        || (action == QuickAction::Network && shell.system.network.wifi_present)
+    {
+        info.primary_enabled = connections::radio_toggle_allowed(shell);
+    }
     if action == QuickAction::Tiling {
         info.enabled = shell.snapshot.is_some();
     }
@@ -379,8 +385,11 @@ fn details(shell: &Shell, action: QuickAction) -> Element<'_, Message> {
     if let Some(details) = quick_details(shell, action) {
         return details;
     }
-    if action != QuickAction::Brightness {
-        return control_tile::device_design(action, shell.window_tokens(shell.control_center));
+    match action {
+        QuickAction::Network => return connections::network(shell),
+        QuickAction::Bluetooth => return connections::bluetooth(shell),
+        QuickAction::Brightness => {}
+        _ => return iced::widget::space().into(),
     }
     detail_panel(
         shell,

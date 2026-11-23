@@ -939,6 +939,16 @@ esac"#,
                     log = log.display()
                 ),
             );
+            let network = settings.control_network(false).await.unwrap();
+            assert!(network.access_points.iter().any(|point| {
+                point.ssid == "Office" && point.saved && point.secure && !point.active
+            }));
+            assert!(
+                network
+                    .access_points
+                    .iter()
+                    .any(|point| { point.ssid == "Home" && point.active })
+            );
             settings
                 .apply(&Request::Forget("Office".into()))
                 .await

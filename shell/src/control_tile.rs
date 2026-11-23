@@ -27,6 +27,7 @@ pub struct Info {
     pub active: bool,
     pub toggle: Option<bool>,
     pub enabled: bool,
+    pub primary_enabled: bool,
     pub disclosure: bool,
     /// Detail for the 3-wide size; empty uses `detail`.
     pub medium: String,
@@ -356,6 +357,7 @@ impl Info {
                 || (action == Network && !system.network.wifi_present && system.network.ethernet),
             toggle,
             enabled,
+            primary_enabled: true,
             disclosure,
             medium,
             extra,
@@ -407,8 +409,7 @@ pub fn inline_value(shape: Shape) -> bool {
 
 pub fn detail_height(action: QuickAction) -> f32 {
     match action {
-        QuickAction::Bluetooth => 204.0,
-        QuickAction::Network => 132.0,
+        QuickAction::Bluetooth | QuickAction::Network => 228.0,
         QuickAction::Volume => 200.0,
         QuickAction::NightLight => 150.0,
         QuickAction::PowerMode => 186.0,
@@ -418,7 +419,7 @@ pub fn detail_height(action: QuickAction) -> f32 {
     }
 }
 
-pub fn device_design<'a, Message: Clone + 'a>(
+pub fn detail_preview<'a, Message: Clone + 'a>(
     action: QuickAction,
     theme: EnzTheme,
 ) -> Element<'a, Message> {
@@ -720,7 +721,7 @@ pub fn view<'a, Message: Clone + 'a>(
     if !preview && let Some(active) = info.toggle {
         semantics = semantics.toggled(if active { Toggle::True } else { Toggle::False });
     }
-    let enabled = preview || info.enabled;
+    let enabled = preview || (info.enabled && info.primary_enabled);
     if inline_value(shape)
         && width >= height * 1.8
         && disclosure.is_none()

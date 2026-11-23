@@ -16,6 +16,7 @@ impl Shell {
         let generation = self.control_generation;
         self.confirm = None;
         self.power_menu = false;
+        self.control_connections.reset();
         self.control_details = None;
         self.control_details_open = false;
         self.control_detail_capacity = 0.0;

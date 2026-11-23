@@ -442,117 +442,14 @@ impl SettingsApp {
         &'a self,
         prompt: &enzui_shell::system_settings::pairing::Prompt,
     ) -> Element<'a, Parent> {
-        use enzui_shell::system_settings::pairing::{Answer, Question};
-        let answer = |a: Answer| Parent::System(Message::Pairing(super::Pairing::Answer(a)));
-        let palette = self.tokens().palette;
-        let code = |n: u32| {
-            enz_text(format!("{:03} {:03}", n / 1000, n % 1000))
-                .size(TextSize::Title1)
-                .into_element()
-        };
-        let (title, body, big, actions): (
-            &str,
-            &str,
-            Option<Element<'a, Parent>>,
-            Vec<Element<'a, Parent>>,
-        ) = match &prompt.question {
-            Question::Confirm(n) => (
-                tr("shell-does-this-code-match-the-one-on-your-device"),
-                tr("shell-only-continue-if-both-screens-show-the-same-number"),
-                Some(code(*n)),
-                vec![
-                    enz_button(tr("shell-cancel"), answer(Answer::Reject))
-                        .kind(ButtonKind::Secondary)
-                        .id("pair-reject".into())
-                        .into_element(),
-                    enz_button(tr("shell-codes-match"), answer(Answer::Accept))
-                        .id("pair-confirm".into())
-                        .into_element(),
-                ],
-            ),
-            Question::ShowPasskey(n) => (
-                tr("shell-type-this-code-on-your-device"),
-                tr("shell-then-press-enter-on-the-device"),
-                Some(code(*n)),
-                vec![],
-            ),
-            Question::ShowPin(pin) => (
-                tr("shell-type-this-pin-on-your-device"),
-                tr("shell-then-press-enter-on-the-device"),
-                Some(enz_text(pin.clone()).size(TextSize::Title1).into_element()),
-                vec![],
-            ),
-            Question::EnterPin => (
-                tr("shell-enter-the-device-s-pin"),
-                tr("shell-often-0000-or-1234-check-the-device-s-manual"),
-                Some(
-                    enzui_widgets::text_field::enz_text_field(
-                        "PIN",
-                        "0000",
-                        &self.system.forms.pin,
-                        |t| Parent::System(Message::Form(Form::Pin(t))),
-                    )
-                    .on_submit(answer(Answer::Pin(self.system.forms.pin.clone())))
-                    .id("pair-pin".into())
-                    .into_element(),
-                ),
-                vec![
-                    enz_button(tr("shell-cancel"), answer(Answer::Reject))
-                        .kind(ButtonKind::Secondary)
-                        .into_element(),
-                    enz_button(
-                        tr("shell-pair"),
-                        answer(Answer::Pin(self.system.forms.pin.clone())),
-                    )
-                    .id("pair-pin-submit".into())
-                    .into_element(),
-                ],
-            ),
-            Question::Authorize => (
-                tr("shell-allow-this-device-to-pair"),
-                tr("shell-it-asked-to-pair-without-a-code"),
-                None,
-                vec![
-                    enz_button(tr("shell-deny"), answer(Answer::Reject))
-                        .kind(ButtonKind::Secondary)
-                        .into_element(),
-                    enz_button(tr("shell-allow"), answer(Answer::Accept))
-                        .id("pair-allow".into())
-                        .into_element(),
-                ],
-            ),
-        };
-        let mut content = column![
-            enz_text(title)
-                .weight_rung(enzui_theme::WeightRung::Semibold)
-                .into_element(),
-            self.caption(body),
-        ]
-        .spacing(4);
-        if let Some(big) = big {
-            content = content.push(iced::widget::container(big).padding([8, 0]));
-        }
-        if !actions.is_empty() {
-            content = content.push(
-                iced::widget::row(
-                    std::iter::once(iced::widget::Space::new().width(iced::Length::Fill).into())
-                        .chain(actions),
-                )
-                .spacing(8),
-            );
-        }
-        iced::widget::container(content)
-            .padding([14, 16])
-            .style(move |_| iced::widget::container::Style {
-                background: Some(palette.accent_soft.into()),
-                border: iced::Border {
-                    radius: 12.0.into(),
-                    width: 1.0,
-                    color: palette.accent,
-                },
-                ..Default::default()
-            })
-            .into()
+        enzui_shell::system_settings::pairing::prompt_view(
+            prompt,
+            &self.system.forms.pin,
+            self.tokens().palette,
+            |text| Parent::System(Message::Form(Form::Pin(text))),
+            |answer| Parent::System(Message::Pairing(super::Pairing::Answer(answer))),
+            |text| self.caption(text),
+        )
     }
     fn add_printer<'a>(&self) -> Element<'a, Parent> {
         let forms = &self.system.forms;

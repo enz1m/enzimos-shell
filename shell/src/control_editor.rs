@@ -307,7 +307,7 @@ impl SettingsApp {
                     unavailable = unavailable.push(entry);
                     if self.controls.details_open && self.controls.details == Some(action) {
                         unavailable = unavailable.push(
-                            container(control_tile::device_design(action, theme.clone()))
+                            container(control_tile::detail_preview(action, theme.clone()))
                                 .height(control_tile::detail_height(action)),
                         );
                     }
@@ -350,7 +350,7 @@ impl SettingsApp {
                 } else {
                     p.surface_alt
                 },
-                content: control_tile::device_design(action, theme.clone()),
+                content: control_tile::detail_preview(action, theme.clone()),
             }
         }));
         let columns = self.settings.controls.column_count();

@@ -106,6 +106,7 @@ impl Message {
             Self::SettingsShortcutReady(..) => "SettingsShortcutReady",
             Self::SettingsLaunched(..) => "SettingsLaunched",
             Self::DragMaximizeReady(..) => "DragMaximizeReady",
+            Self::ControlConnections(..) => "ControlConnections",
             Self::RefreshAudioDevices => "RefreshAudioDevices",
             Self::AudioDevices(..) => "AudioDevices",
             Self::SystemAction(..) => "SystemAction",

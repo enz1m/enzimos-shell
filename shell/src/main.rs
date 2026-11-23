@@ -120,6 +120,7 @@ struct Shell {
     system: SystemSnapshot,
     audio_devices: Option<Result<enzui_shell::audio_devices::Devices, String>>,
     audio_request: u64,
+    control_connections: control_center::connections::State,
     system_busy: bool,
     system_action_busy: bool,
     system_queue: ActionQueue,
@@ -390,6 +391,7 @@ impl Shell {
             system: SystemSnapshot::default(),
             audio_devices: None,
             audio_request: 0,
+            control_connections: Default::default(),
             system_busy: false,
             system_action_busy: false,
             system_queue: ActionQueue::default(),
@@ -692,6 +694,10 @@ impl Shell {
                     self.read_settings()
                 }
             }
+            Message::ControlConnections(event) => {
+                self.redraw_only = self.control_center;
+                control_center::connections::update(self, event)
+            }
             Message::QuickSearch(message) => self.search_message(message),
             Message::Notification(message) => self.notification_message(message),
             Message::Assistant(message) => self.assistant_message(message),
@@ -703,12 +709,32 @@ impl Shell {
                 Task::none()
             }
             Message::Connectivity(connectivity) => {
-                if let Some(devices) = connectivity.devices {
-                    self.system.network = devices.into();
+                let refresh = if let Some(devices) = connectivity.devices {
+                    let network: enzui_shell::system_controls::Network = devices.into();
+                    let changed = network.wifi_enabled != self.system.network.wifi_enabled
+                        || network.wifi_connected != self.system.network.wifi_connected
+                        || network.ethernet != self.system.network.ethernet;
+                    if network.wifi_enabled == Some(false)
+                        && self.control_details == Some(enzui_shell::settings::QuickAction::Network)
+                    {
+                        self.control_connections.clear_forms();
+                    }
+                    self.system.network = network;
                     self.network_watched = true;
-                }
+                    changed
+                        && self.control_details_open
+                        && self.control_details == Some(enzui_shell::settings::QuickAction::Network)
+                } else {
+                    false
+                };
                 self.system.network.connectivity = connectivity.state;
-                Task::none()
+                if refresh {
+                    Task::done(Message::ControlConnections(
+                        control_center::connections::Event::Refresh(false),
+                    ))
+                } else {
+                    Task::none()
+                }
             }
             Message::Activity(message) => self.activity_message(message),
             Message::Command(command) => self.run_command(command),

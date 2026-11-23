@@ -189,56 +189,24 @@ impl Shell {
     }
 
     pub(crate) fn themed_surface(&self) -> Option<[u8; 3]> {
-        let scheme = self
-            .desired_settings
-            .theme_scheme
-            .as_deref()
-            .and_then(enzui_shell::theme_palette::Scheme::from_id_str)?;
-        if scheme.style == enzui_shell::theme_palette::Style::Neutral {
-            return None;
-        }
-        let mode = if self.light {
-            enzui_theme::EnzThemeMode::Light
-        } else {
-            enzui_theme::EnzThemeMode::Dark
-        };
-        // In light schemes the generated surface is white while the apps'
-        // page tint lives in `background`: the bar and frame take the tint
-        // too, instead of standing out brighter than every window.
-        let token = if self.light {
-            "palette.background"
-        } else {
-            "palette.surface"
-        };
-        match self.theme_document.get(token, mode)? {
-            enzui_core::theme_file::registry::TokenValue::Color(color) => {
-                Some([color.r, color.g, color.b].map(|v| (v * 255.0).round() as u8))
-            }
-            _ => None,
-        }
+        enzui_shell::panel_style::themed_surface(
+            self.desired_settings.theme_scheme.as_deref(),
+            &self.theme_document,
+            self.light,
+        )
     }
 
     /// The chrome's colour when the person chose one (the accent or their
     /// own), opaque.
     pub(crate) fn chrome_color(&self) -> Option<Color> {
         use enzui_shell::chrome_style::ChromeColor;
-        match self.desired_settings.chrome.color {
-            ChromeColor::Theme => None,
-            // The accent blended into the neutral chrome: in the accent
-            // itself, the panels' accent switches and selections vanished.
-            ChromeColor::Accent => {
-                let accent = self.theme_tokens_in(self.light, None).palette.accent;
-                let [r, g, b] = desktop_frame::color(self.light);
-                let base = Color::from_rgb8(r, g, b);
-                let mix = |from: f32, to: f32| from + (to - from) * 0.45;
-                Some(Color::from_rgb(
-                    mix(base.r, accent.r),
-                    mix(base.g, accent.g),
-                    mix(base.b, accent.b),
-                ))
-            }
-            ChromeColor::Custom(rgb) => Some(enzui_shell::theme_palette::rgb(rgb)),
-        }
+        let color = self.desired_settings.chrome.color;
+        let accent = if color == ChromeColor::Accent {
+            self.theme_tokens_in(self.light, None).palette.accent
+        } else {
+            Color::TRANSPARENT
+        };
+        color.tint(self.light, accent)
     }
 
     /// Whether the chrome is light: the theme's mode, or that of the

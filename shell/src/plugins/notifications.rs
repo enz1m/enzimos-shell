@@ -126,6 +126,7 @@ mod tests {
                         resident: false,
                         transient: false,
                         timeout_ms: 0,
+                        saved_file: None,
                     },
                     received_ms: 1,
                     updated_ms: 2,

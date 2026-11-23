@@ -21,12 +21,15 @@ impl FileIdentity {
         if !metadata.is_file() && !metadata.is_dir() {
             return Err(tr("shell-unsupported-item-type").into());
         }
-        Ok(Self {
+        Ok(Self::from_metadata(&metadata))
+    }
+    pub(crate) fn from_metadata(metadata: &fs::Metadata) -> Self {
+        Self {
             device: metadata.dev(),
             inode: metadata.ino(),
             size: metadata.size(),
             modified: (metadata.mtime(), metadata.mtime_nsec()),
-        })
+        }
     }
     pub fn verify(&self, path: &Path) -> Result<(), String> {
         if &Self::capture(path)? == self {

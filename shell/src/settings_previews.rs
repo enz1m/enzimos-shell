@@ -342,7 +342,38 @@ impl SettingsApp {
     // desktop uses.
     pub(super) fn notification_style_preview(&self) -> Element<'_, Message> {
         let p = &self.settings.notifications;
-        let palette = self.tokens().palette;
+        let settings = &self.settings;
+        let light = settings.light;
+        let mut palette = self.tokens().palette;
+        let chrome = settings.chrome.color.tint(light, palette.accent);
+        let tint = chrome.unwrap_or_else(|| {
+            let [r, g, b] = enzui_shell::panel_style::themed_surface(
+                settings.theme_scheme.as_deref(),
+                self.theme.document(),
+                light,
+            )
+            .unwrap_or_else(|| enzui_shell::desktop_frame::color(light));
+            iced::Color::from_rgb8(r, g, b)
+        });
+        if let Some(chrome) = chrome
+            && enzui_shell::chrome_style::is_light(chrome) != light
+        {
+            palette = if light {
+                enzui_theme::Palette::dark()
+            } else {
+                enzui_theme::Palette::light()
+            };
+        }
+        let tint = iced::Color {
+            a: f32::from(settings.chrome.opacity) / 100.0,
+            ..tint
+        };
+        let metrics = settings.effective_metrics();
+        let shadow = settings.panel_shadow.min(if metrics.islands.is_some() {
+            enzui_shell::reveal::ISLAND_PANEL_SHADOW_MAX
+        } else {
+            4
+        });
         let action = |label: &'static str, kind: ButtonKind| {
             enz_button(label, Message::PreviewNotification)
                 .kind(kind)
@@ -353,9 +384,17 @@ impl SettingsApp {
         let card = enzui_shell::notifications::card::view(
             enzui_shell::notifications::card::Card {
                 style: p.style,
-                surface: p.bar_colour.then_some(palette.surface),
-                text: f32::from(self.settings.metrics.text),
-                radius: 12.0,
+                surface: enzui_shell::notifications::card::Surface::Panel {
+                    tint,
+                    shadow: enzui_shell::reveal::glass_shadow(
+                        shadow,
+                        tint,
+                        p.position.is_bottom(settings.bar),
+                    ),
+                    glass: false,
+                },
+                text: f32::from(metrics.text),
+                radius: f32::from(metrics.radius),
                 icon: "calendar",
                 app_icon: None,
                 source: tr("shell-calendar"),
@@ -367,12 +406,11 @@ impl SettingsApp {
                 unread: false,
                 image: None,
                 dismiss: Some(enz_icon("x").size(14.0).into_element()),
-                actions: vec![
+                actions: vec![vec![
                     action(tr("shell-snooze"), ButtonKind::Secondary),
                     action(tr("shell-open"), ButtonKind::Secondary),
-                ],
+                ]],
                 height: None,
-                glass: false,
                 progress: None,
             },
             &palette,
@@ -396,9 +434,6 @@ impl SettingsApp {
                     })
                     .collect(),
             ),
-            self.switch_setting("notifications/bar_colour", p.bar_colour, |value| {
-                Message::Change(Change::Notification(NotificationChange::BarColour(value)))
-            }),
         ]
         .spacing(8)
         .into()

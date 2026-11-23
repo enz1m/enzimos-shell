@@ -2,7 +2,6 @@
 //! Window capture uses ext-foreign-toplevel; recording is delegated to wf-recorder.
 
 use enzui_shell::i18n::tr;
-use enzui_shell::tr;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -553,21 +552,7 @@ pub async fn grab(
 pub struct Saved {
     pub path: Option<PathBuf>,
     pub copied: bool,
-}
-impl Saved {
-    /// The notice the desktop shows.
-    #[must_use]
-    pub fn notice(&self) -> String {
-        match (&self.path, self.copied) {
-            (Some(path), true) => {
-                tr!("shell-screenshot-copied-and-saved-to", "arg0" => format!("{:}", path.display()))
-            }
-            (Some(path), false) => {
-                tr!("shell-screenshot-saved-to", "arg0" => format!("{:}", path.display()))
-            }
-            (None, _) => tr("shell-screenshot-copied-paste-it-with-ctrl-v").into(),
-        }
-    }
+    pub(crate) identity: Option<crate::search::catalogue::FileIdentity>,
 }
 
 /// Saves and copies `image` as `preferences` ask (blocking).
@@ -577,7 +562,7 @@ pub fn keep(
     wl_copy: Option<&Path>,
 ) -> Result<Saved, String> {
     use std::io::Write;
-    let path = if preferences.save_screenshots {
+    let (path, identity) = if preferences.save_screenshots {
         let bytes = encode(image, preferences)?;
         let folder = preferences
             .screenshot_dir()
@@ -592,19 +577,24 @@ pub fn keep(
             let _ = std::fs::remove_file(&path);
             return Err(tr("shell-the-screenshot-could-not-be-saved").into());
         }
-        Some(path)
+        let identity = file
+            .metadata()
+            .ok()
+            .map(|metadata| crate::search::catalogue::FileIdentity::from_metadata(&metadata));
+        (Some(path), identity)
     } else {
-        None
+        (None, None)
     };
     let copied = preferences.copy_to_clipboard
-        && match wl_copy {
-            Some(tool) => copy_png(tool, &png(image)?).is_ok(),
-            None => false,
-        };
+        && wl_copy.is_some_and(|tool| png(image).is_ok_and(|bytes| copy_png(tool, &bytes).is_ok()));
     if path.is_none() && !copied {
         return Err(tr("shell-the-screenshot-could-not-be-copied").into());
     }
-    Ok(Saved { path, copied })
+    Ok(Saved {
+        path,
+        copied,
+        identity,
+    })
 }
 
 /// The part of `image` inside `area` (logical pixels of an output whose

@@ -1,7 +1,8 @@
 //! Bounded wf-recorder child using capture preferences; stops on request or low disk space.
 
+use crate::{notifications::capture::SavedFile, search::catalogue::FileIdentity};
 use enzui_shell::i18n::tr;
-use enzui_shell::tr;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -10,6 +11,7 @@ pub const MIN_FREE_BYTES: u64 = 1 << 30;
 
 pub struct Recording {
     child: std::process::Child,
+    file: File,
     pub path: PathBuf,
     pub started: Instant,
     // Dropped after the encoder, which records from it.
@@ -239,8 +241,7 @@ pub fn start(
     } else {
         None
     };
-    // Created here, so an existing file is never overwritten.
-    let (path, _) =
+    let (path, file) =
         crate::capture::new_file(&folder, "Screencast", preferences.container.extension())?;
     if let Err(error) = crate::compositor::announce_capture(&tool) {
         let _ = std::fs::remove_file(&path);
@@ -256,6 +257,7 @@ pub fn start(
     match child {
         Ok(child) => Ok(Recording {
             child,
+            file,
             path,
             started: Instant::now(),
             mix,
@@ -328,9 +330,13 @@ impl Recording {
     #[must_use]
     pub fn stop(self) -> Ending {
         let Self {
-            child, path, mix, ..
+            child,
+            file,
+            path,
+            mix,
+            ..
         } = self;
-        let ending = finish(child, path, Duration::from_secs(5));
+        let ending = finish(child, file, path, Duration::from_secs(5));
         drop(mix);
         ending
     }
@@ -339,30 +345,14 @@ impl Recording {
 /// How a recording ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ending {
-    Saved(PathBuf),
+    Saved(SavedFile),
     /// The encoder failed or had to be killed; the file is kept, but its end
     /// may be missing.
-    Incomplete(PathBuf),
+    Incomplete(SavedFile),
     Failed(String),
 }
 
-impl Ending {
-    /// The notice the desktop shows.
-    #[must_use]
-    pub fn notice(&self) -> String {
-        match self {
-            Self::Saved(path) => {
-                tr!("shell-saved-2", "arg0" => format!("{:}", path.display()))
-            }
-            Self::Incomplete(path) => {
-                tr!("shell-the-recording-may-be-incomplete-what-was-recorded-is-in", "arg0" => format!("{:}", path.display()))
-            }
-            Self::Failed(error) => error.clone(),
-        }
-    }
-}
-
-fn finish(mut child: std::process::Child, path: PathBuf, patience: Duration) -> Ending {
+fn finish(mut child: std::process::Child, file: File, path: PathBuf, patience: Duration) -> Ending {
     if let Ok(pid) = i32::try_from(child.id())
         && let Some(pid) = rustix::process::Pid::from_raw(pid)
         && matches!(child.try_wait(), Ok(None))
@@ -382,14 +372,26 @@ fn finish(mut child: std::process::Child, path: PathBuf, patience: Duration) -> 
             }
         }
     };
-    let written = std::fs::metadata(&path).is_ok_and(|meta| meta.len() > 0);
-    match (written, status.is_some_and(|status| status.success())) {
-        (true, true) => Ending::Saved(path),
-        (true, false) => Ending::Incomplete(path),
-        (false, _) => {
-            let _ = std::fs::remove_file(&path);
-            Ending::Failed(tr("shell-the-recording-could-not-be-saved").into())
-        }
+    let failed = || Ending::Failed(tr("shell-the-recording-could-not-be-saved").into());
+    let Ok(metadata) = file.metadata() else {
+        return failed();
+    };
+    let identity = FileIdentity::from_metadata(&metadata);
+    // The encoder opens by name, so verify that it still names the reserved file.
+    if !std::fs::symlink_metadata(&path)
+        .is_ok_and(|named| named.is_file() && FileIdentity::from_metadata(&named) == identity)
+    {
+        return failed();
+    }
+    if metadata.len() == 0 {
+        let _ = std::fs::remove_file(&path);
+        return failed();
+    }
+    let saved = SavedFile::new(path, identity, tr("shell-recording-could-not-be-opened"));
+    if status.is_some_and(|status| status.success()) {
+        Ending::Saved(saved)
+    } else {
+        Ending::Incomplete(saved)
     }
 }
 
@@ -418,15 +420,16 @@ pub fn elapsed_text(elapsed: Duration) -> String {
 mod tests {
     use super::*;
 
-    fn fake(script: &str, path: &Path) -> std::process::Child {
+    fn finish_fake_encoder(script: &str, path: PathBuf, patience: Duration) -> Ending {
+        let file = File::create_new(&path).unwrap();
         let child = std::process::Command::new("sh")
             .args(["-c", script, "fake-encoder"])
-            .arg(path)
+            .arg(&path)
             .spawn()
             .unwrap();
         // Let the shell install its traps before it is signalled.
         std::thread::sleep(Duration::from_millis(200));
-        child
+        finish(child, file, path, patience)
     }
 
     #[test]
@@ -459,32 +462,34 @@ mod tests {
         {
             let directory = tempfile::tempdir().unwrap();
             let path = |name: &str| directory.path().join(name);
-            let clean = fake(
-                "trap 'printf done >> \"$1\"; exit 0' INT; printf data > \"$1\"; while :; do sleep 0.05; done",
-                &path("clean.mp4"),
-            );
-            assert_eq!(
-                finish(clean, path("clean.mp4"), Duration::from_secs(3)),
-                Ending::Saved(path("clean.mp4"))
-            );
-            let failed = fake("printf partial > \"$1\"; exit 3", &path("failed.mp4"));
-            assert_eq!(
-                finish(failed, path("failed.mp4"), Duration::from_secs(3)),
-                Ending::Incomplete(path("failed.mp4"))
-            );
-            let stuck = fake(
-                "trap '' INT; printf partial > \"$1\"; while :; do sleep 0.05; done",
-                &path("stuck.mp4"),
-            );
-            let started = Instant::now();
-            assert_eq!(
-                finish(stuck, path("stuck.mp4"), Duration::from_millis(400)),
-                Ending::Incomplete(path("stuck.mp4"))
-            );
-            assert!(started.elapsed() < Duration::from_secs(3));
-            let empty = fake("exit 0", &path("empty.mp4"));
             assert!(matches!(
-                finish(empty, path("empty.mp4"), Duration::from_secs(3)),
+                finish_fake_encoder(
+                    "trap 'printf done >> \"$1\"; exit 0' INT; printf data > \"$1\"; while :; do sleep 0.05; done",
+                    path("clean.mp4"),
+                    Duration::from_secs(3),
+                ),
+                Ending::Saved(_)
+            ));
+            assert!(matches!(
+                finish_fake_encoder(
+                    "printf partial > \"$1\"; exit 3",
+                    path("failed.mp4"),
+                    Duration::from_secs(3),
+                ),
+                Ending::Incomplete(_)
+            ));
+            let started = Instant::now();
+            assert!(matches!(
+                finish_fake_encoder(
+                    "trap '' INT; printf partial > \"$1\"; while :; do sleep 0.05; done",
+                    path("stuck.mp4"),
+                    Duration::from_millis(400),
+                ),
+                Ending::Incomplete(_)
+            ));
+            assert!(started.elapsed() < Duration::from_secs(3));
+            assert!(matches!(
+                finish_fake_encoder("exit 0", path("empty.mp4"), Duration::from_secs(3)),
                 Ending::Failed(_)
             ));
             assert!(!path("empty.mp4").exists());

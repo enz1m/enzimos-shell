@@ -9,6 +9,7 @@ use enzui_shell::tr;
 use enzui_shell::{
     compositor::ControlGeometry,
     notifications::{
+        card,
         model::{Archived, Notification},
         presentation::announcement_label,
     },
@@ -31,6 +32,18 @@ use iced::{
     widget::{column, container, row},
     window,
 };
+
+fn visible_actions(
+    entry: &Notification,
+    toast: bool,
+) -> impl Iterator<Item = &enzui_shell::notifications::payload::Action> {
+    entry
+        .draft
+        .actions
+        .iter()
+        .filter(|action| action.key != "inline-reply" && action.key != "default")
+        .take(if toast { 3 } else { 8 })
+}
 
 impl Shell {
     pub(crate) fn notification_view(&self, id: window::Id) -> Option<Element<'_, ShellMessage>> {
@@ -56,15 +69,31 @@ impl Shell {
             .as_ref()
             .is_some_and(|pane| pane.window == id)
         {
-            // Glass toasts: the compositor paints each card's body; the cards
-            // slide in layout, so their glass follows them.
             let input = self.surface_inputs.get(&id).cloned();
-            let glass = self.panel_glass().filter(|_| {
-                self.metrics.islands.is_some()
-                    && input
-                        .as_ref()
-                        .is_some_and(enzui_shell::surface_input::SurfaceInput::glass_supported)
+            let glass = self.glass_style(id).filter(|_| {
+                input
+                    .as_ref()
+                    .is_some_and(enzui_shell::surface_input::SurfaceInput::glass_supported)
             });
+            let lower = self
+                .desired_settings
+                .notifications
+                .position
+                .is_bottom(self.bar);
+            let tokens = self.tokens();
+            let tint = if glass.is_some() {
+                self.glass_tint(id, tokens.palette.surface)
+            } else {
+                tokens.palette.surface
+            };
+            let radius = f32::from(self.metrics.radius);
+            let shadow = enzui_shell::reveal::glass_shadow(self.panel_shadow().level, tint, lower);
+            let surface = card::Surface::Panel {
+                tint,
+                shadow,
+                glass: glass.is_some(),
+            };
+            let palette = self.window_tokens(Some(id)).palette;
             let shown = self.notification.toast_display();
             let rows = shown
                 .iter()
@@ -88,7 +117,7 @@ impl Shell {
                         })?;
                     Some((
                         key_id(entry.key),
-                        self.notification_toast(entry, glass.is_some()),
+                        self.notification_toast(entry, surface, &palette),
                     ))
                 })
                 .collect();
@@ -103,28 +132,12 @@ impl Shell {
             let content = keyed_column(rows)
                 .spacing(enzui_shell::notifications::card::STACK_GAP)
                 .width(Length::Fill);
-            let tint = self.glass_tint(
-                id,
-                self.card_surface()
-                    .unwrap_or_else(|| self.tokens().palette.surface_elevated),
-            );
             let look = glass.map(|style| enzui_shell::glass_rows::Look {
-                tokens: enzui_shell::reveal::glass_tokens(
-                    style,
-                    self.tokens().motion.reduced_motion,
-                ),
+                tokens: enzui_shell::reveal::glass_tokens(style, tokens.motion.reduced_motion),
                 tint,
-                radius: 12.0,
-                inset_left: enzui_shell::notifications::card::badge_overhang(
-                    self.desired_settings.notifications.style,
-                ),
-                shadow: enzui_shell::reveal::glass_shadow(
-                    enzui_shell::notifications::card::elevation(
-                        self.desired_settings.notifications.style,
-                    ),
-                    tint,
-                    false,
-                ),
+                radius,
+                inset_left: 0.0,
+                shadow,
             });
             let button = enzui_shell::notifications::card::DISMISS_ALL_ROW
                 - enzui_shell::notifications::card::STACK_GAP;
@@ -142,10 +155,6 @@ impl Shell {
             // The window keeps its size while toasts come and go; the cards
             // hug the edge they grow from.
             use enzui_shell::notifications::preferences::Position;
-            let lower = matches!(
-                self.desired_settings.notifications.position,
-                Position::BottomLeft | Position::BottomRight
-            );
             let content: Element<'_, ShellMessage> = container(content)
                 .height(Length::Fill)
                 .align_y(if lower {
@@ -184,7 +193,8 @@ impl Shell {
     fn notification_toast<'a>(
         &'a self,
         entry: &'a Notification,
-        glass: bool,
+        surface: card::Surface,
+        palette: &enzui_theme::Palette,
     ) -> Element<'a, ShellMessage> {
         use enzui_shell::notifications::preferences::Position;
         let from_left = matches!(
@@ -223,11 +233,7 @@ impl Shell {
             dx = travel * t * if from_left { -1.0 } else { 1.0 };
             open = 1.0 - t;
         }
-        let card = if glass {
-            self.notification_card_glass(entry, true, true, true)
-        } else {
-            self.notification_card(entry, true)
-        };
+        let card = self.notification_card(entry, surface, true, palette);
         enzui_shell::glass_rows::shifted(card, dx, open)
     }
     // The reply field written on the toast itself.
@@ -319,7 +325,7 @@ impl Shell {
             background: Some(
                 fade(iced::Color {
                     a: 0.55,
-                    ..palette.surface_elevated
+                    ..palette.surface
                 })
                 .into(),
             ),
@@ -363,13 +369,6 @@ impl Shell {
             style.toast_lines() + 1
         }
     }
-    // The bar's colour for cards when the bar colour is chosen.
-    fn card_surface(&self) -> Option<iced::Color> {
-        self.desired_settings
-            .notifications
-            .bar_colour
-            .then(|| self.tokens().palette.surface)
-    }
     // The toast card's exact height at the configured toast width.
     // A reply is being written on this toast, not in the centre.
     pub(super) fn toast_replying(&self, key: enzui_shell::notifications::model::Key) -> bool {
@@ -381,39 +380,36 @@ impl Shell {
                 .is_some_and(|reply| reply.key == key)
     }
     pub(super) fn notification_card_height(&self, entry: &Notification) -> f32 {
-        let actions = entry
-            .draft
-            .actions
-            .iter()
-            .any(|action| action.key != "inline-reply" && action.key != "default")
-            || entry.draft.reply.is_some();
-        enzui_shell::notifications::card::height(&enzui_shell::notifications::card::Extent {
-            style: self.desired_settings.notifications.style,
-            width: f32::from(self.desired_settings.notifications.width),
+        let style = self.desired_settings.notifications.style;
+        let width = f32::from(self.desired_settings.notifications.width);
+        let labels = visible_actions(entry, true)
+            .map(|action| (action.label.as_str(), ()))
+            .chain(entry.draft.reply.as_ref().map(|_| (tr("shell-reply"), ())));
+        card::height(&card::Extent {
+            style,
+            width,
             text: f32::from(self.metrics.text),
             summary: &entry.draft.summary,
             body: &entry.draft.body,
             body_lines: self.toast_body_lines(true, false),
-            image: self.desired_settings.notifications.images && entry.draft.image.is_some(),
-            actions,
+            image: entry
+                .draft
+                .image
+                .as_ref()
+                .filter(|_| self.desired_settings.notifications.images),
+            action_rows: card::action_rows(style, width, labels).len(),
             reply: self.toast_replying(entry.key),
             progress: entry.draft.value.is_some(),
         })
     }
-    pub(super) fn notification_card<'a>(
+    fn notification_card<'a>(
         &'a self,
         entry: &'a Notification,
-        toast: bool,
-    ) -> Element<'a, ShellMessage> {
-        self.notification_card_glass(entry, toast, false, toast)
-    }
-    pub(super) fn notification_card_glass<'a>(
-        &'a self,
-        entry: &'a Notification,
-        toast: bool,
-        glass: bool,
+        surface: card::Surface,
         named: bool,
+        palette: &enzui_theme::Palette,
     ) -> Element<'a, ShellMessage> {
+        let toast = matches!(surface, card::Surface::Panel { .. });
         let key = entry.key;
         let identifier = key_id(key);
         let pending = self.notification.action_pending(&key);
@@ -423,17 +419,10 @@ impl Shell {
             .as_ref()
             .is_some_and(|reply| reply.key == key && !reply.text.is_empty());
         let expanded = !toast && self.notification.expanded == Some(key);
-        let palette = self.tokens().palette;
         let mut actions = Vec::new();
-        for action in entry
-            .draft
-            .actions
-            .iter()
-            // The default action is the card's own click.
-            .filter(|action| action.key != "inline-reply" && action.key != "default")
-            .take(if toast { 3 } else { 8 })
-        {
-            actions.push(
+        for action in visible_actions(entry, toast) {
+            actions.push((
+                action.label.as_str(),
                 enz_button(
                     action.label.clone(),
                     message(Message::Invoke(key, action.key.clone())),
@@ -444,82 +433,87 @@ impl Shell {
                 .id(format!("{identifier}:action:{}", action.key).into())
                 .enabled(!pending && !draft && self.notification.ready())
                 .into_element(),
-            );
+            ));
         }
         if entry.draft.reply.is_some() {
-            actions.push(
+            actions.push((
+                tr("shell-reply"),
                 enz_button(tr("shell-reply"), message(Message::Reply(key)))
                     .kind(ButtonKind::Secondary)
                     .size(ButtonSize::Sm)
+                    .width(Length::Fill)
                     .id(format!("{identifier}:reply").into())
                     .enabled(!pending && self.notification.ready())
                     .into_element(),
-            );
+            ));
         }
         let text = f32::from(self.metrics.text);
+        let style = self.desired_settings.notifications.style;
+        let mut width = f32::from(self.desired_settings.notifications.width);
+        if !toast && let Some(center) = &self.notification.center {
+            let padding =
+                center_padding(&center.geometry, self.bar, f32::from(self.metrics.radius));
+            width = center.geometry.width - padding.left - padding.right;
+        }
         let long = !toast
-            && enzui_shell::notifications::card::height(
-                &enzui_shell::notifications::card::Extent {
-                    style: self.desired_settings.notifications.style,
-                    width: f32::from(self.desired_settings.notifications.width),
-                    text,
-                    summary: &entry.draft.summary,
-                    body: &entry.draft.body,
-                    body_lines: 0,
-                    image: false,
-                    actions: false,
-                    reply: false,
-                    progress: false,
-                },
-            ) > enzui_shell::notifications::card::height(
-                &enzui_shell::notifications::card::Extent {
-                    style: self.desired_settings.notifications.style,
-                    width: f32::from(self.desired_settings.notifications.width),
-                    text,
-                    summary: &entry.draft.summary,
-                    body: &entry.draft.body,
-                    body_lines: self.toast_body_lines(false, false),
-                    image: false,
-                    actions: false,
-                    reply: false,
-                    progress: false,
-                },
-            );
+            && card::height(&card::Extent {
+                style,
+                width,
+                text,
+                summary: &entry.draft.summary,
+                body: &entry.draft.body,
+                body_lines: 0,
+                image: None,
+                action_rows: 0,
+                reply: false,
+                progress: false,
+            }) > card::height(&card::Extent {
+                style,
+                width,
+                text,
+                summary: &entry.draft.summary,
+                body: &entry.draft.body,
+                body_lines: self.toast_body_lines(false, false),
+                image: None,
+                action_rows: 0,
+                reply: false,
+                progress: false,
+            });
         if long {
+            let label = if expanded {
+                tr("shell-show-less")
+            } else {
+                tr("shell-show-more")
+            };
             actions.insert(
                 0,
-                enz_button(
-                    if expanded {
-                        tr("shell-show-less")
-                    } else {
-                        tr("shell-show-more")
-                    },
-                    message(Message::Expand(key)),
-                )
-                .kind(ButtonKind::Quiet)
-                .size(ButtonSize::Sm)
-                .id(format!("{identifier}:details").into())
-                .into_element(),
+                (
+                    label,
+                    enz_button(label, message(Message::Expand(key)))
+                        .kind(ButtonKind::Quiet)
+                        .size(ButtonSize::Sm)
+                        .width(Length::Fill)
+                        .id(format!("{identifier}:details").into())
+                        .into_element(),
+                ),
             );
         }
-        if toast && self.toast_replying(key) {
-            actions = vec![self.toast_reply_row(entry)];
-        }
-        let image = (self.desired_settings.notifications.images)
-            .then_some(entry.draft.image.as_ref())
-            .flatten()
-            .map(|image| {
-                iced::widget::image(image.handle())
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .into()
-            });
-        let card = enzui_shell::notifications::card::view(
-            enzui_shell::notifications::card::Card {
-                style: self.desired_settings.notifications.style,
-                surface: self.card_surface(),
+        let actions = if toast && self.toast_replying(key) {
+            vec![vec![self.toast_reply_row(entry)]]
+        } else {
+            card::action_rows(style, width, actions)
+        };
+        let image = entry
+            .draft
+            .image
+            .as_ref()
+            .filter(|_| self.desired_settings.notifications.images);
+        let card = card::view(
+            card::Card {
+                style,
+                surface,
                 text,
-                radius: 12.0,
+                radius: f32::from(self.metrics.radius),
                 icon: &entry.origin.icon,
                 app_icon: entry.origin.app_icon.as_deref(),
                 // In the panel a group header names the sender of two or more.
@@ -557,17 +551,19 @@ impl Shell {
                 ),
                 actions,
                 height: toast.then(|| self.notification_card_height(entry)),
-                glass,
                 progress: entry.draft.value,
             },
-            &palette,
+            palette,
         );
-        // A click anywhere a button did not take opens what the message is
-        // about: its default action, or the app that sent it.
-        let card: Element<'_, ShellMessage> = iced::widget::mouse_area(card)
-            .on_press(message(Message::Activate(key)))
-            .interaction(iced::mouse::Interaction::Pointer)
-            .into();
+        let card: Element<'_, ShellMessage> =
+            if entry.origin.is_internal() && !entry.draft.permits_action("default") {
+                card
+            } else {
+                iced::widget::mouse_area(card)
+                    .on_press(message(Message::Activate(key)))
+                    .interaction(iced::mouse::Interaction::Pointer)
+                    .into()
+            };
         let announcement = if toast {
             self.notification
                 .arrivals
@@ -587,17 +583,16 @@ impl Shell {
         .id(format!("{identifier}:region").into())
         .into()
     }
-    pub(super) fn historical_card<'a>(&'a self, entry: &'a Archived) -> Element<'a, ShellMessage> {
+    fn historical_card<'a>(
+        &'a self,
+        entry: &'a Archived,
+        palette: &enzui_theme::Palette,
+    ) -> Element<'a, ShellMessage> {
         let expanded = self.notification.expanded_history == Some(entry.id);
-        let image = (self.desired_settings.notifications.images)
-            .then_some(entry.image.as_ref())
-            .flatten()
-            .map(|image| {
-                iced::widget::image(image.handle())
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .into()
-            });
+        let image = entry
+            .image
+            .as_ref()
+            .filter(|_| self.desired_settings.notifications.images);
         let details = enz_button(
             if expanded {
                 tr("shell-show-less")
@@ -613,9 +608,9 @@ impl Shell {
         let card = enzui_shell::notifications::card::view(
             enzui_shell::notifications::card::Card {
                 style: self.desired_settings.notifications.style,
-                surface: self.card_surface(),
+                surface: card::Surface::Inset,
                 text: f32::from(self.metrics.text),
-                radius: 12.0,
+                radius: f32::from(self.metrics.radius),
                 icon: "history",
                 app_icon: None,
                 // The group header names the sender.
@@ -628,12 +623,11 @@ impl Shell {
                 unread: false,
                 image,
                 dismiss: None,
-                actions: vec![details],
+                actions: vec![vec![details]],
                 height: None,
-                glass: false,
                 progress: None,
             },
-            &self.tokens().palette,
+            palette,
         );
         SemanticsContainer::new(
             card,
@@ -728,6 +722,9 @@ impl Shell {
             current.len()
         };
         let page = self.notification.page.min(total.saturating_sub(1) / 12);
+        let palette = self
+            .window_tokens(self.notification.center.as_ref().map(|pane| pane.window))
+            .palette;
         let mut cards = Vec::new();
         let mut group = None;
         if history {
@@ -747,7 +744,7 @@ impl Shell {
                 }
                 cards.push((
                     format!("historical:{}", entry.id),
-                    self.historical_card(entry),
+                    self.historical_card(entry, &palette),
                 ));
             }
         } else {
@@ -768,7 +765,7 @@ impl Shell {
                 // A lone notification names its sender itself.
                 cards.push((
                     key_id(entry.key),
-                    self.notification_card_glass(entry, false, false, count == 1),
+                    self.notification_card(entry, card::Surface::Inset, count == 1, &palette),
                 ));
             }
         }

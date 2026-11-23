@@ -892,13 +892,6 @@ pub static ENTRIES: &[Entry] = &[
     ),
     entry!(
         Notifications,
-        "notifications/bar_colour",
-        "shell-use-the-bar-s-colour",
-        "shell-toast-appearance",
-        "shell-background-colour-match-bar"
-    ),
-    entry!(
-        Notifications,
         "notifications/duration",
         "shell-notification-duration",
         "shell-toast-appearance",

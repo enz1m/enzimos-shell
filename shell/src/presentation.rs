@@ -606,20 +606,13 @@ impl<Message: Clone> Widget<Message, iced::Theme, iced::Renderer> for Slide<'_, 
                     && reveal.is_island()
                     && let [(body, radius)] = frame.fills.as_slice()
                 {
-                    let lit =
-                        0.2126 * reveal.color.r + 0.7152 * reveal.color.g + 0.0722 * reveal.color.b
-                            > 0.5;
                     renderer.fill_quad(
                         iced::advanced::renderer::Quad {
                             bounds: *body + Vector::new(bounds.x, bounds.y),
                             border: iced::Border {
                                 radius: *radius,
                                 width: 1.0,
-                                color: if lit {
-                                    iced::Color::from_rgba(0.0, 0.0, 0.0, 0.08)
-                                } else {
-                                    iced::Color::from_rgba(1.0, 1.0, 1.0, 0.06)
-                                },
+                                color: crate::reveal::glass_rim(reveal.color),
                             },
                             ..Default::default()
                         },

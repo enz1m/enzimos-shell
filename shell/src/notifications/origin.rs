@@ -177,6 +177,33 @@ async fn credentials(connection: &zbus::Connection, sender: &str) -> Result<(u32
     .map_err(error)?
 }
 impl Origin {
+    pub(super) fn internal_capture(icon: &str) -> Result<Self, String> {
+        let pid = std::process::id();
+        let meta = fs::metadata("/proc/self/exe").map_err(error)?;
+        let executable = policy_path(
+            fs::read_link("/proc/self/exe").map_err(error)?,
+            meta.nlink(),
+        );
+        Ok(Self {
+            // No D-Bus caller may replace or close an internal notification.
+            sender: String::new(),
+            principal: executable_principal(&executable),
+            label: tr("shell-system").into(),
+            icon: icon.into(),
+            app_icon: None,
+            desktop: None,
+            pid,
+            start: session::start(pid).map_err(error)?,
+            device: meta.dev(),
+            inode: meta.ino(),
+            portal: false,
+        })
+    }
+
+    pub fn is_internal(&self) -> bool {
+        self.sender.is_empty()
+    }
+
     /// The sending process and its start time, which tell it apart from a
     /// later process with the same id.
     pub fn process(&self) -> (u32, u64) {

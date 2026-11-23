@@ -489,8 +489,7 @@ impl Compositor {
         let width = card_width + 2.0 * SHADOW_MARGIN + overshoot;
         let height =
             notification_toast_height(&heights[..count.min(5)], screen_height - top - bottom)?;
-        let lower = matches!(position, Position::BottomLeft | Position::BottomRight)
-            || position == Position::BarEnd && bar == BarEdge::Bottom;
+        let lower = position.is_bottom(bar);
         let start = matches!(position, Position::TopLeft | Position::BottomLeft);
         let x = if start {
             inset(left) - SHADOW_MARGIN

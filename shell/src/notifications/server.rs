@@ -1,4 +1,5 @@
 use super::{
+    capture::CaptureNotice,
     model::{Action, Archived, Closed, Key, Model, Notification, Policy},
     origin::Origin,
     payload::{Arguments, Draft},
@@ -57,6 +58,7 @@ impl Snapshot {
 }
 #[derive(Clone)]
 pub enum Command {
+    PostCapture(CaptureNotice),
     /// `token` is an XDG activation token from the click, handed to the app
     /// first (`ActivationToken`) so it may raise its window.
     Action {
@@ -73,6 +75,7 @@ pub enum Command {
 #[derive(Clone)]
 pub enum Event {
     Ready(u64),
+    PostedCapture(Result<(), String>),
     Action {
         key: Key,
         result: Result<(), String>,
@@ -145,6 +148,9 @@ async fn failure(
 }
 async fn close_signals(connection: &Connection, closed: Vec<Closed>) -> Result<(), String> {
     for closed in closed {
+        if closed.origin.is_internal() {
+            continue;
+        }
         write(connection.emit_signal(
             Some(closed.origin.sender.as_str()),
             PATH,
@@ -358,9 +364,39 @@ impl Service {
         events: &mpsc::Sender<Event>,
     ) -> Result<(), String> {
         match command {
+            Command::PostCapture(capture) => {
+                let result = match Origin::internal_capture(capture.icon()).and_then(|origin| {
+                    self.model
+                        .post(origin, capture.into_draft(), Instant::now(), wall_ms())
+                }) {
+                    Ok(posted) => close_signals(&self.connection, posted.closed).await,
+                    Err(error) => Err(error),
+                };
+                events
+                    .try_send(Event::PostedCapture(result))
+                    .map_err(|_| "Notification consumer is unavailable or busy")?;
+            }
             Command::Action { key, action, token } => {
                 let result = match self.model.authorize(key, action) {
                     Err(error) => Err(error),
+                    Ok(dispatch) if dispatch.origin.is_internal() => {
+                        let result = match self
+                            .model
+                            .get(key)
+                            .and_then(|entry| entry.draft.saved_file.as_ref())
+                        {
+                            Some(file) => file.open(token.as_deref()).await,
+                            None => {
+                                Err(tr("shell-notification-action-is-unavailable-or-invalid")
+                                    .into())
+                            }
+                        };
+                        if result.is_ok() {
+                            let closed = self.model.action_delivered(key, wall_ms());
+                            close_signals(&self.connection, closed.into_iter().collect()).await?;
+                        }
+                        result
+                    }
                     Ok(dispatch) => match dispatch
                         .origin
                         .verify(&self.identity, self.target.unit())

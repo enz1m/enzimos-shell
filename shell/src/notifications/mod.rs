@@ -1,5 +1,6 @@
 pub mod activation;
 pub(crate) mod archive;
+pub mod capture;
 pub mod card;
 pub mod model;
 pub mod origin;

@@ -30,13 +30,16 @@ pub struct Reply {
     pub submit: String,
 }
 #[derive(Clone)]
-pub struct Image(Handle);
+pub struct Image {
+    handle: Handle,
+    preview: bool,
+}
 impl Image {
     pub fn handle(&self) -> Handle {
-        self.0.clone()
+        self.handle.clone()
     }
     pub fn pixels(&self) -> (&[u8], u32, u32) {
-        match &self.0 {
+        match &self.handle {
             Handle::Rgba {
                 pixels,
                 width,
@@ -55,7 +58,17 @@ impl Image {
         {
             return Err(tr("shell-invalid-notification-thumbnail").into());
         }
-        Ok(Self(Handle::from_rgba(width, height, pixels)))
+        Ok(Self {
+            handle: Handle::from_rgba(width, height, pixels),
+            preview: false,
+        })
+    }
+    pub(crate) fn with_preview(mut self, preview: bool) -> Self {
+        self.preview = preview;
+        self
+    }
+    pub(super) fn preview(&self) -> bool {
+        self.preview
     }
     fn from_hint(value: OwnedValue) -> Result<Self, String> {
         let structure =
@@ -120,6 +133,7 @@ pub struct Draft {
     pub timeout_ms: i32,
     /// The `value` hint: progress or a level, 0 to 100.
     pub value: Option<u8>,
+    pub(crate) saved_file: Option<super::capture::SavedFile>,
 }
 pub fn text(value: &str, max: usize, multiline: bool) -> Result<String, String> {
     if value.len() > max * 4 || value.chars().count() > max {
@@ -257,6 +271,7 @@ impl Draft {
             transient,
             timeout_ms,
             value,
+            saved_file: None,
         })
     }
     pub fn permits_action(&self, key: &str) -> bool {

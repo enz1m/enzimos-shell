@@ -46,6 +46,24 @@ impl ChromeColor {
             Self::Custom(_) => tr("shell-chrome-color-custom"),
         }
     }
+
+    /// Resolves a custom Shell tint against the theme's mode and accent.
+    pub fn tint(self, light: bool, accent: iced::Color) -> Option<iced::Color> {
+        match self {
+            Self::Theme => None,
+            Self::Accent => {
+                let [r, g, b] = crate::desktop_frame::color(light);
+                let base = iced::Color::from_rgb8(r, g, b);
+                let mix = |from: f32, to: f32| from + (to - from) * 0.45;
+                Some(iced::Color::from_rgb(
+                    mix(base.r, accent.r),
+                    mix(base.g, accent.g),
+                    mix(base.b, accent.b),
+                ))
+            }
+            Self::Custom(rgb) => Some(crate::theme_palette::rgb(rgb)),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

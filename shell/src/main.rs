@@ -881,7 +881,13 @@ impl Shell {
                 Task::batch([stop, self.return_app_focus()])
             }
             Message::RecordingSaved(ending) => {
-                self.notice = Some(ending.notice());
+                let capture = enzui_shell::notifications::capture::CaptureNotice::recording(ending);
+                let fallback = capture.fallback().to_owned();
+                if !self.notification.send(
+                    enzui_shell::notifications::server::Command::PostCapture(capture),
+                ) {
+                    self.notice = Some(fallback);
+                }
                 Task::none()
             }
             Message::Privacy(usage) => {

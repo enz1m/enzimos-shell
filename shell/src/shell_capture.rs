@@ -2,6 +2,7 @@ use super::{Message, Shell, window_settings};
 use enzui_shell::capture::{Rect, Source};
 use enzui_shell::compositor::ControlGeometry;
 use enzui_shell::i18n::tr;
+use enzui_shell::notifications::{capture::CaptureNotice, server::Command};
 use iced::widget::image::Handle;
 use iced::{Point, Task, window};
 
@@ -113,7 +114,7 @@ pub(crate) enum CaptureMessage {
     Close,
     Settings,
     StartRecording(enzui_shell::recording::Target),
-    Saved(Result<enzui_shell::capture::Saved, String>),
+    Saved(Result<CaptureNotice, String>),
     Ignore,
 }
 
@@ -412,6 +413,7 @@ impl Shell {
                     self.wanted_pointer(),
                 );
                 let preferences = self.desired_settings.capture.clone();
+                let preview = self.desired_settings.notifications.images;
                 Task::perform(
                     async move {
                         let output = compositor.desktop_output().await?;
@@ -422,7 +424,7 @@ impl Shell {
                         let image =
                             enzui_shell::capture::grab(&controls, &Source::Output(name), pointer)
                                 .await?;
-                        keep(image, preferences, &controls).await
+                        keep(image, preferences, &controls, preview).await
                     },
                     |result| Message::Capture(CaptureMessage::Saved(result)),
                 )
@@ -434,6 +436,7 @@ impl Shell {
                     self.wanted_pointer(),
                 );
                 let preferences = self.desired_settings.capture.clone();
+                let preview = self.desired_settings.notifications.images;
                 Task::perform(
                     async move {
                         let output = compositor.desktop_output().await?;
@@ -443,7 +446,7 @@ impl Shell {
                             .next()
                             .ok_or_else(|| tr("shell-there-is-no-window-to-capture"))?;
                         let image = window_picture(&controls, &compositor, target, pointer).await?;
-                        keep(image, preferences, &controls).await
+                        keep(image, preferences, &controls, preview).await
                     },
                     |result| Message::Capture(CaptureMessage::Saved(result)),
                 )
@@ -649,10 +652,15 @@ impl Shell {
             }
             CaptureMessage::StartRecording(target) => self.start_recording(target),
             CaptureMessage::Saved(result) => {
-                self.notice = Some(match result {
-                    Ok(saved) => saved.notice(),
-                    Err(error) => error,
-                });
+                match result {
+                    Ok(screenshot) => {
+                        let fallback = screenshot.fallback().to_owned();
+                        if !self.notification.send(Command::PostCapture(screenshot)) {
+                            self.notice = Some(fallback);
+                        }
+                    }
+                    Err(error) => self.notice = Some(error),
+                }
                 Task::none()
             }
             CaptureMessage::Ignore => Task::none(),
@@ -706,6 +714,7 @@ impl Shell {
             frame.plain.clone()
         };
         let kind = self.capture.kind;
+        let preview = self.desired_settings.notifications.images;
         let shot = Task::perform(
             async move {
                 let picture = match (kind, window) {
@@ -728,7 +737,7 @@ impl Shell {
                     .flatten()
                     .ok_or_else(|| tr("shell-the-capture-could-not-be-read"))?,
                 };
-                keep(picture, preferences, &controls).await
+                keep(picture, preferences, &controls, preview).await
             },
             |result| Message::Capture(CaptureMessage::Saved(result)),
         );
@@ -740,10 +749,12 @@ async fn keep(
     image: raster::DynamicImage,
     preferences: enzui_shell::capture::Preferences,
     controls: &enzui_shell::system_controls::SystemControls,
-) -> Result<enzui_shell::capture::Saved, String> {
+    preview: bool,
+) -> Result<CaptureNotice, String> {
     let tool = enzui_shell::capture::clipboard_tool(controls);
     tokio::task::spawn_blocking(move || {
-        enzui_shell::capture::keep(&image, &preferences, tool.as_deref())
+        let saved = enzui_shell::capture::keep(&image, &preferences, tool.as_deref())?;
+        Ok(CaptureNotice::screenshot(saved, &image, preview))
     })
     .await
     .map_err(|_| tr("shell-the-screenshot-could-not-be-saved"))?

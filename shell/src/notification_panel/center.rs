@@ -810,7 +810,9 @@ impl Shell {
                     }
                     Task::none()
                 }
-                Update::Operation(server::Event::Policy(result)) => {
+                Update::Operation(
+                    server::Event::Policy(result) | server::Event::PostedCapture(result),
+                ) => {
                     if let Err(error) = result {
                         self.notification.error = Some(error);
                     }

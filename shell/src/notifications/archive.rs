@@ -23,6 +23,8 @@ struct Picture {
     width: u32,
     height: u32,
     rgba: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    preview: bool,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -79,6 +81,7 @@ impl Record {
                     width,
                     height,
                     rgba: STANDARD.encode(pixels),
+                    preview: image.preview(),
                 }
             }),
             received_ms: entry.received_ms,
@@ -107,6 +110,7 @@ impl Record {
                     .decode(image.rgba)
                     .map_err(|_| tr("shell-invalid-historical-image-encoding"))?;
                 Image::from_rgba(image.width, image.height, pixels)
+                    .map(|pixels| pixels.with_preview(image.preview))
             })
             .transpose()?;
         let reason = match self.reason {

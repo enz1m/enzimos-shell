@@ -166,6 +166,15 @@ pub fn glass_shadow(level: u8, color: Color, bottom: bool) -> Option<(f32, f32, 
         if lit { light } else { dark },
     ))
 }
+
+/// The hairline of a floating glass panel.
+pub fn glass_rim(tint: Color) -> Color {
+    if 0.2126 * tint.r + 0.7152 * tint.g + 0.0722 * tint.b > 0.5 {
+        Color::from_rgba(0.0, 0.0, 0.0, 0.08)
+    } else {
+        Color::from_rgba(1.0, 1.0, 1.0, 0.06)
+    }
+}
 /// Stored panel-material indices; append new styles to preserve saved selections.
 pub const PANEL_MATERIALS: [(&str, Option<enzui_theme::MaterialStyle>); 7] = [
     ("Solid", None),

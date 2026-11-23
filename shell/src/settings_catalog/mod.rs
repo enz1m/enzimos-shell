@@ -176,7 +176,6 @@ pub fn icon(route: &str) -> Option<&'static str> {
         "notifications/critical" => "triangle-alert",
         "notifications/position" => "layout-panel-top",
         "notifications/style" => "brush",
-        "notifications/bar_colour" => "paintbrush",
         "notifications/duration" | "quick-search/clipboard-retention" => "timer",
         "notifications/width" => "move-horizontal",
         "notifications/count" => "layers",

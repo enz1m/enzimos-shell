@@ -276,8 +276,7 @@ fn windows(area: Rect, settings: &Settings, tiled: bool) -> [Rect; 2] {
 
 fn toasts(settings: &Settings, style: ShellStyle) -> Vec<Rect> {
     let p = &settings.notifications;
-    let bottom = matches!(p.position, Position::BottomLeft | Position::BottomRight)
-        || p.position == Position::BarEnd && settings.bar == BarEdge::Bottom;
+    let bottom = p.position.is_bottom(settings.bar);
     let left = matches!(p.position, Position::TopLeft | Position::BottomLeft);
     let near_bar = bottom == (settings.bar == BarEdge::Bottom);
     let edge = 12.0
@@ -451,12 +450,7 @@ pub(super) fn desktop(
     if notifications {
         for bounds in toasts(settings, style) {
             scene.shadow(bounds, 8.0, 0.22);
-            scene.rect(
-                bounds,
-                8.0,
-                palette.surface_elevated,
-                Some((palette.control_border, 1.0)),
-            );
+            scene.rect(bounds, 8.0, palette.surface, None);
             let [x, y, width, height] = bounds;
             let icon = (height * 0.36).clamp(8.0, 14.0);
             scene.rect(

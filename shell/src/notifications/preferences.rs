@@ -41,6 +41,12 @@ impl Position {
             Self::BottomRight => tr("shell-bottom-right"),
         }
     }
+
+    /// Whether the toast stack is anchored at the bottom of the output.
+    pub fn is_bottom(self, bar: crate::settings::BarEdge) -> bool {
+        matches!(self, Self::BottomLeft | Self::BottomRight)
+            || self == Self::BarEnd && bar == crate::settings::BarEdge::Bottom
+    }
 }
 /// How dense a notification card is. Every style is raised above windows;
 /// they differ in spacing, icon size and how much of the message a toast shows.
@@ -101,8 +107,6 @@ pub struct Preferences {
     pub policy: Policy,
     pub position: Position,
     pub style: Style,
-    /// Cards use the bar's background colour instead of the raised surface.
-    pub bar_colour: bool,
     pub width: u16,
     pub maximum_toasts: u8,
     pub images: bool,
@@ -127,7 +131,6 @@ impl Default for Preferences {
             policy: Policy::default(),
             position: Position::default(),
             style: Style::default(),
-            bar_colour: false,
             width: 416,
             maximum_toasts: 3,
             images: true,
@@ -144,7 +147,6 @@ pub enum Change {
     Duration(u32),
     Position(Position),
     Style(Style),
-    BarColour(bool),
     Width(u16),
     MaximumToasts(u8),
     Images(bool),
@@ -238,7 +240,6 @@ impl Preferences {
             u8::try_from(number("maximum_toasts", preferences.maximum_toasts.into())?)
                 .map_err(|_| tr("shell-invalid-toast-count"))?;
         preferences.images = boolean("images", true)?;
-        preferences.bar_colour = boolean("bar_colour", false)?;
         if let Some(position) = value.get("position") {
             preferences.position = Position::ALL
                 .into_iter()
@@ -325,7 +326,6 @@ impl Preferences {
             Change::Duration(value) => self.policy.toast_ms = *value,
             Change::Position(value) => self.position = *value,
             Change::Style(value) => self.style = *value,
-            Change::BarColour(value) => self.bar_colour = *value,
             Change::Width(value) => self.width = *value,
             Change::MaximumToasts(value) => self.maximum_toasts = *value,
             Change::Images(value) => self.images = *value,
@@ -419,7 +419,6 @@ impl Preferences {
             Change::Duration(value) => document["toast_ms"] = (*value).into(),
             Change::Position(value) => document["position"] = value.key().into(),
             Change::Style(value) => document["style"] = value.key().into(),
-            Change::BarColour(value) => document["bar_colour"] = (*value).into(),
             Change::Width(value) => document["width"] = (*value).into(),
             Change::MaximumToasts(value) => document["maximum_toasts"] = (*value).into(),
             Change::Images(value) => document["images"] = (*value).into(),

@@ -357,7 +357,7 @@ impl State {
         self.sync_hold(false);
         pane
     }
-    pub(super) fn send(&mut self, command: Command) -> bool {
+    pub(crate) fn send(&mut self, command: Command) -> bool {
         if !self.ready() {
             self.error = Some(tr("shell-notification-service-is-unavailable").into());
             return false;

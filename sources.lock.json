@@ -1,7 +1,7 @@
 {
   "hyprland": {
     "url": "https://github.com/enz1m/enzim-hyprland.git",
-    "revision": "f946df65dd301de119266563cf06510126a8414b",
+    "revision": "6ec19f1017a45197f4fb1d46531dd287c3c42c25",
     "destination": "vendor/Hyprland",
     "variants": {
       "scoped-eis": "173de69ebc7dc3fd3743257482bc416d0e2d8caf",

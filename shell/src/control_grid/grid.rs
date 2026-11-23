@@ -16,6 +16,7 @@ pub struct Grid<'a, Message> {
     pub(super) easing: enzui_theme::MotionEasing,
     pub(super) editable: bool,
     pub(super) interactive: bool,
+    pub(super) switchable_details: bool,
     pub(super) accent: iced::Color,
     pub(super) handle: iced::Color,
     pub(super) surface: iced::Color,
@@ -53,6 +54,7 @@ impl<'a, Message> Grid<'a, Message> {
             easing: theme.motion.easing,
             editable,
             interactive: true,
+            switchable_details: false,
             accent: theme.palette.accent,
             handle: theme.palette.text,
             surface: theme.palette.surface_alt,
@@ -66,6 +68,12 @@ impl<'a, Message> Grid<'a, Message> {
         self.interactive = interactive;
         self
     }
+    /// Keep sibling disclosures reachable while their tile's other actions are disabled.
+    #[must_use]
+    pub fn switchable_details(mut self) -> Self {
+        self.switchable_details = true;
+        self
+    }
     #[must_use]
     pub fn selected(mut self, action: Option<QuickAction>) -> Self {
         self.selected = action;
@@ -75,6 +83,18 @@ impl<'a, Message> Grid<'a, Message> {
     pub fn detail(mut self, detail: Option<Detail<'a, Message>>) -> Self {
         self.detail = detail.filter(|detail| self.keys.contains(&detail.action));
         self
+    }
+    pub(super) fn disclosure_only(&self, index: usize) -> bool {
+        !self.editable
+            && self
+                .detail
+                .as_ref()
+                .is_some_and(|detail| detail.open && detail.action != self.keys[index])
+    }
+    pub(super) fn routes_tile(&self, index: usize, transitioning: bool) -> bool {
+        self.interactive
+            && (!self.disclosure_only(index)
+                || (self.switchable_details && self.disclosures[index] && !transitioning))
     }
     pub(super) fn phase_detail(&self, phase: DetailPhase) -> Option<(QuickAction, f32)> {
         self.detail.as_ref().and_then(|d| match phase {

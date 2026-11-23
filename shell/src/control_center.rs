@@ -290,15 +290,20 @@ fn can_disclose(shell: &Shell, action: QuickAction, disclosure: bool) -> bool {
             || value(shell, action).is_none())
 }
 
-fn controls(shell: &Shell) -> Element<'_, Message> {
+pub(super) fn controls(shell: &Shell) -> Element<'_, Message> {
     let theme = shell.window_tokens(shell.control_center);
     let font = f32::from(shell.metrics.text);
+    let visible = |action| shell.desired_settings.shows(action) && shell.system.available(action);
+    let detail = shell.control_details.filter(|&action| visible(action));
     let mut items = Vec::new();
     for action in QuickAction::ALL
         .into_iter()
-        .filter(|action| shell.desired_settings.shows(*action) && shell.system.available(*action))
+        .filter(|&action| visible(action))
     {
-        let info = info(shell, action);
+        let disclosure_only =
+            shell.control_details_open && detail.is_some_and(|owner| owner != action);
+        let mut info = info(shell, action);
+        info.primary_enabled &= !disclosure_only;
         let shape = shell.desired_settings.controls.shape(action);
         let disclosure = can_disclose(shell, action, info.disclosure);
         let theme = theme.clone();
@@ -319,6 +324,7 @@ fn controls(shell: &Shell) -> Element<'_, Message> {
         });
         let child: Element<'_, Message> = if TileMenu::rows(shell, action).is_some() {
             enzui_widgets::enz_context_target(child, move |at| Message::ControlMenuOpen(action, at))
+                .enabled(!disclosure_only)
                 .into()
         } else {
             child.into()
@@ -341,7 +347,8 @@ fn controls(shell: &Shell) -> Element<'_, Message> {
             |_| Message::RegionInterior,
         )
         .interactive(!shell.control_placing)
-        .detail(shell.control_details.map(|action| Detail {
+        .switchable_details()
+        .detail(detail.map(|action| Detail {
             action,
             open: shell.control_details_open,
             height: control_tile::detail_height(action),

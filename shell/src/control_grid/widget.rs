@@ -10,7 +10,9 @@ use iced::advanced::{
     Layout, Shell, Widget, layout, overlay, renderer,
     widget::{Operation, Tree, tree},
 };
-use iced::{Element, Event, Length, Point, Rectangle, Size, Vector, keyboard, mouse, window};
+use iced::{
+    Element, Event, Length, Point, Rectangle, Size, Vector, keyboard, mouse, touch, window,
+};
 use std::{sync::Arc, time::Instant};
 
 impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Grid<'_, Message> {
@@ -214,18 +216,11 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Grid<'_, Message>
         }
         operation.traverse(&mut |operation| {
             let layouts: Vec<_> = layout.children(&tree.children).collect();
+            let transitioning = tree.state.downcast_ref::<State>().transitioning();
             let mut order: Vec<_> = (0..self.children.len())
-                .filter(|&i| {
-                    self.editable
-                        || !self
-                            .detail
-                            .as_ref()
-                            .is_some_and(|d| d.open && d.action != self.keys[i])
-                })
+                .filter(|&i| self.routes_tile(i, transitioning))
                 .collect();
-            if self.detail.as_ref().is_some_and(|detail| detail.open)
-                && !tree.state.downcast_ref::<State>().transitioning()
-            {
+            if self.detail.as_ref().is_some_and(|detail| detail.open) && !transitioning {
                 order.push(self.children.len());
             }
             order.sort_by(|&a, &b| {
@@ -462,31 +457,37 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Grid<'_, Message>
             shell.invalidate_layout();
             shell.request_redraw();
         }
+        let transitioning = state.transitioning();
         let layouts: Vec<_> = layout.children(&tree.children).collect();
-        for (index, ((child, state), layout)) in self
-            .children
-            .iter_mut()
-            .zip(&mut tree.children)
-            .zip(layouts.iter().copied())
+        let visible = |point| viewport.contains(point) && bounds.contains(point);
+        for (index, layout) in layouts
+            .iter()
+            .copied()
+            .take(self.children.len())
             .enumerate()
         {
-            let blocked = !self.interactive
-                || (!self.editable
-                    && self
-                        .detail
-                        .as_ref()
-                        .is_some_and(|d| d.open && d.action != self.keys[index]));
-            let event =
-                if blocked && !matches!(event, Event::Window(window::Event::RedrawRequested(_))) {
-                    &Event::Window(window::Event::Unfocused)
-                } else {
-                    event
-                };
+            let disclosure_only = self.disclosure_only(index);
+            let blocked = !self.routes_tile(index, transitioning);
+            let outside_touch = disclosure_only
+                && matches!(
+                    event,
+                    Event::Touch(touch::Event::FingerPressed { position, .. }
+                        | touch::Event::FingerLifted { position, .. }) if !visible(*position)
+                );
+            let event = if outside_touch
+                || (blocked && !matches!(event, Event::Window(window::Event::RedrawRequested(_))))
+            {
+                &Event::Window(window::Event::Unfocused)
+            } else {
+                event
+            };
+            let child = &mut self.children[index];
+            let state = &mut tree.children[index];
             child.as_widget_mut().update(
                 state,
                 event,
                 layout,
-                if blocked {
+                if blocked || (disclosure_only && !cursor.position().is_some_and(visible)) {
                     mouse::Cursor::Unavailable
                 } else {
                     cursor
@@ -676,7 +677,9 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Grid<'_, Message>
         if !self.interactive {
             return mouse::Interaction::default();
         }
-        if let Some(drag) = &tree.state.downcast_ref::<State>().drag {
+        let bounds = layout.bounds();
+        let state = tree.state.downcast_ref::<State>();
+        if let Some(drag) = &state.drag {
             return if drag.resize {
                 mouse::Interaction::ResizingHorizontally
             } else {
@@ -715,11 +718,20 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Grid<'_, Message>
                 )
             })
             .unwrap_or_default();
+        let transitioning = state.transitioning();
+        let visible_cursor = cursor
+            .position()
+            .is_some_and(|point| viewport.contains(point) && bounds.contains(point));
         self.children
             .iter()
             .zip(&tree.children)
             .zip(layout.children(&tree.children))
-            .map(|((child, state), layout)| {
+            .enumerate()
+            .filter(|(index, _)| {
+                self.routes_tile(*index, transitioning)
+                    && (visible_cursor || !self.disclosure_only(*index))
+            })
+            .map(|(_, ((child, state), layout))| {
                 child
                     .as_widget()
                     .mouse_interaction(state, layout, cursor, viewport, renderer)

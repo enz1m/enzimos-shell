@@ -57,6 +57,108 @@ fn expanding_controls_keeps_the_reserved_window_size() {
 }
 
 #[test]
+fn control_disclosures_switch_without_activating_the_other_tiles_primary_action() {
+    use enzui_core::collect::SemanticsCollector;
+    use enzui_shell::{
+        control_layout,
+        settings::{Change, QuickAction},
+    };
+    use iced::advanced::{
+        layout::{Limits, Measure as _},
+        renderer,
+        shell::{Bus, Shell as EventShell, Waker},
+        widget::{Id, Tree},
+    };
+    use iced::{Event, Point, Rectangle, Size, mouse};
+    use std::sync::Arc;
+
+    let mut shell = controls_shell();
+    shell.control_visible = true;
+    shell.system.network.ethernet_present = true;
+    shell.system.bluetooth = Some(true);
+    shell.system.system_writes = true;
+    shell.desired_settings.quick_actions = 0;
+    let mut controls = control_layout::Layout::default();
+    for action in [QuickAction::Network, QuickAction::Bluetooth] {
+        shell
+            .desired_settings
+            .preview(Change::QuickAction(action, true))
+            .unwrap();
+        controls.set_shape(action, control_layout::Shape::Triple);
+    }
+    shell.desired_settings.controls = Arc::new(controls);
+    let _ = shell.update_chrome(Message::ControlDetails(Some(QuickAction::Network)));
+
+    let renderer = iced::futures::executor::block_on(<iced::Renderer as renderer::Headless>::new(
+        renderer::Settings::default(),
+        Some("tiny-skia"),
+    ))
+    .unwrap();
+    let size = Size::new(260.0, 800.0);
+    let viewport = Rectangle::with_size(size);
+    for target in [QuickAction::Bluetooth, QuickAction::Network] {
+        let message = {
+            let mut controls = control_center::controls(&shell);
+            let widget = controls.as_widget_mut();
+            let mut tree = Tree::new(&*widget);
+            tree.diff(&mut *widget);
+            let node =
+                widget.measure_snapshot(&mut tree, &renderer, &Limits::new(Size::ZERO, size));
+            let layout = iced::advanced::Layout::of(&node);
+            let mut semantics = SemanticsCollector::new();
+            widget.operate(&mut tree, layout, &viewport, &renderer, &mut semantics);
+            let control = |part| {
+                let id = Id::from(format!("control-{}-{part}", target.key()));
+                semantics
+                    .collected()
+                    .iter()
+                    .find(|node| node.id.as_ref() == Some(&id))
+                    .unwrap()
+            };
+            let disclosure = control("details");
+            assert!(!disclosure.semantics.disabled && disclosure.semantics.supports_default_action);
+            let primary = control("primary");
+            assert!(primary.semantics.disabled && !primary.semantics.supports_default_action);
+
+            let mut click = |point: Point, viewport: Rectangle| {
+                let mut bus = Bus::new();
+                let window = window::Headless;
+                for event in [
+                    mouse::Event::ButtonPressed(mouse::Button::Left),
+                    mouse::Event::ButtonReleased(mouse::Button::Left),
+                ] {
+                    widget.update(
+                        &mut tree,
+                        &Event::Mouse(event),
+                        layout,
+                        mouse::Cursor::Available(point),
+                        &renderer,
+                        &mut EventShell::new(&window, Waker::noop(), &mut bus),
+                        &viewport,
+                    );
+                }
+                bus.drain_messages().collect::<Vec<_>>()
+            };
+            let center = disclosure.bounds.center();
+            let clipped = Rectangle {
+                width: center.x - 1.0,
+                ..viewport
+            };
+            assert!(click(center, clipped).is_empty());
+            assert!(click(primary.bounds.center(), viewport).is_empty());
+            let mut messages = click(center, viewport).into_iter();
+            let message = messages.next().unwrap();
+            assert!(matches!(message, Message::ControlDetails(Some(action)) if action == target));
+            assert!(messages.next().is_none());
+            message
+        };
+        let _ = shell.update_chrome(message);
+        assert_eq!(shell.control_details, Some(target));
+        assert!(shell.control_details_open);
+    }
+}
+
+#[test]
 fn shell_behaviour() {
     // Panel action dispatch is once only and new intent rejects an already queued completion.
     {

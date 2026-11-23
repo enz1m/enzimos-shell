@@ -893,7 +893,7 @@ fn volume_row<'a, Message: Clone + 'a>(
     expanded: bool,
     height: f32,
 ) -> Element<'a, Message> {
-    let enabled = info.enabled && !preview;
+    let enabled = info.enabled && info.primary_enabled && !preview;
     let p = theme.palette;
     let muted = info.toggle != Some(true);
     let mute = enzui_widgets::enz_toolbar_icon(info.icon, primary)

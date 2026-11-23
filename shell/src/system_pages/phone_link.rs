@@ -1,5 +1,6 @@
 use super::*;
 use enzui_shell::phone_link::{self, Request, Snapshot};
+use enzui_shell::system_settings::phone_network::Access;
 use enzui_widgets::{
     button::{ButtonKind, ButtonSize, enz_button},
     qr::{EnzQrData, enz_qr},
@@ -11,7 +12,7 @@ use serde_json::{Map, Value, json};
 #[derive(Default)]
 pub(super) struct Phone {
     snapshot: Option<Snapshot>,
-    network: Option<Result<enzui_shell::system_settings::phone_network::Access, String>>,
+    network: Option<Result<Access, String>>,
     network_reading: bool,
     network_epoch: u64,
     network_last: Option<Instant>,
@@ -39,16 +40,10 @@ pub(in crate::settings_app) enum Confirm {
 #[derive(Clone, Debug)]
 pub(in crate::settings_app) enum PhoneMessage {
     Read(u64, Result<Snapshot, String>),
-    NetworkRead(
-        u64,
-        Result<enzui_shell::system_settings::phone_network::Access, String>,
-    ),
+    NetworkRead(u64, Access),
     NetworkRefresh,
     NetworkAllow,
-    NetworkDone(
-        u64,
-        Result<enzui_shell::system_settings::phone_network::Access, String>,
-    ),
+    NetworkDone(u64, Result<Access, String>),
     Command(Request),
     Completed(u64, Result<enzimos_phone_client::Reply, String>),
     Service(bool),
@@ -153,7 +148,7 @@ impl SettingsApp {
             PhoneMessage::NetworkRead(epoch, result) if epoch == state.network_epoch => {
                 state.network_reading = false;
                 state.network_last = Some(Instant::now());
-                state.network = Some(result);
+                state.network = Some(Ok(result));
             }
             PhoneMessage::NetworkAllow => {
                 if state.busy {
@@ -424,7 +419,6 @@ impl SettingsApp {
             ),
         );
         {
-            use enzui_shell::system_settings::phone_network::Access;
             let description = match &state.network {
                 None => tr("shell-phone-network-reading").to_owned(),
                 Some(Err(error)) => error.clone(),
@@ -432,16 +426,13 @@ impl SettingsApp {
                 Some(Ok(Access::Other(name))) => {
                     enzui_shell::tr!("shell-phone-network-other", "arg0" => *name)
                 }
-                Some(Ok(Access::NoTrustedZone)) => {
-                    tr("shell-phone-network-no-trusted-zone").to_owned()
-                }
                 Some(Ok(Access::Allowed)) => tr("shell-phone-network-allowed").to_owned(),
-                Some(Ok(Access::NeedsApproval)) => tr("shell-phone-network-approval").to_owned(),
+                Some(Ok(Access::Unverified)) => tr("shell-phone-network-unverified").to_owned(),
             };
             let mut access = crate::settings_app::settings_row(tr("shell-phone-network-access"))
                 .icon("shield")
                 .subtitle(description);
-            if matches!(&state.network, Some(Ok(Access::NeedsApproval))) {
+            if matches!(&state.network, Some(Ok(Access::Unverified))) {
                 access = access.control(button(
                     "shell-phone-network-allow",
                     PhoneMessage::NetworkAllow,

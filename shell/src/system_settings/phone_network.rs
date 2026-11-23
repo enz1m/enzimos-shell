@@ -13,12 +13,10 @@ pub enum Access {
     Unfiltered,
     /// Another firewall manages incoming traffic.
     Other(&'static str),
-    /// firewalld has no trusted zone available.
-    NoTrustedZone,
     /// All required rules are saved and active on trusted zones.
     Allowed,
-    /// Explicit administrator approval can add missing trusted-zone rules.
-    NeedsApproval,
+    /// firewalld is active and its Phone Link rules have not been verified.
+    Unverified,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -129,24 +127,16 @@ async fn allow(controls: &SystemControls) -> Result<Access, String> {
 }
 
 impl SystemSettings {
-    /// Read Phone Link access without changing or enabling a firewall.
-    pub async fn phone_network(&self) -> Result<Access, String> {
+    /// Detect the active firewall without requesting access to its rules.
+    pub async fn phone_network(&self) -> Access {
         if self.demo {
-            return Ok(Access::NeedsApproval);
+            return Access::Unverified;
         }
         match crate::platform::firewall(&self.controls).await {
-            Firewall::None => Ok(Access::Unfiltered),
-            Firewall::Other(name) => Ok(Access::Other(name)),
-            Firewall::Firewalld => {
-                let (zones, rules) = missing(&self.controls).await?;
-                Ok(if zones == 0 {
-                    Access::NoTrustedZone
-                } else if rules.is_empty() {
-                    Access::Allowed
-                } else {
-                    Access::NeedsApproval
-                })
-            }
+            Firewall::None => Access::Unfiltered,
+            Firewall::Other(name) => Access::Other(name),
+            // firewalld can start interactive authentication even for runtime rule reads.
+            Firewall::Firewalld => Access::Unverified,
         }
     }
 
@@ -195,6 +185,8 @@ mod tests {
 import json,sys
 from pathlib import Path
 root=Path(__file__).resolve().parent
+with (root/'firewall-invocations').open('a') as log:
+    print(*sys.argv[1:], file=log)
 path=root/'rules.json';state=json.loads(path.read_text());args=sys.argv[1:]
 if args==['--get-zones']:
     print(' '.join(state));sys.exit(0)
@@ -230,6 +222,7 @@ print('unsupported fixture operation',file=sys.stderr);sys.exit(2)
             }
         });
         let state_file = root.join("rules.json");
+        let invocations = root.join("firewall-invocations");
         std::fs::write(&state_file, original.to_string()).unwrap();
         let mut settings = SystemSettings {
             controls: SystemControls::fixture(root),
@@ -237,7 +230,9 @@ print('unsupported fixture operation',file=sys.stderr);sys.exit(2)
             writes_allowed: false,
             enzimos: Default::default(),
         };
+        assert_eq!(settings.phone_network().await, Access::Unverified);
         assert!(settings.allow_phone_network().await.is_err());
+        assert!(!invocations.exists(), "preview invoked firewall-cmd");
         let read =
             || serde_json::from_slice::<Value>(&std::fs::read(&state_file).unwrap()).unwrap();
         assert_eq!(
@@ -246,10 +241,8 @@ print('unsupported fixture operation',file=sys.stderr);sys.exit(2)
             "a read-only preview changed firewall rules"
         );
         settings.writes_allowed = true;
-        assert_eq!(
-            settings.phone_network().await.unwrap(),
-            Access::NeedsApproval
-        );
+        assert_eq!(settings.phone_network().await, Access::Unverified);
+        assert!(!invocations.exists(), "idle status invoked firewall-cmd");
         std::fs::write(root.join("deny-next"), b"refuse one change").unwrap();
         assert!(settings.allow_phone_network().await.is_err());
         let partial = read();
@@ -259,14 +252,16 @@ print('unsupported fixture operation',file=sys.stderr);sys.exit(2)
             original["home"]["runtime"]["service"]
         );
         assert_eq!(
-            settings.phone_network().await.unwrap(),
-            Access::NeedsApproval
-        );
-        assert_eq!(
             settings.allow_phone_network().await.unwrap(),
             Access::Allowed
         );
-        assert_eq!(settings.phone_network().await.unwrap(), Access::Allowed);
+        let explicit_calls = std::fs::read(&invocations).unwrap();
+        assert_eq!(settings.phone_network().await, Access::Unverified);
+        assert_eq!(
+            std::fs::read(&invocations).unwrap(),
+            explicit_calls,
+            "refresh invoked firewall-cmd after verification"
+        );
         let after = read();
         assert_eq!(
             after["public"], original["public"],

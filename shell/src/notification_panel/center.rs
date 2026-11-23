@@ -21,6 +21,8 @@ use enzui_widgets::{icon::enz_icon, text::enz_text};
 use iced::{Element, Task, widget::row, window};
 use std::sync::atomic::Ordering;
 
+const ACTIVITY_FOCUS_RETRIES: u8 = 8;
+
 impl Shell {
     /// The height the center wants for the tab it shows: its fixed rows and
     /// every current card at its real height, or room for the history it
@@ -152,10 +154,10 @@ impl Shell {
             slide,
             iced::event::listen_with(|event, _, id| match event {
                 iced::Event::Mouse(iced::mouse::Event::CursorEntered) => {
-                    Some(message(Message::ToastHover(id, true)))
+                    Some(message(Message::PopupHover(id, true)))
                 }
                 iced::Event::Mouse(iced::mouse::Event::CursorLeft) => {
-                    Some(message(Message::ToastHover(id, false)))
+                    Some(message(Message::PopupHover(id, false)))
                 }
                 _ => None,
             }),
@@ -255,6 +257,17 @@ impl Shell {
             .as_ref()
             .is_some_and(|pane| pane.window == id)
         {
+            if self.notification.content == Content::Activity {
+                if self.notification.activity.passive {
+                    if let Some(pane) = self.notification.center.as_mut() {
+                        pane.visible = true;
+                        pane.started = true;
+                    }
+                    return Task::none();
+                }
+                // Opened can arrive before the first buffer maps the Wayland window.
+                return self.focus_notification_panel(ACTIVITY_FOCUS_RETRIES);
+            }
             let refresh = if self.notification.content == Content::Calendar {
                 self.clock_refresh()
             } else {
@@ -315,17 +328,35 @@ impl Shell {
             self.notification.send(Command::Read(keys));
         }
     }
+    fn focus_notification_panel(&self, retries: u8) -> Task<ShellMessage> {
+        let compositor = self.compositor.clone();
+        let serial = self.notification.center_serial;
+        Task::perform(
+            async move { compositor.focus_notification_center().await },
+            move |result| message(Message::CenterFocused(serial, retries, result)),
+        )
+    }
+
+    fn activity_focus_pending(&self, serial: u64) -> bool {
+        self.notification.center_serial == serial
+            && self.notification.content == Content::Activity
+            && !self.notification.activity.passive
+            && self
+                .notification
+                .center
+                .as_ref()
+                .is_some_and(|pane| pane.visible || !pane.started)
+    }
+
     pub(super) fn notification_open_center(&mut self) -> Task<ShellMessage> {
-        self.notification.actions.cancel();
+        self.notification.cancel_center_actions();
+        let activity = self.notification.content == Content::Activity;
         let open = if let Some(pane) = self.notification.center.as_mut() {
             if pane.started {
                 pane.visible = true;
-                let compositor = self.compositor.clone();
-                let serial = self.notification.center_serial;
-                Task::perform(
-                    async move { compositor.focus_notification_center().await },
-                    move |result| message(Message::CenterFocused(serial, result)),
-                )
+                self.focus_notification_panel(if activity { ACTIVITY_FOCUS_RETRIES } else { 0 })
+            } else if activity {
+                Task::none()
             } else {
                 window::gain_focus(pane.window)
             }
@@ -374,8 +405,45 @@ impl Shell {
                 .map(move |size| message(Message::Anchor(serial, Some(bar_center_anchor(size))))),
         })
     }
+    fn select_notification_content(
+        &mut self,
+        content: Content,
+        toggle: bool,
+    ) -> Task<ShellMessage> {
+        self.cancel_panel_action();
+        let same = self.notification.content == content;
+        if content == Content::Activity && !self.has_visible_activity() {
+            return Task::none();
+        }
+        if same && self.notification.activity.passive {
+            self.notification.activity.reset_popup();
+            return self.notification_open_center();
+        }
+        if toggle
+            && same
+            && (self.notification.center_opening
+                || self
+                    .notification
+                    .center
+                    .as_ref()
+                    .is_some_and(|pane| pane.visible || !pane.started))
+        {
+            return self.close_notifications();
+        }
+        let close = if !same {
+            self.force_close_notifications()
+        } else {
+            Task::none()
+        };
+        self.notification.content = content;
+        if self.notification.ready() {
+            self.notification.error = None;
+        }
+        Task::batch([close, self.notification_open_center()])
+    }
     pub(crate) fn close_notifications(&mut self) -> Task<ShellMessage> {
-        self.notification.actions.cancel();
+        self.notification.activity.reset_popup();
+        self.notification.cancel_center_actions();
         self.notification.center_opening = false;
         self.notification.center_serial = self.notification.center_serial.wrapping_add(1);
         if let Some(center) = self.notification.center.as_mut() {
@@ -393,7 +461,8 @@ impl Shell {
         self.finish_notifications()
     }
     pub(super) fn finish_notifications(&mut self) -> Task<ShellMessage> {
-        self.notification.actions.cancel();
+        self.notification.activity.reset_popup();
+        self.notification.cancel_center_actions();
         self.notification.center_opening = false;
         self.notification.center_serial = self.notification.center_serial.wrapping_add(1);
         self.notification
@@ -411,7 +480,7 @@ impl Shell {
             .into_iter()
             .cloned()
             .collect();
-        let window = self.notification.toast.is_some() && self.notification.center.is_none();
+        let window = self.notification.toast.is_some() && !self.notification.blocks_toasts();
         for entry in &self.notification.toast_shown {
             let id = (entry.key.epoch, entry.key.id);
             // A replaced notification keeps its toast; only one gone leaves.
@@ -431,7 +500,7 @@ impl Shell {
     }
     // Shown toasts that are being taken away start leaving now.
     fn notification_start_leaving(&mut self, keys: &[enzui_shell::notifications::model::Key]) {
-        if self.notification.toast.is_none() || self.notification.center.is_some() {
+        if self.notification.toast.is_none() || self.notification.blocks_toasts() {
             return;
         }
         let now = std::time::Instant::now();
@@ -844,9 +913,10 @@ impl Shell {
                     self.search_bind(),
                 ])
             }
-            Message::Shortcut(enzui_shell::shortcuts::Event::OpenNotifications) => {
-                Task::batch([self.close_search(), self.notification_open_center()])
-            }
+            Message::Shortcut(enzui_shell::shortcuts::Event::OpenNotifications) => Task::batch([
+                self.close_search(),
+                self.select_notification_content(Content::Notifications, false),
+            ]),
             Message::Shortcut(enzui_shell::shortcuts::Event::OpenSearch) => {
                 self.search_message(crate::quick_search::Message::Toggle)
             }
@@ -858,51 +928,47 @@ impl Shell {
                 self.notification.shortcut_error = result.err();
                 Task::none()
             }
-            Message::CenterFocused(serial, result) => {
-                if serial == self.notification.center_serial
-                    && self
-                        .notification
-                        .center
-                        .as_ref()
-                        .is_some_and(|pane| pane.visible)
-                    && let Err(error) = result
+            Message::CenterFocused(serial, retries, result) => {
+                let Err(error) = result else {
+                    return Task::none();
+                };
+                let activity = self.activity_focus_pending(serial);
+                if activity && let Some(remaining) = retries.checked_sub(1) {
+                    self.quiet = true;
+                    return Task::perform(
+                        async {
+                            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                        },
+                        move |()| message(Message::RetryActivityFocus(serial, remaining)),
+                    );
+                }
+                if activity
+                    || (serial == self.notification.center_serial
+                        && self
+                            .notification
+                            .center
+                            .as_ref()
+                            .is_some_and(|pane| pane.visible))
                 {
                     self.notification.error = Some(error);
                 }
                 Task::none()
             }
-            message @ (Message::Toggle | Message::ToggleCalendar | Message::ToggleActivity) => {
-                self.cancel_panel_action();
-                let content = match message {
-                    Message::ToggleCalendar => Content::Calendar,
-                    Message::ToggleActivity => Content::Activity,
-                    _ => Content::Notifications,
-                };
-                if self.notification.content == content
-                    && (self.notification.center_opening
-                        || self
-                            .notification
-                            .center
-                            .as_ref()
-                            .is_some_and(|pane| pane.visible || !pane.started))
-                {
-                    self.close_notifications()
+            Message::RetryActivityFocus(serial, remaining) => {
+                self.quiet = true;
+                if self.activity_focus_pending(serial) {
+                    self.focus_notification_panel(remaining)
                 } else {
-                    let close = if self.notification.center.is_some()
-                        && self.notification.content != content
-                    {
-                        self.force_close_notifications()
-                    } else {
-                        Task::none()
-                    };
-                    self.notification.content = content;
-                    // What went wrong with an earlier click is old news by
-                    // the next opening; a stopped service keeps its notice.
-                    if self.notification.ready() {
-                        self.notification.error = None;
-                    }
-                    Task::batch([close, self.notification_open_center()])
+                    Task::none()
                 }
+            }
+            Message::Toggle => self.select_notification_content(Content::Notifications, true),
+            Message::ToggleCalendar => self.select_notification_content(Content::Calendar, true),
+            Message::ToggleActivity => self.select_notification_content(Content::Activity, true),
+            Message::ActivityTriggerHover(inside) => self.activity_hover(true, inside),
+            Message::ActivityHoverElapsed(revision) => self.activity_hover_elapsed(revision),
+            Message::ActivityPointerChecked(revision, inside) => {
+                self.activity_pointer_checked(revision, inside)
             }
             Message::Hidden(id) => {
                 if self
@@ -923,10 +989,14 @@ impl Shell {
                 let (left, right) = self.desktop_edges();
                 let Some(anchor) = anchor else {
                     self.notification.center_opening = false;
+                    self.notification.activity.reset_popup();
                     self.notification.error =
                         Some(tr("shell-notification-center-anchor-is-unavailable").into());
                     return Task::none();
                 };
+                if self.notification.content == Content::Activity {
+                    self.notification.activity.trigger_bounds = Some(anchor);
+                }
                 let placement = PopupPlacement {
                     bar: self.bar,
                     left,
@@ -936,7 +1006,7 @@ impl Shell {
                     body: if self.notification.content == Content::Calendar {
                         iced::Size::new(392.0, self.clock_panel_height())
                     } else if self.notification.content == Content::Activity {
-                        iced::Size::new(432.0, 440.0)
+                        self.activity_panel_size()
                     } else {
                         self.notification.center_requested = self.notification_center_height();
                         iced::Size::new(
@@ -954,10 +1024,11 @@ impl Shell {
                     .center
                     .as_ref()
                     .is_some_and(|pane| pane.visible);
+                let passive = self.notification.activity.passive;
                 Task::perform(
                     async move {
                         compositor
-                            .prepare_notification_center(placement, open)
+                            .prepare_notification_center(placement, open, passive)
                             .await
                     },
                     move |result| message(Message::CenterPrepared(serial, result)),
@@ -970,6 +1041,7 @@ impl Shell {
                 self.notification.center_opening = false;
                 match result {
                     Err(error) => {
+                        self.notification.activity.reset_popup();
                         self.notification.error = Some(error);
                         Task::none()
                     }
@@ -1049,7 +1121,13 @@ impl Shell {
                     }
                 }
             }
-            Message::ToastHover(id, hovered) => {
+            Message::PopupHover(id, inside)
+                if self.notification.content == Content::Activity
+                    && self.notification.owns_center(id) =>
+            {
+                self.activity_hover(false, inside)
+            }
+            Message::PopupHover(id, hovered) => {
                 if self
                     .notification
                     .toast
@@ -1172,7 +1250,7 @@ impl Shell {
                 // A shown toast takes the reply itself; the centre is only
                 // for messages that are no longer on screen.
                 let shown = self.notification.toast.is_some()
-                    && self.notification.center.is_none()
+                    && !self.notification.blocks_toasts()
                     && self
                         .notification
                         .toast_entries()
@@ -1433,6 +1511,9 @@ impl Shell {
         {
             match event {
                 window::Event::Focused => {
+                    if self.notification.content == Content::Activity {
+                        self.notification.activity.reset_popup();
+                    }
                     if let Some(pane) = self.notification.center.as_mut() {
                         pane.visible = true;
                         pane.started = true;
@@ -1444,7 +1525,8 @@ impl Shell {
                 }
                 window::Event::CloseRequested => return self.close_notifications(),
                 window::Event::Closed => {
-                    self.notification.actions.cancel();
+                    self.notification.activity.reset_popup();
+                    self.notification.cancel_center_actions();
                     self.notification.center = None;
                     return self.notification_refresh_toasts();
                 }

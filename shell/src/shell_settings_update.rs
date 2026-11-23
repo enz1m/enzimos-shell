@@ -103,7 +103,9 @@ impl Shell {
                             self.surface_inputs.insert(id, input);
                             if Some(id) == self.control_center {
                                 self.controls_ready()
-                            } else if Some(id) == self.dock.window {
+                            } else if Some(id) == self.dock.window
+                                || self.notification.passive_activity(id)
+                            {
                                 Task::done(Message::Opened(id))
                             } else if Some(id) == self.search.window {
                                 self.search_opened(id)

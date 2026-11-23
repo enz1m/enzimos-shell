@@ -87,6 +87,11 @@ impl Shell {
         }
         self.desired_settings = settings.clone();
         self.activity_settings_changed();
+        let activity = if !settings.activity_status {
+            self.sync_activity_panel()
+        } else {
+            Task::none()
+        };
         self.sync_night_light();
         if self.display_layouts.1.as_ref() != Some(&settings.displays) {
             let _ = self.display_layouts.0.send(settings.displays.clone());
@@ -184,6 +189,7 @@ impl Shell {
             maximize,
             sidebar,
             regions,
+            activity,
             self.notification_preferences(),
             self.search_preferences(),
             self.sync_input_method(),

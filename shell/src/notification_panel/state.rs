@@ -57,8 +57,19 @@ impl State {
     pub(crate) fn center_open(&self) -> bool {
         self.center.is_some()
     }
+    pub(super) fn blocks_toasts(&self) -> bool {
+        self.content != Content::Activity && (self.center.is_some() || self.center_opening)
+    }
+    pub(super) fn cancel_center_actions(&mut self) {
+        if self.content != Content::Activity {
+            self.actions.cancel();
+        }
+    }
     pub(crate) fn owns_center(&self, id: window::Id) -> bool {
         self.center.as_ref().is_some_and(|pane| pane.window == id)
+    }
+    pub(crate) fn passive_activity(&self, id: window::Id) -> bool {
+        self.activity.passive && self.owns_center(id)
     }
     pub(crate) fn owns_window(&self, id: window::Id) -> bool {
         self.center.as_ref().is_some_and(|pane| pane.window == id)
@@ -84,7 +95,7 @@ impl State {
         self.pending.contains_key(key) || self.actions.waiting(key)
     }
     pub(super) fn action_source(&self, key: Key) -> Option<window::Id> {
-        if let Some(pane) = &self.center {
+        if let Some(pane) = self.center.as_ref().filter(|_| self.blocks_toasts()) {
             let entries = self.current_entries();
             let page = self.page.min(entries.len().saturating_sub(1) / 12);
             return (pane.visible
@@ -101,7 +112,7 @@ impl State {
             .as_ref()
             .filter(|pane| {
                 pane.visible
-                    && !self.center_opening
+                    && !self.blocks_toasts()
                     && self
                         .toast_entries()
                         .iter()
@@ -294,7 +305,7 @@ impl State {
         shown
     }
     pub(super) fn toast_entries(&self) -> Vec<&Arc<Notification>> {
-        if self.center.is_some() || self.center_opening || self.toasts_paused {
+        if self.blocks_toasts() || self.toasts_paused {
             return Vec::new();
         }
         self.snapshot
@@ -315,8 +326,7 @@ impl State {
     }
     pub(super) fn hold_projection(&self, entries: impl Iterator<Item = Key>) -> Vec<Key> {
         if self.toast.is_some()
-            && self.center.is_none()
-            && !self.center_opening
+            && !self.blocks_toasts()
             && (self.toast_hovered || self.toast_focused)
         {
             entries.take(self.toast_count).collect()

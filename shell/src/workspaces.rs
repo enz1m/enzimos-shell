@@ -179,13 +179,14 @@ fn event_stream(
 }
 
 fn focus_event(line: &[u8]) -> bool {
-    [
-        b"activewindowv2>>".as_slice(),
-        b"openwindow>>",
-        b"closewindow>>",
-    ]
-    .iter()
-    .any(|prefix| line.starts_with(prefix))
+    if let Some(window) = line.strip_prefix(b"activewindow>>") {
+        let class = window
+            .split(|byte| *byte == b',')
+            .next()
+            .unwrap_or_default();
+        return !SHELL_CLASSES.contains(&class);
+    }
+    line.starts_with(b"openwindow>>") || line.starts_with(b"closewindow>>")
 }
 
 pub fn dock_events(socket: Option<std::path::PathBuf>) -> impl iced::futures::Stream<Item = ()> {
@@ -312,6 +313,20 @@ async fn read_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn focus_events_ignore_shell_chrome_without_a_prior_mapping_event() {
+        assert!(!focus_event(
+            b"activewindow>>dev.enzui.Desktop,enzUI Desktop\n"
+        ));
+        assert!(!focus_event(
+            b"activewindow>>dev.enzui.NotificationCenter,Notifications\n"
+        ));
+        assert!(focus_event(b"activewindow>>io.github.enzui.Files,Files\n"));
+        assert!(focus_event(b"activewindow>>,\n"));
+        assert!(!focus_event(b"activewindowv2>>56420f233200\n"));
+    }
+
     #[test]
     fn desktop_snapshot_preserves_sparse_ids_and_rejects_false_placeholders() {
         let good = r#"{"active":3,"desktops":[{"id":1,"windows":2,"placeholder":false},{"id":3,"windows":0,"placeholder":false},{"id":7,"windows":0,"placeholder":true}]}"#;

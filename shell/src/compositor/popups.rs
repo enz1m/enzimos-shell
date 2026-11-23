@@ -205,7 +205,7 @@ impl Compositor {
                     "dev.enzui.Launcher",
                     "desktop-island-launcher",
                     false,
-                    true,
+                    false,
                     false,
                 )
                 .await;
@@ -263,7 +263,7 @@ impl Compositor {
             "dev.enzui.PluginPanel",
             "desktop-plugin-panel",
             true,
-            true,
+            false,
             false,
         )
         .await
@@ -276,25 +276,40 @@ impl Compositor {
         &self,
         placement: PopupPlacement,
         open: bool,
+        passive: bool,
     ) -> Result<ControlGeometry, String> {
         self.prepare_popup(
             placement,
             "dev.enzui.NotificationCenter",
             "desktop-notification-center",
             false,
-            true,
             open,
+            passive,
         )
         .await
     }
+    pub async fn activity_pointer_inside(&self, anchor: iced::Rectangle) -> bool {
+        let owner = std::process::id();
+        let right = anchor.x + anchor.width;
+        let bottom = anchor.y + anchor.height;
+        let query = format!(
+            "repl local p=hl.get_cursor_pos() for _,w in ipairs(hl.get_windows()) do if w.mapped and w.pid=={owner} then local x=p.x-w.at.x local y=p.y-w.at.y if w.class==\"dev.enzui.Desktop\" and x>={left} and x<{right} and y>={top} and y<{bottom} then return true end if w.class==\"dev.enzui.NotificationCenter\" and x>=0 and y>=0 and x<w.size.x and y<w.size.y then return true end end end return false",
+            left = anchor.x,
+            top = anchor.y,
+        );
+        self.request(&["--batch", &query])
+            .await
+            .is_ok_and(|value| value.trim() == "true")
+    }
+
     async fn prepare_popup(
         &self,
         placement: PopupPlacement,
         class: &str,
         rule: &str,
         resize_existing: bool,
-        shadow: bool,
         hold_existing: bool,
+        passive: bool,
     ) -> Result<ControlGeometry, String> {
         let PopupPlacement {
             bar,
@@ -348,18 +363,14 @@ impl Compositor {
         );
         let y = attached_y(&output, height, bar, metrics)?;
         let panel = (width, height);
-        let (x, y, width, height) = if shadow {
-            shadowed(
-                x,
-                y,
-                width,
-                height,
-                bar == crate::settings::BarEdge::Bottom,
-                attachment,
-            )
-        } else {
-            (x, y, width, height)
-        };
+        let (x, y, width, height) = shadowed(
+            x,
+            y,
+            width,
+            height,
+            bar == crate::settings::BarEdge::Bottom,
+            attachment,
+        );
         let size_lock = if resize_existing {
             format!(",min_size=\"{width} {height}\",max_size=\"{width} {height}\"")
         } else {
@@ -404,8 +415,15 @@ impl Compositor {
         } else {
             ""
         };
+        let focus_rule = if passive {
+            r#"hl.window_rule({name="desktop-activity-preview",match={class="^dev[.]enzui[.]NotificationCenter$"},enabled=true,no_initial_focus=true,no_follow_mouse=true});"#
+        } else if class == "dev.enzui.NotificationCenter" {
+            r#"hl.window_rule({name="desktop-activity-preview",enabled=false});"#
+        } else {
+            ""
+        };
         let lua = format!(
-            "{}\n{switch}hl.window_rule({{name={},match={{class={}}},float=true,pin=true,monitor={},move={},size={},border_size=0,rounding=0,decorate=false,no_anim=true,no_shadow=true,no_xdg_drags=true{size_lock}}});for _,w in ipairs(hl.get_windows()) do if w.mapped and w.pid=={} and w.class=={} then {hold}{resize}hl.dispatch(hl.dsp.window.move({{window=w,x={},y={}}})) end end",
+            "{}\n{switch}{focus_rule}hl.window_rule({{name={},match={{class={}}},float=true,pin=true,monitor={},move={},size={},border_size=0,rounding=0,decorate=false,no_anim=true,no_shadow=true,no_xdg_drags=true{size_lock}}});for _,w in ipairs(hl.get_windows()) do if w.mapped and w.pid=={} and w.class=={} then {hold}{resize}hl.dispatch(hl.dsp.window.move({{window=w,x={},y={}}})) end end",
             include_str!("../../../config/control-center.lua"),
             serde_json::to_string(rule).expect("serializing a string cannot fail"),
             serde_json::to_string(&format!("^{}$", class.replace('.', "[.]")))

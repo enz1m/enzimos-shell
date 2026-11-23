@@ -85,7 +85,25 @@ pub(crate) struct State {
     pub(super) preferences: Option<Arc<Preferences>>,
     pub(super) effective_policy: Option<enzui_shell::notifications::model::Policy>,
     pub(super) content: Content,
+    pub(super) activity: ActivityPreview,
 }
+#[derive(Default)]
+pub(super) struct ActivityPreview {
+    pub(super) trigger_hovered: bool,
+    pub(super) panel_hovered: bool,
+    pub(super) trigger_bounds: Option<iced::Rectangle>,
+    pub(super) passive: bool,
+    pub(super) revision: u64,
+}
+
+impl ActivityPreview {
+    pub(super) fn reset_popup(&mut self) {
+        self.passive = false;
+        self.panel_hovered = false;
+        self.revision = self.revision.wrapping_add(1);
+    }
+}
+
 impl Drop for State {
     fn drop(&mut self) {
         if let Some(authority) = &self.authority {
@@ -98,17 +116,21 @@ pub(crate) enum Message {
     Runtime(runtime::Event),
     Shortcut(enzui_shell::shortcuts::Event),
     ShortcutBound(Result<(), String>),
-    CenterFocused(u64, Result<(), String>),
+    CenterFocused(u64, u8, Result<(), String>),
+    RetryActivityFocus(u64, u8),
     Toggle,
     /// The clock's calendar, events and world clocks.
     ToggleCalendar,
     /// Current background work, without saved notification history.
     ToggleActivity,
+    ActivityTriggerHover(bool),
+    ActivityHoverElapsed(u64),
+    ActivityPointerChecked(u64, bool),
     Hidden(window::Id),
     Anchor(u64, Option<iced::Rectangle>),
     CenterPrepared(u64, Result<ControlGeometry, String>),
     ToastPrepared(u64, usize, f32, Result<ControlGeometry, String>),
-    ToastHover(window::Id, bool),
+    PopupHover(window::Id, bool),
     Reveal((u64, u32)),
     /// Leaving toasts have finished; the window can take its new size.
     LeftToasts,

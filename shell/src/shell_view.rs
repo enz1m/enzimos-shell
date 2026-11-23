@@ -871,6 +871,10 @@ impl Shell {
                     .chain(keyboard)
                     .chain([item.id().to_owned()])
             })
+            .chain(
+                self.has_visible_activity()
+                    .then(|| "builtin.activity".to_owned()),
+            )
             .chain(self.remote_sharing.map(|_| "builtin.sharing".to_owned()))
             .collect()
     }
@@ -928,7 +932,6 @@ impl Shell {
                 }
                 Some(corner.push(control_center::status_button(self)).into())
             }
-            "builtin.clock" if let Some(activity) = self.activity_item() => Some(activity),
             "builtin.clock" if enzui_shell::desktop_session::mode().managed() => {
                 Some(self.notification_clock())
             }
@@ -974,7 +977,12 @@ impl Shell {
         &self,
         section: enzui_shell::bar_layout::Section,
     ) -> Option<Element<'_, Message>> {
-        let sharing = (section == enzui_shell::bar_layout::Section::Middle)
+        let middle = section == enzui_shell::bar_layout::Section::Middle;
+        let activity = middle
+            .then(|| self.activity_item())
+            .flatten()
+            .map(|view| ("builtin.activity", view));
+        let sharing = middle
             .then(|| self.sharing_indicator())
             .flatten()
             .map(|view| ("builtin.sharing", view));
@@ -996,6 +1004,7 @@ impl Shell {
                     .chain(keyboard)
                     .chain(self.bar_item(i.id()).map(|view| (i.id(), view)))
             })
+            .chain(activity)
             .chain(sharing)
             .map(|(id, view)| {
                 let island = container(view)

@@ -372,7 +372,7 @@ impl Shell {
     // The toast card's exact height at the configured toast width.
     // A reply is being written on this toast, not in the centre.
     pub(super) fn toast_replying(&self, key: enzui_shell::notifications::model::Key) -> bool {
-        self.notification.center.is_none()
+        !self.notification.blocks_toasts()
             && self
                 .notification
                 .reply

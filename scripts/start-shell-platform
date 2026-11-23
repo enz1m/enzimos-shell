@@ -403,16 +403,18 @@ def prepare_desktop(config):
     ticks = int(read_private(runtime / "shell.pid.start", 32))
     # A first installed login can spend longer probing a graphics adapter.
     startup_deadline = time.monotonic() + (30 if config.get("installed") else 10)
+    same_exe, clients = False, []
     while time.monotonic() < startup_deadline:
         if not live(shell, ticks) or not member(shell, config["unit"]):
             raise RuntimeError("Shell exited during startup")
         actual, expected = os.stat(f"/proc/{shell}/exe"), (binaries / "enzui-shell").stat()
+        same_exe = (actual.st_dev, actual.st_ino) == (expected.st_dev, expected.st_ino)
         clients = json.loads(control(config, identity, "-j", "clients"))
-        if (actual.st_dev, actual.st_ino) == (expected.st_dev, expected.st_ino) and any(c["pid"] == shell and c["class"] == "dev.enzui.Desktop" for c in clients):
+        if same_exe and any(c["pid"] == shell and c["class"] == "dev.enzui.Desktop" for c in clients):
             break
         time.sleep(.1)
     else:
-        raise RuntimeError("Shell startup is incomplete; session retained for inspection")
+        raise RuntimeError(incomplete_shell_startup(shell, same_exe, clients))
     for _ in range(100):
         if not live(shell, ticks) or not member(shell, config["unit"]):
             raise RuntimeError("Shell exited before its desktop frame was ready")
@@ -428,6 +430,12 @@ def prepare_desktop(config):
             return identity
         time.sleep(.1)
     raise RuntimeError("Desktop frame is incomplete; session is not ready")
+
+
+def incomplete_shell_startup(shell, same_exe, clients):
+    own = sorted({str(c.get("class", "")) for c in clients if c.get("pid") == shell and str(c.get("class", "")).startswith("dev.enzui.")})
+    return (f"Shell startup is incomplete (shell executable {'verified' if same_exe else 'mismatched'}; "
+            f"compositor clients {len(clients)}; shell surfaces {','.join(own)[:120] or 'none'})")
 
 
 def desktop_output(config):
@@ -572,7 +580,7 @@ def inner(path, digest):
         try:
             identity = prepare_desktop(config)
         except Exception as error:
-            retain = not config.get("exit_with_shell", False)
+            retain = not config.get("exit_with_shell", False) and not config.get("installed")
             publish(runtime / "failed.json", {"message": "Startup failed; inspect private startup, compositor and shell logs.", "retain_compositor": retain,
                                               "error": "".join(c for c in str(error) if c.isprintable())[:300]})
             if not retain:
@@ -947,9 +955,9 @@ def installed(args):
         if config.get("installed"):
             stop_session_target()
     ended = runtime / "ended.json"
-    compositor_exited = ended.exists() and json.loads(read_private(ended)).get("reason") == "compositor-exited"
+    reason = json.loads(read_private(ended)).get("reason") if ended.exists() else None
+    compositor_exited = reason == "compositor-exited"
     started = (runtime / "ready.json").exists()
-    # Retain only the last log after retiring display-specific descriptors.
     state = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "enzui"
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
     log = state / "last-desktop.log"
@@ -957,9 +965,100 @@ def installed(args):
         shutil.copyfile(runtime / "startup.log", log)
     except FileNotFoundError:
         pass
+    failure = desktop_failure(runtime, xdg, clean.get("ENZUI_HYPR_CACHE_HOME"), reason, started)
+    if failure:
+        try:
+            kept = retain_failure_diagnostics(runtime, xdg, clean.get("ENZUI_HYPR_CACHE_HOME"), state / "desktop-failures", failure)
+            print("Desktop ended abnormally (" + failure + "); diagnostics kept in " + str(kept), file=sys.stderr)
+        except (OSError, RuntimeError, ValueError) as error:
+            print("Desktop ended abnormally (" + failure + "); diagnostics not kept:", error, file=sys.stderr)
     shutil.rmtree(runtime, ignore_errors=True)
     if not compositor_exited and not started:
         raise RuntimeError("The desktop did not start; see " + str(log))
+
+
+FAILURE_EXCERPT_BYTES = 64 * 1024
+FAILURE_INTERNAL_LOG_BYTES = 128 * 1024
+FAILURE_BUNDLES = 5
+
+
+def ended_compositor(runtime, xdg):
+    try:
+        pid = int(read_private(runtime / "hyprland.pid", 32))
+        instance = read_private(runtime / "instance", 200).decode().strip()
+    except (OSError, RuntimeError, ValueError):
+        return None, None
+    if pid <= 0 or not re.fullmatch(r"[a-zA-Z0-9._-]{1,180}", instance):
+        return None, None
+    return pid, xdg / "hypr" / instance
+
+
+def desktop_failure(runtime, xdg, cache_home, reason, started):
+    pid, instance = ended_compositor(runtime, xdg)
+    if pid and cache_home and Path(cache_home).is_absolute() and (Path(cache_home) / f"hyprlandCrashReport{pid}.txt").is_file():
+        return "compositor-crashed"
+    # A failed startup stops the unit, which may kill the compositor before its cleanup.
+    if reason != "compositor-exited" and not started:
+        return "startup-failed"
+    if pid:
+        # Hyprland removes the lock only on orderly exit.
+        try:
+            if read_private(instance / "hyprland.lock", 512).split(b"\n", 1)[0].strip() == str(pid).encode():
+                return "compositor-ended-abnormally"
+        except (OSError, RuntimeError):
+            pass
+    if reason == "shell-keeps-exiting":
+        return reason
+    return None
+
+
+def owned_excerpt(path, limit, head=False):
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as source:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
+            return None
+        if not head:
+            source.seek(max(0, info.st_size - limit))
+        return source.read(limit), info.st_size > limit
+
+
+def retain_failure_diagnostics(runtime, xdg, cache_home, parent, failure, now=None):
+    private_directory(parent)
+    pid, instance = ended_compositor(runtime, xdg)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(now))
+    bundle = parent / f"{stamp}-{secrets.token_hex(4)}"
+    bundle.mkdir(mode=0o700)
+    sources = {"startup.log": (runtime / "startup.log", FAILURE_EXCERPT_BYTES, False),
+               "compositor.log": (runtime / "hyprland.log", FAILURE_EXCERPT_BYTES, False),
+               "shell.log": (runtime / "shell.log", FAILURE_EXCERPT_BYTES, False)}
+    if instance:
+        sources["compositor-internal.log"] = (instance / "hyprland.log", FAILURE_INTERNAL_LOG_BYTES, False)
+    if pid and cache_home and Path(cache_home).is_absolute():
+        # The report's backtrace precedes its log tail.
+        sources["crash-report.txt"] = (Path(cache_home) / f"hyprlandCrashReport{pid}.txt", FAILURE_EXCERPT_BYTES, True)
+    files = {}
+    for name, (source, limit, head) in sources.items():
+        excerpt = owned_excerpt(source, limit, head)
+        if excerpt is None:
+            continue
+        data, cut = excerpt
+        with private_file(bundle / name, create=True) as out:
+            out.write(data)
+        files[name] = {"bytes": len(data), "truncated": cut}
+    manifest = {"schema": 1, "failure": failure, "compositor_pid": pid, "ended": stamp, "files": files}
+    try:
+        manifest["startup_error"] = str(json.loads(read_private(runtime / "failed.json")).get("error", ""))[:300]
+    except (OSError, RuntimeError, ValueError, AttributeError):
+        pass
+    publish(bundle / "manifest.json", manifest)
+    bundles = sorted(entry for entry in parent.iterdir() if entry.is_dir() and not entry.is_symlink() and re.fullmatch(r"\d{8}T\d{6}Z-[0-9a-f]{8}", entry.name))
+    for old in bundles[:-FAILURE_BUNDLES]:
+        shutil.rmtree(old, ignore_errors=True)
+    return bundle
 
 
 def retire_previous(profile, xdg):

@@ -178,7 +178,8 @@ pub async fn set_running(enabled: bool) -> Result<(), String> {
     }
     if !enabled {
         // Off and Restart are confirmed in Settings because both end live work.
-        // Retire a legacy checkout unit too, so Off really withdraws phone access.
+        // Retire a legacy checkout unit too; the query also names this unit
+        // because systemd fails when it matches nothing.
         let units = controls
             .run(
                 "systemctl",
@@ -186,6 +187,7 @@ pub async fn set_running(enabled: bool) -> Result<(), String> {
                     "--user",
                     "list-unit-files",
                     "enzremote-host.service",
+                    "enzimos-phone-link.service",
                     "--no-legend",
                 ],
             )

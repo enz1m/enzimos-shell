@@ -57,9 +57,16 @@ OPTIONAL_TOOLS = {"grim": "screenshots", "wpctl": "volume and audio devices", "n
                   "bluetoothctl": "Bluetooth", "brightnessctl": "brightness", "wf-recorder": "screen recording",
                   "wl-copy": "copying screenshots"}
 
-# The desktop's default handlers; the apps themselves ship as their own packages.
-DEFAULT_TYPES = {"inode/directory": "io.github.enzui.Files.desktop", "text/plain": "io.github.enzui.Text.desktop",
-                 "text/markdown": "io.github.enzui.Text.desktop"}
+DEFAULT_TYPES = {
+    "inode/directory": "io.github.enzui.Files.desktop",
+    "text/plain": "io.github.enzui.Text.desktop",
+    "text/markdown": "io.github.enzui.Text.desktop",
+    # Match the Photos group in Settings' default app choices.
+    "image/jpeg": "org.enzimos.Photos.desktop",
+    "image/png": "org.enzimos.Photos.desktop",
+    "image/gif": "org.enzimos.Photos.desktop",
+    "image/webp": "org.enzimos.Photos.desktop",
+}
 
 
 def desktop_entry(text, program, executable):

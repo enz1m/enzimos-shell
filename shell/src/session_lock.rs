@@ -3,9 +3,11 @@
 
 use enzui_shell::i18n::tr;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::sync::watch;
 
 static STARTING: AtomicBool = AtomicBool::new(false);
 static LOCKED: AtomicBool = AtomicBool::new(false);
@@ -40,31 +42,71 @@ pub fn command() -> Option<PathBuf> {
         })
 }
 
-/// Locks the session; returns once it is locked (or already was).
+const LOCK_DEADLINE: Duration = Duration::from_secs(15);
+// A lock client that has not reported by then is stopped so a new lock can start.
+const STARTUP_LIMIT: Duration = Duration::from_secs(135);
+
+// The pending or settled outcome of the latest lock client start, shared by every caller.
+type Outcome = Option<Result<(), String>>;
+static ATTEMPT: Mutex<Option<watch::Receiver<Outcome>>> = Mutex::new(None);
+
+/// Locks the session; returns once the compositor confirms it is locked.
+///
+/// # Errors
+/// Fails when the lock screen cannot start or is not confirmed within 15 seconds.
 pub async fn lock() -> Result<(), String> {
-    lock_with(command().ok_or_else(|| tr("shell-the-enzui-lock-screen-is-not-installed"))?).await
+    lock_within(LOCK_DEADLINE).await
 }
 
-async fn lock_with(program: PathBuf) -> Result<(), String> {
-    // Do not start a second client while this shell already holds or is acquiring the lock.
-    if HELD.load(Ordering::Acquire) || STARTING.swap(true, Ordering::AcqRel) {
-        return Ok(());
+/// Locks the session, waiting at most `limit` for the compositor to confirm it.
+/// A lock still starting at the deadline keeps starting in the background.
+///
+/// # Errors
+/// Fails when the lock screen cannot start or is not confirmed within `limit`.
+pub async fn lock_within(limit: Duration) -> Result<(), String> {
+    lock_with(
+        command().ok_or_else(|| tr("shell-the-enzui-lock-screen-is-not-installed"))?,
+        limit,
+    )
+    .await
+}
+
+async fn lock_with(program: PathBuf, limit: Duration) -> Result<(), String> {
+    let mut outcome = {
+        let mut attempt = ATTEMPT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if HELD.load(Ordering::Acquire) && locked() {
+            return Ok(());
+        }
+        // Join a client that is still starting rather than racing a second one.
+        match attempt
+            .as_ref()
+            .filter(|outcome| outcome.borrow().is_none())
+        {
+            Some(pending) => pending.clone(),
+            None => {
+                let (child, lines) = launch(&program)?;
+                let (sender, receiver) = watch::channel(None);
+                STARTING.store(true, Ordering::Release);
+                tokio::spawn(acquire(program, child, lines, sender));
+                *attempt = Some(receiver.clone());
+                receiver
+            }
+        }
+    };
+    match tokio::time::timeout(limit, outcome.wait_for(Option::is_some)).await {
+        Ok(Ok(settled)) => settled
+            .clone()
+            .unwrap_or_else(|| Err(tr("shell-the-lock-screen-could-not-start").into())),
+        Ok(Err(_)) => Err(tr("shell-the-lock-screen-could-not-start").into()),
+        Err(_) => Err(tr("shell-the-lock-screen-is-still-starting").into()),
     }
-    let (result, pending) = start(program).await;
-    // A client still drawing its first frame keeps the claim until it
-    // reports, so a second one cannot race it.
-    if !pending {
-        STARTING.store(false, Ordering::Release);
-    }
-    result
 }
 
 type Lines = tokio::io::Lines<BufReader<tokio::process::ChildStdout>>;
 
-// Starts a lock client and reads its first line.
-async fn spawn(
-    program: &PathBuf,
-) -> Result<(tokio::process::Child, Lines, Option<String>), String> {
+fn launch(program: &PathBuf) -> Result<(tokio::process::Child, Lines), String> {
     let mut child = tokio::process::Command::new(program)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -77,7 +119,14 @@ async fn spawn(
         .stdout
         .take()
         .ok_or("Could not start the lock screen")?;
-    let mut lines = BufReader::new(stdout).lines();
+    Ok((child, BufReader::new(stdout).lines()))
+}
+
+// Starts a lock client and reads its first line.
+async fn spawn(
+    program: &PathBuf,
+) -> Result<(tokio::process::Child, Lines, Option<String>), String> {
+    let (child, mut lines) = launch(program)?;
     // One CPU and software rendering can take several seconds to first frame.
     let first = match tokio::time::timeout(Duration::from_secs(15), lines.next_line()).await {
         Ok(Ok(line)) => line,
@@ -86,62 +135,38 @@ async fn spawn(
     Ok((child, lines, first))
 }
 
-// The outcome, and whether a slow client is still being waited for.
-async fn start(program: PathBuf) -> (Result<(), String>, bool) {
-    let (child, lines, first) = match spawn(&program).await {
-        Ok(started) => started,
-        Err(error) => return (Err(error), false),
+// Only the compositor acknowledgement, reported as `locked`, publishes LockedHint.
+async fn acquire(
+    program: PathBuf,
+    mut child: tokio::process::Child,
+    mut lines: Lines,
+    outcome: watch::Sender<Outcome>,
+) {
+    let first = tokio::time::timeout(STARTUP_LIMIT, lines.next_line()).await;
+    let settle = |result: Result<(), String>| {
+        STARTING.store(false, Ordering::Release);
+        outcome.send_replace(Some(result));
     };
-    match first.as_deref().map(str::trim) {
-        Some("locked") => {
-            LOCKED.store(true, Ordering::Release);
-            HELD.store(true, Ordering::Release);
-            locked_hint(true).await;
-            tokio::spawn(supervise(program, child, lines));
-            (Ok(()), false)
-        }
-        Some("already-locked") => {
-            tokio::spawn(reap(child, lines));
-            (Ok(()), false)
-        }
-        // It exits before locking when it cannot draw, so another locker may.
-        Some(_) => {
-            tokio::spawn(reap(child, lines));
-            (
-                Err(tr("shell-the-lock-screen-could-not-start").into()),
-                false,
-            )
-        }
-        None => {
-            tokio::spawn(late(program, child, lines));
-            (
-                Err(tr("shell-the-lock-screen-is-still-starting").into()),
-                true,
-            )
-        }
-    }
-}
-
-// A late locked message is still the compositor acknowledgement; only then publish LockedHint.
-async fn late(program: PathBuf, child: tokio::process::Child, mut lines: Lines) {
-    let first = tokio::time::timeout(Duration::from_secs(120), lines.next_line()).await;
     match first {
         Ok(Ok(Some(line))) if line.trim() == "locked" => {
             LOCKED.store(true, Ordering::Release);
             HELD.store(true, Ordering::Release);
-            STARTING.store(false, Ordering::Release);
+            settle(Ok(()));
             locked_hint(true).await;
             supervise(program, child, lines).await;
         }
-        Ok(Ok(Some(_))) => {
-            STARTING.store(false, Ordering::Release);
+        Ok(Ok(Some(line))) if line.trim() == "already-locked" => {
+            settle(Ok(()));
             reap(child, lines).await;
         }
-        // Gone, or still silent after two minutes: stop it so a new lock can start.
+        // It exits before locking when it cannot draw, so another locker may.
+        Ok(Ok(Some(_))) => {
+            settle(Err(tr("shell-the-lock-screen-could-not-start").into()));
+            reap(child, lines).await;
+        }
         _ => {
-            let mut child = child;
             let _ = child.kill().await;
-            STARTING.store(false, Ordering::Release);
+            settle(Err(tr("shell-the-lock-screen-could-not-start").into()));
         }
     }
 }
@@ -192,17 +217,13 @@ async fn reap(mut child: tokio::process::Child, mut lines: Lines) -> bool {
 }
 
 // Restart failed lock clients with rate limiting; compositor enforcement remains active
-// throughout.
+// throughout. HELD is cleared before any await so a new lock never trusts an ending client.
 async fn supervise(program: PathBuf, child: tokio::process::Child, lines: Lines) {
-    supervise_held(program, child, lines).await;
-    HELD.store(false, Ordering::Release);
-}
-
-async fn supervise_held(program: PathBuf, child: tokio::process::Child, lines: Lines) {
     let mut restarts: Vec<std::time::Instant> = Vec::new();
     let (mut child, mut lines) = (child, lines);
     loop {
         if reap(child, lines).await {
+            HELD.store(false, Ordering::Release);
             LOCKED.store(false, Ordering::Release);
             locked_hint(false).await;
             return;
@@ -210,6 +231,7 @@ async fn supervise_held(program: PathBuf, child: tokio::process::Child, lines: L
         loop {
             restarts.retain(|at| at.elapsed() < Duration::from_secs(60));
             if restarts.len() >= 5 {
+                HELD.store(false, Ordering::Release);
                 eprintln!("enzui-shell: the lock screen keeps failing; the session stays locked");
                 return;
             }
@@ -221,6 +243,7 @@ async fn supervise_held(program: PathBuf, child: tokio::process::Child, lines: L
                     break;
                 }
                 Ok((next, next_lines, Some(line))) if line.trim() == "already-locked" => {
+                    HELD.store(false, Ordering::Release);
                     reap(next, next_lines).await;
                     return;
                 }
@@ -238,7 +261,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn a_held_lock_starts_no_second_lock_screen() {
+    async fn lock_succeeds_only_after_one_client_confirms() {
         use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
         let starts = directory.path().join("starts");
@@ -246,15 +269,19 @@ mod tests {
         std::fs::write(
             &program,
             format!(
-                "#!/bin/sh\necho start >> '{}'\necho locked\nexec sleep 1\n",
+                "#!/bin/sh\necho start >> '{}'\nsleep 0.5\necho locked\nexec sleep 5\n",
                 starts.display()
             ),
         )
         .unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-        lock_with(program.clone()).await.unwrap();
+        let expired = lock_with(program.clone(), Duration::from_millis(50)).await;
+        assert!(expired.is_err() && !locked());
+        let first = tokio::spawn(lock_with(program.clone(), LOCK_DEADLINE));
+        lock_with(program.clone(), LOCK_DEADLINE).await.unwrap();
         assert!(locked() && HELD.load(Ordering::Acquire));
-        lock_with(program).await.unwrap();
+        first.await.unwrap().unwrap();
+        lock_with(program, LOCK_DEADLINE).await.unwrap();
         assert_eq!(std::fs::read_to_string(&starts).unwrap().lines().count(), 1);
     }
 }

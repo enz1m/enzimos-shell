@@ -82,6 +82,11 @@ async fn run(lid: LidAction) -> Result<(), String> {
         None => None,
     };
 
+    // logind sleeps once delay inhibitors close or this limit passes.
+    let delay_limit = manager
+        .get_property::<u64>("InhibitDelayMaxUSec")
+        .await
+        .map_or(Duration::from_secs(5), Duration::from_micros);
     // Held while awake; logind waits for it to close before sleeping.
     let mut delay = inhibit(
         &manager,
@@ -108,8 +113,7 @@ async fn run(lid: LidAction) -> Result<(), String> {
                 let Some(signal) = signal else { return Ok(()) };
                 let starting: bool = signal.body().deserialize().unwrap_or(false);
                 if starting {
-                    // Lock first; logind gives delay inhibitors a few seconds.
-                    let _ = tokio::time::timeout(Duration::from_secs(3), crate::session_lock::lock()).await;
+                    let _ = crate::session_lock::lock_within(delay_limit).await;
                     delay = None;
                 } else if delay.is_none() {
                     delay = inhibit(&manager, "sleep", tr("shell-locking-the-screen-before-sleep"), "delay").await;

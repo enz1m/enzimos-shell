@@ -30,16 +30,7 @@ pub async fn available() -> bool {
 
 /// Locks, then opens a greeter for another user.
 pub async fn switch() -> Result<(), String> {
-    if let Err(error) = crate::session_lock::lock().await {
-        // A slow lock screen still counts once the compositor acknowledges it.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        while !crate::session_lock::locked() {
-            if std::time::Instant::now() >= deadline {
-                return Err(error);
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-        }
-    }
+    crate::session_lock::lock_within(std::time::Duration::from_secs(60)).await?;
     let system = zbus::Connection::system()
         .await
         .map_err(|_| tr("shell-no-system-bus"))?;

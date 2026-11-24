@@ -194,6 +194,8 @@ fn rest(ui: &ui::Ui, now: Instant) -> Duration {
     minute.min(prompt).max(Duration::from_millis(5))
 }
 
+const GPU_WAIT: Duration = Duration::from_millis(600);
+
 /// How long a surface waits for its frame callback before drawing anyway.
 const FRAME_FALLBACK: Duration = Duration::from_millis(100);
 
@@ -380,6 +382,14 @@ pub fn run(mode: Mode) -> Result<(), String> {
         return Err(tr("shell-the-compositor-does-not-support-secure-session-locking").into());
     };
 
+    let (gpu_sender, gpu_started) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = gpu_sender.send(
+            std::panic::catch_unwind(Gpu::new)
+                .unwrap_or_else(|_| Err(tr("shell-graphics-initialization-panicked").into())),
+        );
+    });
+
     // Session-lock xray fades over the live desktop instead of a captured frame.
     let xray = mode == Mode::Lock
         && (std::env::var("ENZUI_LOCK_XRAY").as_deref() == Ok("1") || hyprland_xray());
@@ -413,19 +423,10 @@ pub fn run(mode: Mode) -> Result<(), String> {
         )?;
     }
 
-    let gpu = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(Gpu::new))
-        .unwrap_or_else(|_| Err(tr("shell-graphics-initialization-panicked").into()))
-    {
-        Ok(gpu) => Some(gpu),
-        Err(error) => {
-            eprintln!("enzui-lock: {error}; using tiny-skia software rendering");
-            None
-        }
-    };
-
     // The compositor confirms the lock only once every output shows a lock
     // surface, so surfaces are created and drawn before waiting for it.
     let lock = manager.lock(&qh, ());
+    let locking = Instant::now();
     state.lock = Some(lock.clone());
     while state.surfaces.len() < state.outputs.len() {
         add_lock_surface(&mut state, &compositor, &lock, &qh);
@@ -442,6 +443,35 @@ pub fn run(mode: Mode) -> Result<(), String> {
         say("already-locked");
         return Ok(());
     }
+
+    // The compositor shows its lock-missing screen if no lock surface is drawn
+    // within a second, so slow graphics give way to software drawing.
+    let gpu_ready = std::cell::OnceCell::new();
+    wait(
+        &connection,
+        &mut queue,
+        &mut state,
+        GPU_WAIT.saturating_sub(locking.elapsed()),
+        |_| {
+            if let Ok(gpu) = gpu_started.try_recv() {
+                let _ = gpu_ready.set(gpu);
+            }
+            gpu_ready.get().is_some()
+        },
+    )?;
+    let gpu = match gpu_ready.into_inner() {
+        Some(Ok(gpu)) => Some(gpu),
+        Some(Err(error)) => {
+            eprintln!("enzui-lock: {error}; using tiny-skia software rendering");
+            None
+        }
+        None => {
+            eprintln!(
+                "enzui-lock: graphics are still starting; using tiny-skia software rendering"
+            );
+            None
+        }
+    };
 
     // Settings: appearance of the prompt and which wallpaper to show.
     let settings = enzui_shell::settings::Store::from_environment()

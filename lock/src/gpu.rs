@@ -1,7 +1,6 @@
 use super::*;
 
 impl Gpu {
-    // Create graphics before locking so initialization failure leaves the session usable.
     pub(super) fn new() -> Result<Self, String> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::from_env()

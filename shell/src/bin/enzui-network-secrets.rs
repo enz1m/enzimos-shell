@@ -43,6 +43,8 @@ struct Dialog {
     values: Vec<SecretText>,
     revealed: Vec<bool>,
     sent: bool,
+    // The first field is focused once; later window focus keeps the user's field.
+    focused: bool,
 }
 
 struct App {
@@ -97,6 +99,7 @@ impl App {
             values: (0..count).map(|_| SecretText::new(String::new())).collect(),
             revealed: vec![false; count],
             sent: false,
+            focused: false,
         });
         open.discard()
             .chain(iced::widget::operation::focus(field_id(0)))
@@ -178,12 +181,16 @@ impl App {
                     return self.update(Message::Cancel);
                 }
             }
-            Message::Focused(window)
-                if self.current.as_ref().is_some_and(|d| d.window == window) =>
-            {
-                return iced::widget::operation::focus(field_id(0));
+            Message::Focused(window) => {
+                if let Some(dialog) = self
+                    .current
+                    .as_mut()
+                    .filter(|d| d.window == window && !d.focused)
+                {
+                    dialog.focused = true;
+                    return iced::widget::operation::focus(field_id(0));
+                }
             }
-            Message::Focused(_) => {}
         }
         Task::none()
     }

@@ -227,6 +227,7 @@ impl SettingsApp {
             )
             .feedback(feedback)
             .heading(false)
+            .group_label(i18n::label(section))
             .into_element();
             groups = groups.push(
                 column![

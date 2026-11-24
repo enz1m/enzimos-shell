@@ -3,6 +3,7 @@
 //! Automount requires a hotplugged volume in the active, unlocked seat session and HintAuto.
 //! Existing/internal volumes stay untouched; polkit owns authorization.
 
+use enzui_security::secret::SecretText;
 use enzui_shell::i18n::tr;
 use enzui_shell::tr;
 use iced::futures::StreamExt;
@@ -763,7 +764,7 @@ fn unlock_dialog(
 
 /// Unlocks through UDisks2 and returns the mounted cleartext object; secrets travel only over
 /// D-Bus.
-pub async fn unlock(path: &str, passphrase: &str) -> Result<(String, PathBuf), String> {
+pub async fn unlock(path: &str, passphrase: &SecretText) -> Result<(String, PathBuf), String> {
     if !block_object(path) {
         return Err(tr("shell-unexpected-drive").into());
     }
@@ -774,7 +775,7 @@ pub async fn unlock(path: &str, passphrase: &str) -> Result<(String, PathBuf), S
         .await
         .map_err(|_| tr("shell-the-drive-went-away"))?;
     let cleartext: OwnedObjectPath = encrypted
-        .call("Unlock", &(passphrase, options()))
+        .call("Unlock", &(passphrase.expose_secret(), options()))
         .await
         .map_err(|error| {
             let text = error.to_string();

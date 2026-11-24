@@ -5,6 +5,7 @@
     reason = "This command writes its result or probe protocol to stdout; diagnostics use stderr."
 )]
 
+use enzui_security::secret::SecretText;
 use enzui_shell::i18n::{self, tr};
 use enzui_shell::tr;
 use enzui_theme::EnzTheme;
@@ -19,7 +20,7 @@ use iced::{Alignment, Element, Length, Subscription, Task, window};
 
 #[derive(Clone, Debug)]
 enum Message {
-    Passphrase(String),
+    Passphrase(SecretText),
     Submit,
     Done(Result<(String, std::path::PathBuf), String>),
     Cancel,
@@ -29,7 +30,7 @@ enum Message {
 struct App {
     path: String,
     label: String,
-    passphrase: String,
+    passphrase: SecretText,
     error: Option<String>,
     checking: bool,
     light: bool,
@@ -44,7 +45,7 @@ impl App {
             Self {
                 path,
                 label,
-                passphrase: String::new(),
+                passphrase: SecretText::new(String::new()),
                 error: None,
                 checking: false,
                 light,
@@ -62,11 +63,16 @@ impl App {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Opened => return iced::widget::operation::focus("drive-passphrase"),
-            Message::Passphrase(text) => self.passphrase = text.chars().take(512).collect(),
+            Message::Passphrase(text) => {
+                self.passphrase = SecretText::new(text.expose_secret().chars().take(512).collect());
+            }
             Message::Submit if !self.checking && !self.passphrase.is_empty() => {
                 self.checking = true;
                 self.error = None;
-                let (path, passphrase) = (self.path.clone(), std::mem::take(&mut self.passphrase));
+                let (path, passphrase) = (
+                    self.path.clone(),
+                    std::mem::replace(&mut self.passphrase, SecretText::new(String::new())),
+                );
                 return Task::perform(
                     async move { enzui_shell::drives::unlock(&path, &passphrase).await },
                     Message::Done,
@@ -92,8 +98,8 @@ impl App {
             let mut field = enz_text_field(
                 enzui_shell::i18n::current().text("shell-passphrase"),
                 "",
-                &self.passphrase,
-                Message::Passphrase,
+                self.passphrase.expose_secret(),
+                |text| Message::Passphrase(SecretText::new(text)),
             )
             .secure(true)
             .on_submit(Message::Submit)

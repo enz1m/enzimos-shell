@@ -1,5 +1,6 @@
 //! NetworkManager secret-agent dialog; see enzui_shell::network_secrets.
 
+use enzui_security::secret::SecretText;
 use enzui_shell::i18n::{self, tr};
 use enzui_shell::network_secrets::{Ask, Command, Event, Kind};
 use enzui_shell::tr;
@@ -27,7 +28,7 @@ fn send(command: Command) {
 #[derive(Clone, Debug)]
 enum Message {
     Agent(Event),
-    Value(usize, String),
+    Value(usize, SecretText),
     Reveal(usize),
     Submit,
     Cancel,
@@ -39,7 +40,7 @@ enum Message {
 struct Dialog {
     ask: Ask,
     window: window::Id,
-    values: Vec<String>,
+    values: Vec<SecretText>,
     revealed: Vec<bool>,
     sent: bool,
 }
@@ -93,7 +94,7 @@ impl App {
         self.current = Some(Dialog {
             ask,
             window,
-            values: vec![String::new(); count],
+            values: (0..count).map(|_| SecretText::new(String::new())).collect(),
             revealed: vec![false; count],
             sent: false,
         });
@@ -127,11 +128,13 @@ impl App {
             }
             Message::Value(index, text) => {
                 if let Some(value) = self.current.as_mut().and_then(|d| d.values.get_mut(index)) {
-                    *value = text
-                        .chars()
-                        .filter(|c| !c.is_control())
-                        .take(1024)
-                        .collect();
+                    *value = SecretText::new(
+                        text.expose_secret()
+                            .chars()
+                            .filter(|c| !c.is_control())
+                            .take(1024)
+                            .collect(),
+                    );
                 }
             }
             Message::Reveal(index) => {
@@ -149,13 +152,16 @@ impl App {
                     && dialog.values.iter().all(|v| !v.is_empty())
                 {
                     dialog.sent = true;
-                    let values = dialog
-                        .ask
-                        .fields
-                        .iter()
-                        .map(|f| f.key.clone())
-                        .zip(dialog.values.iter_mut().map(std::mem::take))
-                        .collect();
+                    let values =
+                        dialog
+                            .ask
+                            .fields
+                            .iter()
+                            .map(|f| f.key.clone())
+                            .zip(dialog.values.iter_mut().map(|value| {
+                                std::mem::replace(value, SecretText::new(String::new()))
+                            }))
+                            .collect();
                     send(Command::Answer {
                         id: dialog.ask.id,
                         values,
@@ -239,9 +245,12 @@ impl App {
             let last = ask.fields.len().saturating_sub(1);
             for (index, field) in ask.fields.iter().enumerate() {
                 let revealed = dialog.revealed.get(index).copied().unwrap_or(false);
-                let input = enz_text_field(&field.label, "", &dialog.values[index], move |text| {
-                    Message::Value(index, text)
-                })
+                let input = enz_text_field(
+                    &field.label,
+                    "",
+                    dialog.values[index].expose_secret(),
+                    move |text| Message::Value(index, SecretText::new(text)),
+                )
                 .secure(field.secret && !revealed)
                 .id(field_id(index).into())
                 .enabled(!dialog.sent);

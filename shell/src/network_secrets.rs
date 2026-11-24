@@ -3,6 +3,7 @@
 //! Answers return over D-Bus without persistence or logging. Cancellation, expiry or
 //! service-owner replacement withdraws pending questions.
 
+use enzui_security::secret::SecretText;
 use enzui_shell::i18n::tr;
 use enzui_shell::tr;
 use std::collections::{BTreeMap, HashMap};
@@ -64,7 +65,7 @@ pub enum Event {
 pub enum Command {
     Answer {
         id: u64,
-        values: Vec<(String, String)>,
+        values: Vec<(String, SecretText)>,
     },
     Cancel {
         id: u64,
@@ -308,7 +309,7 @@ fn auth_dialog_input(data: &HashMap<String, String>) -> String {
 }
 
 /// The program's answer: `key\nvalue\n` pairs ending with an empty line.
-fn auth_dialog_output(output: &str) -> Vec<(String, String)> {
+fn auth_dialog_output(output: &str) -> Vec<(String, SecretText)> {
     let mut values = Vec::new();
     let mut lines = output.lines();
     while let Some(key) = lines.next() {
@@ -317,7 +318,7 @@ fn auth_dialog_output(output: &str) -> Vec<(String, String)> {
         }
         let Some(value) = lines.next() else { break };
         if key.len() <= 128 && value.len() <= 16 * 1024 && values.len() < 32 {
-            values.push((key.to_owned(), value.to_owned()));
+            values.push((key.to_owned(), SecretText::new(value.to_owned())));
         }
     }
     values
@@ -373,7 +374,7 @@ async fn run_auth_dialog(
                 break;
             }
         }
-        text
+        SecretText::new(text)
     };
     let output = tokio::time::timeout(DEADLINE, read).await;
     // The program waits for QUIT before it exits.
@@ -381,7 +382,7 @@ async fn run_auth_dialog(
     drop(stdin);
     let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
     let values = match output {
-        Ok(output) => auth_dialog_output(&output),
+        Ok(output) => auth_dialog_output(output.expose_secret()),
         Err(_) => {
             return Err(AgentError::AgentCanceled(
                 tr("shell-nobody-answered-in-time").into(),
@@ -393,22 +394,25 @@ async fn run_auth_dialog(
             tr("shell-the-sign-in-was-cancelled").into(),
         ));
     }
-    Ok(reply("vpn", values))
+    Ok(reply("vpn", &values))
 }
 
 // The reply NetworkManager expects: VPN secrets inside `vpn.secrets`, the
 // rest as their setting's own keys.
-fn reply(setting: &str, values: Vec<(String, String)>) -> Settings {
+fn reply(setting: &str, values: &[(String, SecretText)]) -> Settings {
     let mut inner: HashMap<String, OwnedValue> = HashMap::new();
     if setting == "vpn" {
-        let secrets: HashMap<String, String> = values.into_iter().collect();
+        let secrets: HashMap<&str, &str> = values
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.expose_secret()))
+            .collect();
         if let Ok(value) = OwnedValue::try_from(Value::from(secrets)) {
             inner.insert("secrets".into(), value);
         }
     } else {
         for (key, value) in values {
-            if let Ok(value) = OwnedValue::try_from(Value::from(value)) {
-                inner.insert(key, value);
+            if let Ok(value) = OwnedValue::try_from(Value::from(value.expose_secret())) {
+                inner.insert(key.clone(), value);
             }
         }
     }
@@ -484,12 +488,12 @@ impl Agent {
         let _ = self.events.send(Event::Done { id });
         match answer {
             Ok(Some(Command::Answer { values, .. })) => {
-                let values: Vec<(String, String)> = values
+                let values: Vec<(String, SecretText)> = values
                     .into_iter()
                     .filter(|(key, value)| {
                         fields.iter().any(|f| &f.key == key)
                             && !value.is_empty()
-                            && value.len() <= 4096
+                            && value.expose_secret().len() <= 4096
                     })
                     .collect();
                 if values.is_empty() {
@@ -497,7 +501,7 @@ impl Agent {
                         tr("shell-nothing-was-entered").into(),
                     ));
                 }
-                Ok(reply(&setting_name, values))
+                Ok(reply(&setting_name, &values))
             }
             Ok(Some(Command::Cancel { .. }) | None) => Err(AgentError::UserCanceled(
                 tr("shell-the-sign-in-was-cancelled").into(),
@@ -777,8 +781,8 @@ mod tests {
                 assert_eq!(
                     auth_dialog_output(answer),
                     vec![
-                        ("cookie".to_owned(), "abc=1".to_owned()),
-                        ("gwcert".to_owned(), "sha256:ff".to_owned())
+                        ("cookie".to_owned(), SecretText::new("abc=1".to_owned())),
+                        ("gwcert".to_owned(), SecretText::new("sha256:ff".to_owned()))
                     ]
                 );
                 assert!(
@@ -867,7 +871,10 @@ mod tests {
                     fields(&wifi, "802-11-wireless-security", &[]).unwrap().2[0].key,
                     "psk"
                 );
-                let answer = reply("vpn", vec![("password".into(), "s3cret".into())]);
+                let answer = reply(
+                    "vpn",
+                    &[("password".into(), SecretText::new("s3cret".into()))],
+                );
                 let secrets = HashMap::<String, String>::try_from(
                     answer["vpn"]["secrets"].try_clone().unwrap(),
                 )
@@ -949,7 +956,7 @@ mod tests {
             let tx = lock(&pending).get(&question.id).unwrap().2.clone();
             tx.send(Command::Answer {
                 id: question.id,
-                values: vec![("psk".into(), "hunter22".into())],
+                values: vec![("psk".into(), SecretText::new("hunter22".into()))],
             })
             .unwrap();
             let (answer,) = asking.await.unwrap().unwrap();

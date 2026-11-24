@@ -1139,6 +1139,7 @@ shell-nobody-answered-in-time = Nobody answered in time
 shell-networkmanager-is-not-available = NetworkManager is not available
 shell-networkmanager-could-not-be-reached = NetworkManager could not be reached
 shell-networkmanager-refused-the-vpn = NetworkManager did not accept the VPN
+shell-vpn-imported-autostart-on = The VPN was added, but it could not be stopped from connecting on its own.
 shell-networkmanager-did-not-answer = NetworkManager did not answer
 shell-several-connections-share-that-name = Several connections share that name; rename one to change it here
 shell-the-network-could-not-be-added = The network could not be added

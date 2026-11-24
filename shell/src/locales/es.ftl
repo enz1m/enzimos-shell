@@ -1193,6 +1193,7 @@ shell-nobody-answered-in-time = Nadie respondió a tiempo.
 shell-networkmanager-is-not-available = NetworkManager no está disponible
 shell-networkmanager-could-not-be-reached = No se ha podido contactar con NetworkManager
 shell-networkmanager-refused-the-vpn = NetworkManager no ha aceptado la VPN
+shell-vpn-imported-autostart-on = La VPN se añadió, pero no se pudo impedir que se conecte sola.
 shell-networkmanager-did-not-answer = NetworkManager no ha respondido
 shell-several-connections-share-that-name = Varias conexiones comparten ese nombre; cambie el nombre de una para modificarla aquí
 shell-the-network-could-not-be-added = No se ha podido añadir la red

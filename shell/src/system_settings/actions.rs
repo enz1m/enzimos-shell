@@ -620,7 +620,7 @@ impl SystemSettings {
                 self.add_vpn(&crate::vpn_manual::profile(spec)).await
             }
             Request::VpnImport(path) => {
-                use crate::vpn_profile::{Kind, MAX_PROFILE, problem};
+                use crate::vpn_profile::{Kind, MAX_PROFILE, imported_uuid, problem};
                 let path = std::path::Path::new(path);
                 let kind = Kind::from_path(path)
                     .ok_or_else(|| tr("shell-choose-a-wireguard-conf-or-openvpn-ovpn-file"))?;
@@ -659,12 +659,44 @@ impl SystemSettings {
                 let file = path
                     .to_str()
                     .ok_or_else(|| tr("shell-that-file-name-is-not-valid-text"))?;
-                self.tool(
-                    "nmcli",
-                    &["connection", "import", "type", kind.nm(), "file", file],
-                    20,
-                )
-                .await
+                let output = match self
+                    .controls
+                    .run_with(
+                        "nmcli",
+                        &["connection", "import", "type", kind.nm(), "file", file],
+                        None,
+                        Duration::from_secs(20),
+                    )
+                    .await
+                {
+                    Ok(output) => output,
+                    Err(Failure::Rejected(line)) => return Err(explain("nmcli", &line)),
+                    Err(Failure::Other(message)) => return Err(message),
+                };
+                // NetworkManager starts an imported WireGuard tunnel at once and
+                // at every boot; it starts only when the user turns it on.
+                if kind == Kind::WireGuard {
+                    let manual = tr("shell-vpn-imported-autostart-on");
+                    let uuid = imported_uuid(&output).ok_or(manual)?;
+                    self.tool(
+                        "nmcli",
+                        &[
+                            "connection",
+                            "modify",
+                            "uuid",
+                            &uuid,
+                            "connection.autoconnect",
+                            "no",
+                        ],
+                        10,
+                    )
+                    .await
+                    .map_err(|_| manual)?;
+                    let _ = self
+                        .tool("nmcli", &["connection", "down", "uuid", &uuid], 10)
+                        .await;
+                }
+                Ok(())
             }
             Request::Firewall(on) => {
                 // Two firewalls fight over the same rules.

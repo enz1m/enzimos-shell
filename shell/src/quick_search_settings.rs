@@ -324,6 +324,7 @@ impl SettingsApp {
                 .count();
             let row = self.dependent(p.enabled && p.categories.contains(&Category::InApps), || {
                 crate::settings_app::settings_row(tr("shell-apps-that-add-results"))
+                    .icon("blocks")
                     .subtitle(tr!("shell-of-on", "arg0" => format!("{:}", on), "arg1" => format!("{:}", apps.len())))
                     .id_prefix("control-quick-search-providers")
                     .control(
@@ -341,6 +342,7 @@ impl SettingsApp {
             providers = providers.push(self.mark_setting(
                 "quick-search/providers",
                 crate::settings_app::settings_row(tr("shell-no-apps-add-results-yet"))
+                    .icon("blocks")
                     .subtitle(tr("shell-apps-that-can-search-inside-themselves-like-a-mail-or-calendar-app-appear-he"))
                     .into_element(),
             ));

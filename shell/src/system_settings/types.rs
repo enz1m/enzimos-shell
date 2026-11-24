@@ -506,6 +506,25 @@ pub struct About {
     pub crashes: Option<std::sync::Arc<Vec<crate::crash_reports::Report>>>,
 }
 
+/// The account and server check for joining a WPA Enterprise network.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Enterprise {
+    pub identity: String,
+    pub server: ServerCheck,
+}
+
+/// How a WPA Enterprise join recognises the network's sign-in server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ServerCheck {
+    /// A certificate from a system-trusted authority that names this domain.
+    Domain(String),
+    /// A certificate from the authority in this file that names this
+    /// domain, when one is given.
+    Authority { file: String, domain: String },
+    /// Any server; a look-alike network can collect the password.
+    Unchecked,
+}
+
 /// A password or key on its way to a system tool; never printed.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Secret(pub String);

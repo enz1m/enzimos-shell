@@ -1,5 +1,5 @@
 use super::*;
-use enzui_shell::system_settings::{Discovered, ManualIpv4, Secret};
+use enzui_shell::system_settings::{Discovered, Enterprise, ManualIpv4, Secret, ServerCheck};
 
 #[derive(Default)]
 pub(super) struct Forms {
@@ -41,7 +41,31 @@ pub(super) struct Join {
     /// WPA Enterprise: a username as well as a password.
     pub enterprise: bool,
     pub identity: String,
+    /// The domain the sign-in server's certificate names.
+    pub domain: String,
+    /// A certificate authority file from the organisation, by full path.
+    pub authority: String,
+    /// The user chose to join without checking the sign-in server.
+    pub unchecked: bool,
     pub error: Option<String>,
+}
+
+impl Join {
+    pub(super) fn server_check(&self) -> ServerCheck {
+        if self.unchecked {
+            ServerCheck::Unchecked
+        } else if self.authority.trim().is_empty() {
+            ServerCheck::Domain(self.domain.trim().to_owned())
+        } else {
+            ServerCheck::Authority {
+                file: self.authority.trim().to_owned(),
+                domain: self.domain.trim().to_owned(),
+            }
+        }
+    }
+    pub(super) fn server_named(&self) -> bool {
+        self.unchecked || !self.domain.trim().is_empty() || !self.authority.trim().is_empty()
+    }
 }
 
 pub(super) struct Ipv4Edit {
@@ -68,6 +92,9 @@ pub(crate) enum Form {
     JoinSsid(String),
     JoinPassword(String),
     JoinIdentity(String),
+    JoinDomain(String),
+    JoinAuthority(String),
+    JoinUnchecked(bool),
     JoinReveal,
     JoinSubmit,
     Details(Option<String>),
@@ -156,6 +183,24 @@ impl SettingsApp {
                     join.error = None;
                 }
             }
+            Form::JoinDomain(domain) => {
+                if let Some(join) = forms.join.as_mut() {
+                    join.domain = domain.chars().take(253).collect();
+                    join.error = None;
+                }
+            }
+            Form::JoinAuthority(path) => {
+                if let Some(join) = forms.join.as_mut() {
+                    join.authority = path.chars().take(4096).collect();
+                    join.error = None;
+                }
+            }
+            Form::JoinUnchecked(unchecked) => {
+                if let Some(join) = forms.join.as_mut() {
+                    join.unchecked = unchecked;
+                    join.error = None;
+                }
+            }
             Form::JoinReveal => {
                 if let Some(join) = forms.join.as_mut() {
                     join.revealed = !join.revealed;
@@ -166,12 +211,15 @@ impl SettingsApp {
                     return Task::none();
                 };
                 let password = (!join.password.is_empty()).then(|| Secret(join.password.clone()));
-                let identity = join.enterprise.then(|| join.identity.trim().to_owned());
+                let enterprise = join.enterprise.then(|| Enterprise {
+                    identity: join.identity.trim().to_owned(),
+                    server: join.server_check(),
+                });
                 let request = Request::WifiJoin {
                     ssid: join.ssid.trim().to_owned(),
                     password,
                     hidden: join.hidden,
-                    identity,
+                    enterprise,
                 };
                 return self.system_message(Message::Request(request));
             }

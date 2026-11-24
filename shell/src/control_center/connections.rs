@@ -3,8 +3,8 @@ use enzui_shell::{
     i18n::tr,
     settings::QuickAction,
     system_settings::{
-        AccessPoint, Bluetooth, InterfaceKind, LinkState, Network, Panel, Reading, Request, Secret,
-        SystemSettings, pairing,
+        AccessPoint, Bluetooth, Enterprise, InterfaceKind, LinkState, Network, Panel, Reading,
+        Request, Secret, ServerCheck, SystemSettings, pairing,
     },
 };
 use enzui_widgets::{
@@ -25,6 +25,7 @@ pub(crate) enum Event {
     ChooseNetwork(String),
     Password(Secret),
     Identity(String),
+    Domain(String),
     Join,
     CancelJoin,
     Pair(String),
@@ -55,6 +56,8 @@ struct Join {
     ssid: String,
     enterprise: bool,
     identity: String,
+    // The domain the sign-in server's certificate must name.
+    domain: String,
     password: Secret,
 }
 
@@ -62,7 +65,9 @@ impl Join {
     fn ready(&self) -> bool {
         !self.password.0.chars().any(char::is_control)
             && if self.enterprise {
-                !self.identity.trim().is_empty() && !self.password.0.is_empty()
+                !self.identity.trim().is_empty()
+                    && !self.password.0.is_empty()
+                    && !self.domain.trim().is_empty()
             } else {
                 (8..=64).contains(&self.password.0.len())
             }
@@ -316,7 +321,7 @@ pub(crate) fn update(shell: &mut Shell, event: Event) -> Task<Message> {
                             Some(Request::WifiJoin {
                                 ssid,
                                 password: None,
-                                identity: None,
+                                enterprise: None,
                                 hidden: false,
                             }),
                             false,
@@ -327,6 +332,7 @@ pub(crate) fn update(shell: &mut Shell, event: Event) -> Task<Message> {
                         ssid,
                         enterprise: point.enterprise,
                         identity: String::new(),
+                        domain: String::new(),
                         password: Secret(String::new()),
                     });
                     iced::widget::operation::focus(if point.enterprise {
@@ -347,6 +353,12 @@ pub(crate) fn update(shell: &mut Shell, event: Event) -> Task<Message> {
                     }
                     Task::none()
                 }
+                Event::Domain(domain) => {
+                    if let Some(join) = &mut state.join {
+                        join.domain = domain.chars().take(253).collect();
+                    }
+                    Task::none()
+                }
                 Event::Join => {
                     let Some(join) = state.join.as_mut().filter(|join| join.ready()) else {
                         return Task::none();
@@ -357,7 +369,10 @@ pub(crate) fn update(shell: &mut Shell, event: Event) -> Task<Message> {
                             &mut join.password,
                             Secret(String::new()),
                         )),
-                        identity: join.enterprise.then(|| join.identity.clone()),
+                        enterprise: join.enterprise.then(|| Enterprise {
+                            identity: join.identity.clone(),
+                            server: ServerCheck::Domain(join.domain.clone()),
+                        }),
                         hidden: false,
                     };
                     start(shell, action, Some(request), false)
@@ -453,6 +468,21 @@ pub(super) fn network(shell: &Shell) -> Element<'_, Message> {
                 .id("quick-wifi-password".into())
                 .into_element(),
             );
+            if join.enterprise {
+                form = form.push(
+                    enz_text_field(
+                        tr("shell-sign-in-server-domain"),
+                        tr("shell-sign-in-server-domain-example"),
+                        &join.domain,
+                        |value| send(Event::Domain(value)),
+                    )
+                    .description(tr("shell-quick-sign-in-server-domain-detail"))
+                    .enabled(writes)
+                    .on_submit(send(Event::Join))
+                    .id("quick-wifi-domain".into())
+                    .into_element(),
+                );
+            }
             content = content.push(form);
             actions = vec![
                 small_button(tr("shell-cancel"), Event::CancelJoin, !busy),

@@ -83,12 +83,11 @@ pub enum Request {
     ConnectivityChecks(bool),
     /// Opens the captive portal's sign-in page (the configured probe URL).
     PortalSignIn,
-    /// `identity` is the username on a WPA Enterprise network.
     WifiJoin {
         ssid: String,
         password: Option<Secret>,
         hidden: bool,
-        identity: Option<String>,
+        enterprise: Option<Enterprise>,
     },
     Forget(String),
     WifiDisconnect,
@@ -977,7 +976,7 @@ esac"#,
                         ssid: "Cafe".into(),
                         password: Some(wrong),
                         hidden: false,
-                        identity: None,
+                        enterprise: None,
                     })
                     .await
                     .is_err()
@@ -1006,6 +1005,90 @@ esac"#,
                 lines.contains(&"connection modify id Home ipv4.method manual ipv4.addresses 192.168.2.50/24 ipv4.gateway 192.168.2.1 ipv4.dns 192.168.2.1"),
                 "{log}"
             );
+        }
+        // An enterprise join trusts only a server certified for the domain it
+        // names, refuses a bad form before changing any profile, and replaces
+        // the network's saved profile only once the new one has connected.
+        //
+        // Sabotage: drop the server settings from `join_enterprise`, or delete
+        // the network's old profiles before `connection up`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let settings = fixture(root.path());
+            let log = root.path().join("log");
+            let refuse = root.path().join("refuse");
+            script(
+                root.path(),
+                "nmcli",
+                &format!(
+                    r#"case "$*" in
+"-t -f NETWORKING general") echo enabled;;
+"-t -f WIFI radio") echo enabled;;
+"-t -f DEVICE,TYPE,STATE,CONNECTION device status") echo 'wlan0:wifi:connected:Home';;
+"-t -f NAME,UUID,TYPE,ACTIVE connection show")
+  echo 'Home:aaaa-home:802-11-wireless:yes'
+  echo 'Campus:aaaa-old:802-11-wireless:no';;
+*"device wifi list"*) printf '*:Home:80:WPA2
+ :Campus:60:WPA2 802.1X
+';;
+-t*) ;;
+*"connection up"*) echo "$*" >> '{log}'
+  [ -e '{refuse}' ] && echo 'Error: Connection activation failed: Secrets were required' && exit 4; true;;
+*) echo "$*" >> '{log}';;
+esac"#,
+                    log = log.display(),
+                    refuse = refuse.display()
+                ),
+            );
+            let join = |password: &str, server: ServerCheck| Request::WifiJoin {
+                ssid: "Campus".into(),
+                password: Some(Secret(password.into())),
+                hidden: false,
+                enterprise: Some(Enterprise {
+                    identity: "alice".into(),
+                    server,
+                }),
+            };
+            let campus = || ServerCheck::Domain("radius.example.org".into());
+            for refused in [
+                join("line\nbreak", campus()),
+                join("secret", ServerCheck::Domain(String::new())),
+                join(
+                    "secret",
+                    ServerCheck::Authority {
+                        file: "ca.pem".into(),
+                        domain: String::new(),
+                    },
+                ),
+            ] {
+                assert!(settings.apply(&refused).await.is_err());
+            }
+            assert!(!log.exists(), "a refused form changed a profile");
+            std::fs::write(&refuse, "").unwrap();
+            assert!(settings.apply(&join("wrong", campus())).await.is_err());
+            std::fs::remove_file(&refuse).unwrap();
+            settings.apply(&join("secret", campus())).await.unwrap();
+            let log = std::fs::read_to_string(&log).unwrap();
+            let lines: Vec<&str> = log.lines().collect();
+            let adds: Vec<&&str> = lines
+                .iter()
+                .filter(|l| l.starts_with("connection add"))
+                .collect();
+            assert_eq!(adds.len(), 2, "{log}");
+            assert!(
+                adds.iter().all(|add| add.contains(
+                    "802-1x.system-ca-certs yes 802-1x.domain-suffix-match radius.example.org"
+                )),
+                "{log}"
+            );
+            let old = lines.iter().position(|l| l.contains("aaaa-old"));
+            let connected = lines.iter().rposition(|l| l.contains("connection up"));
+            assert_eq!(
+                lines.iter().filter(|l| l.contains("aaaa-old")).count(),
+                1,
+                "{log}"
+            );
+            assert!(old > connected, "{log}");
         }
         // Without PipeWire's tools the sound levels and devices are read and
         // set with PulseAudio's `pactl`.

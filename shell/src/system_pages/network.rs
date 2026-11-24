@@ -386,11 +386,15 @@ impl SettingsApp {
         let ready = !join.ssid.trim().is_empty()
             && !joining
             && if join.enterprise {
-                !join.identity.trim().is_empty() && !join.password.is_empty()
+                !join.identity.trim().is_empty() && !join.password.is_empty() && join.server_named()
             } else {
                 join.hidden || join.password.len() >= 8
             };
-        fields = fields.push(password.into_element()).push(
+        fields = fields.push(password.into_element());
+        if join.enterprise {
+            fields = fields.push(self.join_server(join, joining));
+        }
+        fields = fields.push(
             row![
                 iced::widget::Space::new().width(Length::Fill),
                 enz_button(tr("shell-cancel"), form(Form::Join(None)))
@@ -416,6 +420,51 @@ impl SettingsApp {
         container(fields)
             .padding(iced::Padding::from([8, 12]).left(56.0))
             .into()
+    }
+    // The fields that let an enterprise join recognise the real sign-in server.
+    fn join_server<'a>(&self, join: &'a super::forms::Join, joining: bool) -> Element<'a, Parent> {
+        let checked = !join.unchecked && !joining;
+        let mut fields = column![
+            enz_text_field(
+                tr("shell-sign-in-server-domain"),
+                tr("shell-sign-in-server-domain-example"),
+                &join.domain,
+                |t| form(Form::JoinDomain(t)),
+            )
+            .description(tr("shell-sign-in-server-domain-detail"))
+            .on_submit(form(Form::JoinSubmit))
+            .id("network-join-domain".into())
+            .enabled(checked)
+            .into_element(),
+            enz_text_field(
+                tr("shell-certificate-authority-file"),
+                tr("shell-certificate-authority-file-example"),
+                &join.authority,
+                |t| form(Form::JoinAuthority(t)),
+            )
+            .description(tr("shell-certificate-authority-file-detail"))
+            .on_submit(form(Form::JoinSubmit))
+            .id("network-join-authority".into())
+            .enabled(checked)
+            .into_element(),
+            enzui_widgets::checkbox::enz_checkbox(
+                join.unchecked,
+                tr("shell-do-not-check-the-sign-in-server"),
+                |on| form(Form::JoinUnchecked(on)),
+            )
+            .into_element(),
+        ]
+        .spacing(8);
+        if join.unchecked {
+            fields = fields.push(
+                enz_banner(tr("shell-unchecked-sign-in-server-warning"))
+                    .tone(BannerTone::Warning)
+                    .icon("triangle-alert")
+                    .id("network-join-unchecked")
+                    .into_element(),
+            );
+        }
+        fields.into()
     }
     fn network_row<'a>(&self, point: &AccessPoint) -> Element<'a, Parent> {
         let subtitle = match (point.active, point.saved, point.secure) {
@@ -458,7 +507,7 @@ impl SettingsApp {
                     ssid: point.ssid.clone(),
                     password: None,
                     hidden: false,
-                    identity: None,
+                    enterprise: None,
                 })
             } else {
                 form(Form::Join(Some((point.ssid.clone(), false))))

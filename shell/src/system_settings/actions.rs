@@ -307,16 +307,16 @@ impl SystemSettings {
                 ssid,
                 password,
                 hidden,
-                identity: Some(identity),
+                enterprise: Some(enterprise),
             } => {
-                self.join_enterprise(ssid, identity, password.as_ref(), *hidden)
+                self.join_enterprise(ssid, enterprise, password.as_ref(), *hidden)
                     .await
             }
             Request::WifiJoin {
                 ssid,
                 password,
                 hidden,
-                identity: None,
+                enterprise: None,
             } => self.join(ssid, password.as_ref(), *hidden).await,
             Request::Ipv4 { connection, manual } => {
                 let (by, key) = self.known_connection(connection).await?;
@@ -962,28 +962,29 @@ impl SystemSettings {
     async fn join_enterprise(
         &self,
         ssid: &str,
-        identity: &str,
+        enterprise: &Enterprise,
         password: Option<&Secret>,
         hidden: bool,
     ) -> Result<(), String> {
         if ssid.is_empty() || ssid.len() > 32 {
             return Err(tr("shell-network-names-are-1-to-32-characters").into());
         }
-        let identity = identity.trim();
+        let identity = enterprise.identity.trim();
         if identity.is_empty() || identity.len() > 128 || identity.chars().any(char::is_control) {
             return Err(tr("shell-enter-your-username").into());
         }
-        let password = password.ok_or_else(|| tr("shell-enter-your-password"))?;
+        let password = password
+            .filter(|p| !p.0.is_empty())
+            .ok_or_else(|| tr("shell-enter-your-password"))?;
+        if password.0.chars().any(char::is_control) {
+            return Err(tr("shell-the-password-cannot-contain-line-breaks").into());
+        }
+        let server = server_check(&enterprise.server)?;
         let network = self.network().await;
         if !hidden && !network.access_points.iter().any(|p| p.ssid == ssid) {
             return Err(tr("shell-that-network-is-out-of-range").into());
         }
-        // The new profile replaces this network's old ones, each by UUID.
-        for uuid in wifi_profiles(&network, ssid) {
-            let _ = self
-                .tool("nmcli", &["connection", "delete", "uuid", &uuid], 10)
-                .await;
-        }
+        let replaced = wifi_profiles(&network, ssid);
         let uuid = new_uuid().ok_or_else(|| tr("shell-the-network-could-not-be-added"))?;
         let mut add = vec![
             "connection",
@@ -1005,13 +1006,13 @@ impl SystemSettings {
             "802-1x.identity",
             identity,
         ];
+        for (key, value) in &server {
+            add.extend([*key, value.as_str()]);
+        }
         if hidden {
             add.extend(["802-11-wireless.hidden", "yes"]);
         }
         self.tool("nmcli", &add, 10).await?;
-        if password.0.chars().any(char::is_control) {
-            return Err(tr("shell-the-password-cannot-contain-line-breaks").into());
-        }
         // NetworkManager asks for the identity as a secret too. Both go in a
         // passwd-file read from standard input, never on the command line.
         let input = format!(
@@ -1036,7 +1037,9 @@ impl SystemSettings {
                 Duration::from_secs(55),
             )
             .await;
-        if result.is_err() {
+        // The network's old profiles go only once the new one has connected.
+        let leftover = if result.is_ok() { replaced } else { vec![uuid] };
+        for uuid in leftover {
             let _ = self
                 .tool("nmcli", &["connection", "delete", "uuid", &uuid], 10)
                 .await;
@@ -1302,6 +1305,46 @@ fn wifi_profiles(network: &Network, ssid: &str) -> Vec<String> {
         .filter(|c| c.ssid.as_deref().unwrap_or(&c.name) == ssid)
         .map(|c| c.uuid.clone())
         .collect()
+}
+
+/// The `802-1x` settings with which a join checks the network's sign-in
+/// server, refused before any profile changes.
+fn server_check(check: &ServerCheck) -> Result<Vec<(&'static str, String)>, String> {
+    let domain = |domain: &str| {
+        let domain = domain.trim();
+        let valid = (1..=253).contains(&domain.len())
+            && !domain.starts_with(['-', '.'])
+            && domain
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.');
+        valid
+            .then(|| domain.to_owned())
+            .ok_or_else(|| String::from(tr("shell-enter-the-sign-in-server-domain")))
+    };
+    Ok(match check {
+        ServerCheck::Domain(name) => vec![
+            ("802-1x.system-ca-certs", "yes".into()),
+            ("802-1x.domain-suffix-match", domain(name)?),
+        ],
+        ServerCheck::Authority { file, domain: name } => {
+            let file = file.trim();
+            if file.chars().any(char::is_control)
+                || !std::path::Path::new(file).is_absolute()
+                || !std::path::Path::new(file).is_file()
+            {
+                return Err(tr("shell-that-certificate-file-does-not-exist").into());
+            }
+            let mut settings = vec![
+                ("802-1x.system-ca-certs", "no".into()),
+                ("802-1x.ca-cert", file.to_owned()),
+            ];
+            if !name.trim().is_empty() {
+                settings.push(("802-1x.domain-suffix-match", domain(name)?));
+            }
+            settings
+        }
+        ServerCheck::Unchecked => vec![("802-1x.system-ca-certs", "no".into())],
+    })
 }
 
 /// A random profile UUID from the kernel, so a profile added with `nmcli` is

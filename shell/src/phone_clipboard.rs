@@ -75,6 +75,7 @@ async fn follow(
     let mut active = false;
     let mut since = None;
     let mut current = Stop(None);
+    let mut quiet = Quiet::default();
     loop {
         enum Update {
             Activity(Option<State>),
@@ -86,7 +87,7 @@ async fn follow(
             state = activity.next() => Update::Activity(state),
             _ = interval.tick() => Update::Tick,
         };
-        let update = if matches!(update, Update::Tick) && active {
+        let update = if matches!(update, Update::Tick) && active && quiet.poll_due() {
             let text = current.0.as_ref().and_then(|handle| {
                 handle
                     .pending
@@ -115,6 +116,7 @@ async fn follow(
         let notice = match update {
             Update::Tick => continue,
             Update::Activity(state) => {
+                quiet = Quiet::default();
                 revoke(&mut current.0);
                 since = None;
                 active = state == Some(State::Active);
@@ -128,6 +130,7 @@ async fn follow(
                 }
             }
             Update::Reply(Ok(reply)) if reply.0["ok"] == true && reply.0["available"] == true => {
+                quiet.skip = 0;
                 since = reply.0["revision"].as_u64();
                 let handle = current.0.get_or_insert_with(|| Handle {
                     authority: Arc::new(AtomicBool::new(true)),
@@ -144,6 +147,7 @@ async fn follow(
                 }
             }
             Update::Reply(_) => {
+                quiet.skip = IDLE_POLL_TICKS - 1;
                 revoke(&mut current.0);
                 since = None;
                 Notice {
@@ -153,11 +157,47 @@ async fn follow(
                 }
             }
         };
-        if output.send(Message::Phone(notice)).await.is_err() {
+        if quiet.should_send(&notice, Instant::now())
+            && output.send(Message::Phone(notice)).await.is_err()
+        {
             return;
         }
     }
 }
+
+// Each notice redraws the whole shell, so unchanged ones are dropped.
+#[derive(Default)]
+struct Quiet {
+    skip: u8,
+    sent: Option<(Option<usize>, bool, Instant)>,
+}
+impl Quiet {
+    fn poll_due(&mut self) -> bool {
+        if self.skip == 0 {
+            return true;
+        }
+        self.skip -= 1;
+        false
+    }
+    // Unchanged notices still go out every RESEND so a busy channel is retried.
+    fn should_send(&mut self, notice: &Notice, now: Instant) -> bool {
+        let handle = notice
+            .handle
+            .as_ref()
+            .map(|handle| Arc::as_ptr(&handle.authority) as usize);
+        if notice.text.is_none()
+            && self.sent.is_some_and(|(sent, collecting, at)| {
+                sent == handle && collecting == notice.collecting && now - at < RESEND
+            })
+        {
+            return false;
+        }
+        self.sent = Some((handle, notice.collecting, now));
+        true
+    }
+}
+const IDLE_POLL_TICKS: u8 = 10;
+const RESEND: Duration = Duration::from_secs(5);
 
 #[cfg(test)]
 mod tests {

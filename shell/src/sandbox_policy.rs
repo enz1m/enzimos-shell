@@ -7,6 +7,8 @@ use std::{path::PathBuf, time::Duration};
 
 const DEADLINE: Duration = Duration::from_secs(30);
 const MAX_OUTPUT: usize = 1 << 20;
+const SESSION_BUS_POLICY: &str = "Session Bus Policy";
+const SYSTEM_BUS_POLICY: &str = "System Bus Policy";
 
 struct WorkerGroup(Option<rustix::process::Pid>);
 impl Drop for WorkerGroup {
@@ -351,9 +353,9 @@ fn mention(layer: &Value, category: Category, value: &str) -> Option<bool> {
     match category {
         Category::SessionBus | Category::SystemBus => {
             let group = if category == Category::SessionBus {
-                tr("shell-session-bus-policy")
+                SESSION_BUS_POLICY
             } else {
-                tr("shell-system-bus-policy")
+                SYSTEM_BUS_POLICY
             };
             lookup(group, value).map(|level| level != "none")
         }
@@ -518,8 +520,8 @@ pub fn parse(result: &Value, app_id: &str, scope: &str) -> Result<Snapshot, Stri
         }
     }
     for (category, group) in [
-        (Category::SessionBus, tr("shell-session-bus-policy")),
-        (Category::SystemBus, tr("shell-system-bus-policy")),
+        (Category::SessionBus, SESSION_BUS_POLICY),
+        (Category::SystemBus, SYSTEM_BUS_POLICY),
     ] {
         let mut policy = computed[group].as_object().cloned().unwrap_or_default();
         for (_, layer) in &layers {
@@ -561,8 +563,8 @@ pub fn parse(result: &Value, app_id: &str, scope: &str) -> Result<Snapshot, Stri
     }
     let known_groups = [
         "Context",
-        "Session Bus Policy",
-        "System Bus Policy",
+        SESSION_BUS_POLICY,
+        SYSTEM_BUS_POLICY,
         "Environment",
     ];
     let mut unknown = Vec::new();
@@ -852,8 +854,14 @@ mod tests {
 
     #[tokio::test]
     async fn sandbox_policy_behaviour() {
-        // Absent computed bus denials and unknown filesystem modes stay conservative.
-        {
+        // Absent computed bus denials and unknown filesystem modes stay conservative;
+        // Flatpak group names are file keys that the UI language must not change.
+        enzui_core::localization::Localizer::new(
+            crate::i18n::catalog(),
+            vec!["es".parse().unwrap()],
+            Default::default(),
+        )
+        .scope(|| {
             let mut result = fixture();
             result["flatpak_computed_context"]["Session Bus Policy"] = json!({});
             result["metadata"]["Context"]["filesystems"] = json!("home:future;");
@@ -881,7 +889,7 @@ mod tests {
                     .as_deref(),
                 Some("home:ro")
             );
-        }
+        });
 
         // Oversized worker output terminates without waiting for worker exit.
         {

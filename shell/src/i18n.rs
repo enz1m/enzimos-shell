@@ -48,7 +48,7 @@ impl Language {
     }
 }
 
-fn catalog() -> Catalog {
+pub(crate) fn catalog() -> Catalog {
     static CATALOG: OnceLock<Catalog> = OnceLock::new();
     CATALOG
         .get_or_init(|| {

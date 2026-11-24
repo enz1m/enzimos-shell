@@ -112,9 +112,7 @@ impl Shell {
 
     fn session_subscription(&self) -> Subscription<Message> {
         let session = &self.desired_settings.session;
-        let idle_config = self.idle_config();
-        let idle = enzui_shell::idle::subscription(idle_config)
-            .with(idle_config)
+        let idle = enzui_shell::idle::subscription(self.idle_config())
             .map(|(config, event)| Message::Idle(config, event));
         // Previews require idle opt-in to avoid host inhibitors; remote sessions have no idle
         // seat.
@@ -159,7 +157,10 @@ impl Shell {
         } else {
             enzui_shell::idle::Config::from_preferences(
                 &self.desired_settings.session,
-                self.system.battery.as_ref().is_some_and(|b| !b.charging),
+                self.system
+                    .battery
+                    .as_ref()
+                    .is_some_and(|b| !b.external_power),
             )
         }
     }

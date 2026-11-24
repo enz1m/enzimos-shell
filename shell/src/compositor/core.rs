@@ -920,6 +920,7 @@ pub fn restart_for_new_output() -> ! {
             .open(runtime.join("outputs-changed"));
     }
     eprintln!("enzui-shell: the primary output changed; restarting on the new one");
+    crate::idle::restore_outputs();
     std::process::exit(0)
 }
 

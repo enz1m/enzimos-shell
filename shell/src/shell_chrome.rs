@@ -1097,7 +1097,9 @@ impl Shell {
                 self.quiet = true;
                 Task::none()
             }
-            Message::Idle(config, notice) if config != self.idle_config() || !notice.current() => {
+            Message::Idle(config, notice)
+                if !self.idle_config().parts().contains(&config) || !notice.current() =>
+            {
                 Task::none()
             }
             Message::Idle(

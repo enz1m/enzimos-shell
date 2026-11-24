@@ -1179,7 +1179,7 @@ fn main() -> iced::Result {
     {
         enzui_shell::polkit_agent::supervise(consent);
     }
-    enzui_widgets::app_setup::run_with_services(
+    let result = enzui_widgets::app_setup::run_with_services(
         iced::daemon(
             move || Shell::new(compositor.clone(), root.clone()),
             Shell::update_and_report,
@@ -1190,5 +1190,7 @@ fn main() -> iced::Result {
         .style(Shell::style)
         .subscription(Shell::subscription),
         enzui_widgets::app_setup::AppServices::default().localizer(i18n::localizer().clone()),
-    )
+    );
+    enzui_shell::idle::restore_outputs();
+    result
 }

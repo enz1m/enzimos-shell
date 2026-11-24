@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 use wayland_client::{
-    Connection, Dispatch, EventQueue, Proxy, QueueHandle,
+    Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum,
     protocol::{wl_callback, wl_output, wl_registry, wl_seat},
 };
 use wayland_protocols::ext::idle_notify::v1::client::{
@@ -43,6 +43,24 @@ impl Config {
                 p.suspend_ac_minutes
             }),
         }
+    }
+
+    /// The configurations of the two workers [`subscription`] runs. Blanking
+    /// and locking share one, so a power source change, which only moves the
+    /// suspend timer, never restarts it or turns a blanked screen back on.
+    #[must_use]
+    pub fn parts(self) -> [Self; 2] {
+        [
+            Self {
+                suspend: None,
+                ..self
+            },
+            Self {
+                blank: None,
+                lock: None,
+                ..self
+            },
+        ]
     }
 }
 
@@ -112,12 +130,19 @@ enum Timer {
     Blank,
     Lock,
     Suspend,
+    /// Turns adopted outputs back on at the next input.
+    Wake,
 }
+
+/// How long the seat must rest before input wakes outputs found powered off.
+const ADOPTED_WAKE: Duration = Duration::from_millis(250);
 
 struct Output {
     output: wl_output::WlOutput,
     control: Option<ZwlrOutputPowerV1>,
     requested_off: bool,
+    // The control has not reported the output's mode yet.
+    fresh: bool,
 }
 struct State {
     seat: Option<(u32, wl_seat::WlSeat)>,
@@ -151,9 +176,12 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                         state.seat = Some((name, registry.bind(name, version.min(5), qh, ())));
                     }
                     "ext_idle_notifier_v1" if state.notifier.is_none() => {
-                        state.notifier = Some((name, registry.bind(name, 1, qh, ())));
+                        state.notifier = Some((name, registry.bind(name, version.min(2), qh, ())));
                     }
-                    "zwlr_output_power_manager_v1" if state.power.is_none() => {
+                    // Only a blanking worker controls output power.
+                    "zwlr_output_power_manager_v1"
+                        if state.power.is_none() && state.config.blank.is_some() =>
+                    {
                         state.power = Some((name, registry.bind(name, 1, qh, ())));
                     }
                     "wl_output" => {
@@ -163,6 +191,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                                 output: registry.bind(name, version.min(4), qh, ()),
                                 control: None,
                                 requested_off: false,
+                                fresh: false,
                             },
                         );
                     }
@@ -225,6 +254,10 @@ impl Dispatch<ExtIdleNotificationV1, Timer> for State {
         if !state.notifications.contains(notification) {
             return;
         }
+        if *timer == Timer::Wake && matches!(event, ext_idle_notification_v1::Event::Resumed) {
+            state.notifications.retain(|n| n != notification);
+            notification.destroy();
+        }
         match (event, timer) {
             (ext_idle_notification_v1::Event::Idled, Timer::Blank) => state.set_power(false),
             (ext_idle_notification_v1::Event::Idled, Timer::Lock) => {
@@ -233,7 +266,9 @@ impl Dispatch<ExtIdleNotificationV1, Timer> for State {
             (ext_idle_notification_v1::Event::Idled, Timer::Suspend) => {
                 let _ = state.events.blocking_send(Event::Suspend);
             }
-            (ext_idle_notification_v1::Event::Resumed, Timer::Blank) if state.blanked => {
+            (ext_idle_notification_v1::Event::Resumed, Timer::Blank | Timer::Wake)
+                if state.blanked =>
+            {
                 state.set_power(true);
                 let _ = state.events.blocking_send(Event::Awake);
             }
@@ -260,8 +295,24 @@ impl Dispatch<ZwlrOutputPowerV1, u32> for State {
         event: zwlr_output_power_v1::Event,
         name: &u32,
         _: &Connection,
-        _: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
     ) {
+        // An output already off was blanked by a worker that ended without
+        // restoring it, such as a shell that crashed; input brings it back.
+        if let zwlr_output_power_v1::Event::Mode { mode } = event
+            && let Some(output) = state
+                .outputs
+                .get_mut(name)
+                .filter(|output| output.control.as_ref() == Some(control))
+            && std::mem::take(&mut output.fresh)
+            && mode == WEnum::Value(zwlr_output_power_v1::Mode::Off)
+            && !output.requested_off
+        {
+            output.requested_off = true;
+            state.blanked = true;
+            state.arm_wake(qh);
+            return;
+        }
         if matches!(event, zwlr_output_power_v1::Event::Failed)
             && let Some(output) = state
                 .outputs
@@ -289,6 +340,7 @@ impl State {
         for (name, output) in &mut self.outputs {
             if output.control.is_none() {
                 let control = power.get_output_power(&output.output, qh, *name);
+                output.fresh = true;
                 if self.blanked {
                     control.set_mode(zwlr_output_power_v1::Mode::Off);
                     output.requested_off = true;
@@ -310,6 +362,25 @@ impl State {
                 });
                 output.requested_off = !on;
             }
+        }
+    }
+    fn arm_wake(&mut self, qh: &QueueHandle<Self>) {
+        let (Some((_, notifier)), Some((_, seat))) = (self.notifier.as_ref(), self.seat.as_ref())
+        else {
+            return;
+        };
+        if !self
+            .notifications
+            .iter()
+            .any(|n| n.data::<Timer>() == Some(&Timer::Wake))
+        {
+            let timeout = ADOPTED_WAKE.as_millis() as u32;
+            // An idle inhibitor must not keep a screen dark that input should wake.
+            self.notifications.push(if notifier.version() >= 2 {
+                notifier.get_input_idle_notification(timeout, seat, qh, Timer::Wake)
+            } else {
+                notifier.get_idle_notification(timeout, seat, qh, Timer::Wake)
+            });
         }
     }
     fn disarm(&mut self) {
@@ -340,11 +411,44 @@ impl State {
     }
 }
 
+// Never drained: once written, every worker, current or later, stops.
+fn exit_pipe() -> Option<&'static (std::os::fd::OwnedFd, std::os::fd::OwnedFd)> {
+    static PIPE: std::sync::OnceLock<Option<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)>> =
+        std::sync::OnceLock::new();
+    PIPE.get_or_init(|| rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).ok())
+        .as_ref()
+}
+
+// Serializes blanking workers so one restores its outputs before the next can blank.
+static WORKER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Stops every idle worker and waits up to two seconds for the outputs they
+/// powered off to be turned back on. Call before the shell exits.
+pub fn restore_outputs() {
+    let Some((_, exit)) = exit_pipe() else {
+        return;
+    };
+    let _ = rustix::io::write(exit, &[1]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while matches!(WORKER.try_lock(), Err(std::sync::TryLockError::WouldBlock))
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn wait(display: &impl AsFd, stop: &impl AsFd) -> Result<bool, String> {
-    let mut fds = [
+    let exit = exit_pipe().map(|(read, _)| read);
+    let mut fds = vec![
         rustix::event::PollFd::new(display, rustix::event::PollFlags::IN),
         rustix::event::PollFd::new(stop, rustix::event::PollFlags::IN),
     ];
+    if let Some(exit) = exit {
+        fds.push(rustix::event::PollFd::new(
+            exit,
+            rustix::event::PollFlags::IN,
+        ));
+    }
     loop {
         match rustix::event::poll(&mut fds, None) {
             Err(rustix::io::Errno::INTR) => continue,
@@ -352,7 +456,7 @@ fn wait(display: &impl AsFd, stop: &impl AsFd) -> Result<bool, String> {
             Ok(_) => break,
         }
     }
-    if !fds[1].revents().is_empty() {
+    if fds[1..].iter().any(|fd| !fd.revents().is_empty()) {
         return Ok(false);
     }
     if fds[0].revents().intersects(
@@ -371,15 +475,21 @@ pub fn run(
     stop: UnixStream,
     events: tokio::sync::mpsc::Sender<Event>,
 ) -> Result<(), String> {
-    // Configuration replacements serialize output restoration before the next worker can blank.
-    static WORKER: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _worker = WORKER
-        .lock()
+    let _worker = config
+        .blank
+        .map(|_| WORKER.lock())
+        .transpose()
         .map_err(|_| tr("shell-idle-worker-serialization-failed"))?;
-    let mut cancelled = [rustix::event::PollFd::new(
+    let mut cancelled = vec![rustix::event::PollFd::new(
         &stop,
         rustix::event::PollFlags::IN,
     )];
+    if let Some((exit, _)) = exit_pipe() {
+        cancelled.push(rustix::event::PollFd::new(
+            exit,
+            rustix::event::PollFlags::IN,
+        ));
+    }
     rustix::event::poll(
         &mut cancelled,
         Some(&rustix::event::Timespec {
@@ -388,7 +498,7 @@ pub fn run(
         }),
     )
     .map_err(|_| tr("shell-idle-shutdown-check-failed"))?;
-    if !cancelled[0].revents().is_empty() {
+    if cancelled.iter().any(|fd| !fd.revents().is_empty()) {
         return Ok(());
     }
     let connection =
@@ -530,13 +640,17 @@ fn acknowledge_restore(
     }
 }
 
-/// Changing configuration stops the old worker, which restores its requested-off outputs on exit.
-pub fn subscription(config: Config) -> iced::Subscription<Notice> {
-    if config == Config::default() {
-        iced::Subscription::none()
-    } else {
-        iced::Subscription::run_with(config, stream)
-    }
+/// Runs a worker for each of [`Config::parts`], tagging its notices with
+/// that part. Changing a part stops its old worker, which restores its
+/// requested-off outputs on exit.
+pub fn subscription(config: Config) -> iced::Subscription<(Config, Notice)> {
+    iced::Subscription::batch(config.parts().map(|part| {
+        if part == Config::default() {
+            iced::Subscription::none()
+        } else {
+            iced::Subscription::run_with(part, stream).with(part)
+        }
+    }))
 }
 
 fn worker(config: Config) -> Result<(UnixStream, tokio::sync::mpsc::Receiver<Event>), String> {

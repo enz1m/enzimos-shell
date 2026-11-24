@@ -33,6 +33,8 @@ pub struct Brightness {
 pub struct Battery {
     pub percent: u8,
     pub charging: bool,
+    /// Mains or USB power is connected, whether or not the battery charges.
+    pub external_power: bool,
 }
 /// The glyph for a battery's charge. Lucide's plain `battery` is an empty
 /// outline, so every level names one that shows how full it is.
@@ -520,37 +522,46 @@ impl SystemControls {
         let mut entries = tokio::fs::read_dir(self.sysfs.join("class/power_supply"))
             .await
             .ok()?;
+        let mut battery = None;
+        let mut adapters_online = Vec::new();
         for _ in 0..32 {
             let Some(entry) = entries.next_entry().await.ok()? else {
                 break;
             };
             let p = entry.path();
-            if small_text(&p.join("type")).await.as_deref().map(str::trim) != Some("Battery") {
-                continue;
-            }
             if small_text(&p.join("scope")).await.as_deref().map(str::trim) == Some("Device") {
                 continue;
             }
-            // An empty battery bay keeps its supply entry and reads as 0%.
-            if small_text(&p.join("present"))
-                .await
-                .as_deref()
-                .map(str::trim)
-                == Some("0")
-            {
-                continue;
-            }
-            if let Some(percent) = number(&p.join("capacity")).await.filter(|v| *v <= 100) {
-                return Some(Battery {
-                    percent: percent as u8,
-                    charging: small_text(&p.join("status"))
+            match small_text(&p.join("type")).await.as_deref().map(str::trim) {
+                Some(kind) if kind == "Mains" || kind.starts_with("USB") => {
+                    if let Some(online) = number(&p.join("online")).await {
+                        adapters_online.push(online > 0);
+                    }
+                }
+                Some("Battery") if battery.is_none() => {
+                    // An empty battery bay keeps its supply entry and reads as 0%.
+                    if small_text(&p.join("present"))
                         .await
                         .as_deref()
-                        .is_some_and(|s| s.trim() == "Charging"),
-                });
+                        .map(str::trim)
+                        == Some("0")
+                    {
+                        continue;
+                    }
+                    if let Some(percent) = number(&p.join("capacity")).await.filter(|v| *v <= 100) {
+                        let status = small_text(&p.join("status")).await;
+                        battery = Some((percent as u8, status.map(|s| s.trim().to_owned())));
+                    }
+                }
+                _ => {}
             }
         }
-        None
+        let (percent, status) = battery?;
+        Some(Battery {
+            percent,
+            charging: status.as_deref() == Some("Charging"),
+            external_power: external_power(&adapters_online, status.as_deref()),
+        })
     }
     pub async fn apply(&self, action: &Action) -> Result<(), String> {
         use crate::audio_devices::Kind;
@@ -828,6 +839,16 @@ async fn small_text(path: &Path) -> Option<String> {
 }
 async fn number(path: &Path) -> Option<u64> {
     small_text(path).await?.trim().parse().ok()
+}
+// An online adapter means external power. Without a readable adapter, any
+// battery state but discharging does, such as Full or a charge limit's Not charging.
+fn external_power(adapters_online: &[bool], status: Option<&str>) -> bool {
+    adapters_online.contains(&true)
+        || match status {
+            Some("Charging") => true,
+            Some("Discharging") => false,
+            _ => adapters_online.is_empty(),
+        }
 }
 fn device_name(name: &str) -> bool {
     !name.is_empty()
@@ -1113,10 +1134,23 @@ esac"#,
                 battery,
                 Battery {
                     percent: 100,
-                    charging: false
+                    charging: false,
+                    external_power: true,
                 }
             );
             assert_eq!(battery.icon(), "battery-full");
+            // The adapter, not the charge state, decides the suspend timer: a
+            // charge limit holds the battery at Not charging on AC.
+            let b = &b;
+            let power = |online: &str, status: &str| {
+                attribute(temp.path(), "class/power_supply/ADP1/type", "Mains");
+                attribute(temp.path(), "class/power_supply/ADP1/online", online);
+                attribute(temp.path(), "class/power_supply/BAT1/status", status);
+                async move { b.battery().await.unwrap().external_power }
+            };
+            assert!(power("1", "Not charging").await);
+            assert!(!power("0", "Discharging").await);
+            assert!(!power("0", "Unknown").await);
         }
     }
 }

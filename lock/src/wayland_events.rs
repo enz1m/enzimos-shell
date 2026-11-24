@@ -215,11 +215,7 @@ impl Dispatch<ExtSessionLockV1, ()> for State {
     ) {
         match event {
             ext_session_lock_v1::Event::Locked => {
-                if !state.locked {
-                    state.locked = true;
-                    // Publish the compositor acknowledgement before renderer/backdrop startup.
-                    say("locked");
-                }
+                state.locked.get_or_insert_with(Instant::now);
             }
             ext_session_lock_v1::Event::Finished => state.finished = true,
             _ => {}

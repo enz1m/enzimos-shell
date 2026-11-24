@@ -394,6 +394,11 @@ impl Ui {
         matches!(self.phase, Phase::Leaving(at) if now.saturating_duration_since(at) >= self.outro_duration())
     }
 
+    /// Whether frames drawn at `now` hide the desktop completely.
+    pub(crate) fn covers(&self, now: Instant) -> bool {
+        !self.xray || now.saturating_duration_since(self.started) >= INTRO
+    }
+
     pub(crate) fn view<'a>(
         &'a self,
         images: &'a Images,

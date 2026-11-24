@@ -103,6 +103,8 @@ struct Surface {
     frame_pending: Option<Instant>,
     /// A change arrived while the surface could not draw; see [`frame_pass`].
     stale: bool,
+    /// A frame that hides the desktop completely was presented.
+    opaque: bool,
 }
 
 struct SurfaceGpu {
@@ -128,7 +130,8 @@ struct State {
     cursor_shape: Option<WpCursorShapeManagerV1>,
     outputs: Vec<Output>,
     lock: Option<ExtSessionLockV1>,
-    locked: bool,
+    /// When the compositor confirmed the lock.
+    locked: Option<Instant>,
     finished: bool,
     surfaces: Vec<Surface>,
     keyboard: Option<keys::Keyboard>,
@@ -195,6 +198,31 @@ fn rest(ui: &ui::Ui, now: Instant) -> Duration {
 }
 
 const GPU_WAIT: Duration = Duration::from_millis(600);
+/// How long a see-through lock waits for its backdrops before fading in over black.
+const REVEAL_WAIT: Duration = Duration::from_secs(1);
+/// The same wait for a lock that starts over its opaque desktop capture.
+const CAPTURED_REVEAL_WAIT: Duration = Duration::from_secs(5);
+/// How long a confirmed lock waits for an opaque frame on every output before reporting.
+const OPAQUE_WAIT: Duration = Duration::from_secs(3);
+
+struct SurfaceReveal {
+    removed: bool,
+    configured: bool,
+    backdrop: bool,
+}
+
+// A removed output never configures its surface, and a surface configured
+// late gets its backdrop late, so neither holds back the fade-in.
+fn reveal_due(
+    surfaces: impl IntoIterator<Item = SurfaceReveal>,
+    waited: Duration,
+    limit: Duration,
+) -> bool {
+    waited >= limit
+        || surfaces
+            .into_iter()
+            .all(|s| s.removed || !s.configured || s.backdrop)
+}
 
 /// How long a surface waits for its frame callback before drawing anyway.
 const FRAME_FALLBACK: Duration = Duration::from_millis(100);
@@ -304,7 +332,10 @@ fn add_lock_surface(
     let surface = compositor.create_surface(qh, ());
     let scale = state.outputs[index].scale;
     surface.set_buffer_scale(scale);
-    lock.get_lock_surface(&surface, &state.outputs[index].output, qh, index);
+    // A removed output's lock surface is never configured.
+    if !state.outputs[index].removed {
+        lock.get_lock_surface(&surface, &state.outputs[index].output, qh, index);
+    }
     state.surfaces.push(Surface {
         output: index,
         surface,
@@ -320,6 +351,7 @@ fn add_lock_surface(
         software_pending: 0,
         frame_pending: None,
         stale: false,
+        opaque: false,
     });
 }
 
@@ -355,7 +387,7 @@ pub fn run(mode: Mode) -> Result<(), String> {
         cursor_shape: None,
         outputs: Vec::new(),
         lock: None,
-        locked: false,
+        locked: None,
         finished: false,
         surfaces: Vec::new(),
         keyboard: None,
@@ -382,13 +414,18 @@ pub fn run(mode: Mode) -> Result<(), String> {
         return Err(tr("shell-the-compositor-does-not-support-secure-session-locking").into());
     };
 
+    // The supervisor asks for software drawing after a lock client crashed,
+    // so a graphics driver that kills the process cannot keep the lock blank.
+    let software = std::env::var("ENZUI_LOCK_SOFTWARE").as_deref() == Ok("1");
     let (gpu_sender, gpu_started) = mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = gpu_sender.send(
-            std::panic::catch_unwind(Gpu::new)
-                .unwrap_or_else(|_| Err(tr("shell-graphics-initialization-panicked").into())),
-        );
-    });
+    if !software {
+        std::thread::spawn(move || {
+            let _ = gpu_sender.send(
+                std::panic::catch_unwind(Gpu::new)
+                    .unwrap_or_else(|_| Err(tr("shell-graphics-initialization-panicked").into())),
+            );
+        });
+    }
 
     // Session-lock xray fades over the live desktop instead of a captured frame.
     let xray = mode == Mode::Lock
@@ -436,7 +473,12 @@ pub fn run(mode: Mode) -> Result<(), String> {
         &mut queue,
         &mut state,
         Duration::from_secs(2),
-        |s| s.finished || s.surfaces.iter().all(|x| x.configured),
+        |s| {
+            s.finished
+                || s.surfaces
+                    .iter()
+                    .all(|x| x.configured || s.outputs[x.output].removed)
+        },
     )?;
     if state.finished {
         // Not a failure: the session is locked, just not by us.
@@ -447,22 +489,30 @@ pub fn run(mode: Mode) -> Result<(), String> {
     // The compositor shows its lock-missing screen if no lock surface is drawn
     // within a second, so slow graphics give way to software drawing.
     let gpu_ready = std::cell::OnceCell::new();
-    wait(
-        &connection,
-        &mut queue,
-        &mut state,
-        GPU_WAIT.saturating_sub(locking.elapsed()),
-        |_| {
-            if let Ok(gpu) = gpu_started.try_recv() {
-                let _ = gpu_ready.set(gpu);
-            }
-            gpu_ready.get().is_some()
-        },
-    )?;
+    if !software {
+        wait(
+            &connection,
+            &mut queue,
+            &mut state,
+            GPU_WAIT.saturating_sub(locking.elapsed()),
+            |_| {
+                if let Ok(gpu) = gpu_started.try_recv() {
+                    let _ = gpu_ready.set(gpu);
+                }
+                gpu_ready.get().is_some()
+            },
+        )?;
+    }
+    // A late device is released by its thread rather than kept unused.
+    drop(gpu_started);
     let gpu = match gpu_ready.into_inner() {
         Some(Ok(gpu)) => Some(gpu),
         Some(Err(error)) => {
             eprintln!("enzui-lock: {error}; using tiny-skia software rendering");
+            None
+        }
+        None if software => {
+            eprintln!("enzui-lock: using tiny-skia software rendering after a crash");
             None
         }
         None => {
@@ -498,6 +548,7 @@ pub fn run(mode: Mode) -> Result<(), String> {
         .surfaces
         .iter()
         .enumerate()
+        .filter(|(_, s)| s.configured && !state.outputs[s.output].removed)
         .map(|(i, s)| {
             let scale = state.outputs[s.output].scale as u32;
             (i, s.size.0 * scale, s.size.1 * scale)
@@ -514,7 +565,7 @@ pub fn run(mode: Mode) -> Result<(), String> {
         }
     });
 
-    for surface in &mut state.surfaces {
+    for surface in state.surfaces.iter_mut().filter(|s| s.configured) {
         let scale = state.outputs[surface.output].scale.max(1) as u32;
         let desktop = state.outputs[surface.output]
             .capture
@@ -534,7 +585,8 @@ pub fn run(mode: Mode) -> Result<(), String> {
         });
     }
     // Until the backdrop is ready only the captured desktop is shown.
-    ui.started = Instant::now() + Duration::from_secs(3600);
+    let reveal_from = Instant::now();
+    ui.started = reveal_from + Duration::from_secs(3600);
     let (auth_tx, auth_rx) = mpsc::channel::<bool>();
     // Fingerprint unlock beside the password, on the lock screen only:
     // after a restart the password is needed to unlock the keyring.
@@ -574,10 +626,11 @@ pub fn run(mode: Mode) -> Result<(), String> {
             read
         });
     let mut revealed = false;
-    let mut backdrops_ready = 0usize;
+    let mut reported = false;
     let mut fallback_images = std::collections::BTreeMap::new();
     let mut last = Instant::now();
-    let mut initial = state.surfaces.len();
+    // Surfaces configured after the first wait are prepared like new outputs.
+    let mut initial = 0;
     let mut live_size = state.surfaces.first().map_or((960, 540), |s| s.size);
     let mut live =
         live_background::Live::start(&settings.wallpaper, &ui.clock, live_size, ui.reduced_motion);
@@ -609,7 +662,10 @@ pub fn run(mode: Mode) -> Result<(), String> {
                 let _ = sender.send((index, background::load(&wallpaper, width, height)));
             });
         }
-        if state.surfaces[initial..].iter().all(|s| s.images.is_some()) {
+        if state.surfaces[initial..]
+            .iter()
+            .all(|s| s.images.is_some() || state.outputs[s.output].removed)
+        {
             initial = state.surfaces.len();
         }
         // The prompt is on the first output still connected.
@@ -619,7 +675,6 @@ pub fn run(mode: Mode) -> Result<(), String> {
             .position(|s| !state.outputs[s.output].removed)
             .unwrap_or(0);
         while let Ok((index, backdrop)) = backdrops.try_recv() {
-            backdrops_ready += 1;
             if let Some(surface) = state.surfaces.get_mut(index) {
                 let desktop = surface.images.as_ref().and_then(|i| i.desktop.clone());
                 let images = ui::Images {
@@ -667,7 +722,25 @@ pub fn run(mode: Mode) -> Result<(), String> {
                 redraw = true;
             }
         }
-        if !revealed && backdrops_ready >= state.surfaces.len() {
+        if !revealed
+            && reveal_due(
+                state
+                    .surfaces
+                    .iter()
+                    .enumerate()
+                    .map(|(index, s)| SurfaceReveal {
+                        removed: state.outputs[s.output].removed,
+                        configured: s.configured,
+                        backdrop: fallback_images.contains_key(&index),
+                    }),
+                reveal_from.elapsed(),
+                if xray {
+                    REVEAL_WAIT
+                } else {
+                    CAPTURED_REVEAL_WAIT
+                },
+            )
+        {
             revealed = true;
             ui.started = Instant::now();
         }
@@ -787,6 +860,7 @@ pub fn run(mode: Mode) -> Result<(), String> {
         last = now;
         dirty |= answered.is_ok() || changed;
         let animating = ui.tick(now, dt) || !revealed || dirty;
+        let covering = ui.covers(now);
         for index in 0..state.surfaces.len() {
             let surface = &mut state.surfaces[index];
             if state.outputs[surface.output].removed {
@@ -948,6 +1022,7 @@ pub fn run(mode: Mode) -> Result<(), String> {
                             }
                         }
                         gpu.queue.present(frame);
+                        surface.opaque |= covering;
                     }
                     _ => target.format = configure(gpu, output, physical, xray),
                 }
@@ -965,7 +1040,22 @@ pub fn run(mode: Mode) -> Result<(), String> {
                     index,
                 )?;
                 surface.software_pending += 1;
+                surface.opaque |= covering;
             }
+        }
+        // `locked` releases the shell's sleep inhibitor, so it waits until the
+        // desktop is hidden on every output, not just covered by a transparent frame.
+        if !reported
+            && state.locked.is_some_and(|at| {
+                at.elapsed() >= OPAQUE_WAIT
+                    || state
+                        .surfaces
+                        .iter()
+                        .all(|s| s.opaque || !s.configured || state.outputs[s.output].removed)
+            })
+        {
+            reported = true;
+            say("locked");
         }
         let mut forwarded = Vec::new();
         if !actions.is_empty() || submit {
@@ -1048,7 +1138,7 @@ pub fn run(mode: Mode) -> Result<(), String> {
             return Ok(());
         }
         if state.finished {
-            return Err(if state.locked {
+            return Err(if state.locked.is_some() {
                 tr("shell-the-compositor-ended-the-lock")
             } else {
                 tr("shell-another-lock-screen-is-already-running")
@@ -1125,7 +1215,34 @@ fn hyprland_xray() -> bool {
 
 #[cfg(test)]
 mod frame_tests {
-    use super::{Pass, frame_pass};
+    use super::{Pass, REVEAL_WAIT, SurfaceReveal, frame_pass, reveal_due};
+    use std::time::Duration;
+
+    /// The lock fades in once every shown output has its backdrop, and after
+    /// a bounded wait otherwise, so it never stays transparent over the desktop.
+    #[test]
+    fn reveal_waits_only_for_shown_outputs_and_only_briefly() {
+        let surface = |removed, configured, backdrop| SurfaceReveal {
+            removed,
+            configured,
+            backdrop,
+        };
+        let early = Duration::from_millis(10);
+        let ready = surface(false, true, true);
+        let gone = surface(true, false, false);
+        let pending = surface(false, true, false);
+        assert!(reveal_due([ready, gone], early, REVEAL_WAIT));
+        assert!(!reveal_due(
+            [surface(false, true, true), pending],
+            early,
+            REVEAL_WAIT
+        ));
+        assert!(reveal_due(
+            [surface(false, true, true), surface(false, true, false)],
+            REVEAL_WAIT,
+            REVEAL_WAIT
+        ));
+    }
 
     /// A change seen while the surface waits for its frame callback is drawn
     /// once the callback arrives, with nothing else changing. A GL surface

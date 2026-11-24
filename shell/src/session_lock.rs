@@ -13,6 +13,8 @@ static STARTING: AtomicBool = AtomicBool::new(false);
 static LOCKED: AtomicBool = AtomicBool::new(false);
 // A lock client holds the lock and is supervised.
 static HELD: AtomicBool = AtomicBool::new(false);
+// A lock client crashed, possibly in its graphics driver; later ones draw in software.
+static CRASHED: AtomicBool = AtomicBool::new(false);
 
 /// Whether this shell's lock screen holds the session.
 pub fn locked() -> bool {
@@ -107,7 +109,11 @@ async fn lock_with(program: PathBuf, limit: Duration) -> Result<(), String> {
 type Lines = tokio::io::Lines<BufReader<tokio::process::ChildStdout>>;
 
 fn launch(program: &PathBuf) -> Result<(tokio::process::Child, Lines), String> {
-    let mut child = tokio::process::Command::new(program)
+    let mut command = tokio::process::Command::new(program);
+    if CRASHED.load(Ordering::Acquire) {
+        command.env("ENZUI_LOCK_SOFTWARE", "1");
+    }
+    let mut child = command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())
@@ -135,6 +141,25 @@ async fn spawn(
     Ok((child, lines, first))
 }
 
+fn note_crash(status: std::process::ExitStatus) -> bool {
+    use std::os::unix::process::ExitStatusExt;
+    let crashed = status.signal().is_some_and(|signal| {
+        [
+            libc::SIGSEGV,
+            libc::SIGABRT,
+            libc::SIGBUS,
+            libc::SIGILL,
+            libc::SIGFPE,
+            libc::SIGTRAP,
+        ]
+        .contains(&signal)
+    });
+    if crashed {
+        CRASHED.store(true, Ordering::Release);
+    }
+    crashed
+}
+
 // Only the compositor acknowledgement, reported as `locked`, publishes LockedHint.
 async fn acquire(
     program: PathBuf,
@@ -142,7 +167,24 @@ async fn acquire(
     mut lines: Lines,
     outcome: watch::Sender<Outcome>,
 ) {
-    let first = tokio::time::timeout(STARTUP_LIMIT, lines.next_line()).await;
+    let deadline = tokio::time::Instant::now() + STARTUP_LIMIT;
+    let mut retried = false;
+    let first = loop {
+        let first = tokio::time::timeout_at(deadline, lines.next_line()).await;
+        // A client that crashed after taking the lock leaves it without a surface.
+        if !retried
+            && matches!(first, Ok(Ok(None) | Err(_)))
+            && tokio::time::timeout(Duration::from_secs(1), child.wait())
+                .await
+                .is_ok_and(|status| status.is_ok_and(note_crash))
+            && let Ok((next, next_lines)) = launch(&program)
+        {
+            retried = true;
+            (child, lines) = (next, next_lines);
+            continue;
+        }
+        break first;
+    };
     let settle = |result: Result<(), String>| {
         STARTING.store(false, Ordering::Release);
         outcome.send_replace(Some(result));
@@ -212,7 +254,9 @@ async fn reap(mut child: tokio::process::Child, mut lines: Lines) -> bool {
     while let Ok(Some(line)) = lines.next_line().await {
         unlocked |= line.trim() == "unlocked";
     }
-    let _ = child.wait().await;
+    if let Ok(status) = child.wait().await {
+        note_crash(status);
+    }
     unlocked
 }
 
@@ -264,6 +308,17 @@ mod tests {
     async fn lock_succeeds_only_after_one_client_confirms() {
         use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
+        // A client that crashes while starting is replaced by one drawing in software.
+        let crashing = directory.path().join("enzui-lock-crashing");
+        std::fs::write(
+            &crashing,
+            "#!/bin/sh\n[ \"$ENZUI_LOCK_SOFTWARE\" = 1 ] && echo already-locked || kill -SEGV $$\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&crashing, std::fs::Permissions::from_mode(0o700)).unwrap();
+        lock_with(crashing, LOCK_DEADLINE).await.unwrap();
+        assert!(!locked());
+
         let starts = directory.path().join("starts");
         let program = directory.path().join("enzui-lock");
         std::fs::write(

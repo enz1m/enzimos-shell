@@ -6,10 +6,12 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -203,42 +205,149 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "SUBREAPER_REFUSED")
 
-    def test_normal_preview_relaunches_only_its_owned_shell(self):
+    def process(self, seconds=30):
+        child = subprocess.Popen(["sleep", str(seconds)])
+        self.addCleanup(lambda: (child.kill(), child.wait()))
+        return child, platform.start_ticks(child.pid)
+
+    def after(self, seconds, action):
+        timer = threading.Timer(seconds, action)
+        timer.start()
+        self.addCleanup(timer.cancel)
+
+    def supervised(self, config, compositor, shell, restart_delay=0):
+        """Runs supervision against real processes and returns its wall time."""
+        started = time.monotonic()
+        with mock.patch.object(platform, "OWNED_SHELL", shell), mock.patch.object(platform, "SHELL_RESTART_DELAY", restart_delay):
+            platform.supervise(config, {"pid": compositor[0].pid, "start": compositor[1], "instance": "owned-instance"})
+        return time.monotonic() - started
+
+    def relaunching(self, runtime, then=None, seconds=30):
+        calls = []
+        def launch(config, identity, restore_displays=True):
+            calls.append(restore_displays)
+            child, ticks = self.process(seconds)
+            platform.OWNED_SHELL = child
+            platform.publish(runtime / "shell.pid", child.pid)
+            platform.publish(runtime / "shell.pid.start", ticks)
+            if then is not None:
+                then(len(calls))
+            return child.pid, ticks
+        return calls, launch
+
+    def test_exit_wait_never_watches_a_recycled_pid(self):
+        child, ticks = self.process()
+        started = time.monotonic()
+        self.assertEqual(platform.wait_for_exit([(child.pid, ticks + 1)], timeout=5), [])
+        self.assertLess(time.monotonic() - started, 1)
+        started = time.monotonic()
+        platform.wait_for_exit([(child.pid, ticks)], timeout=.3)
+        self.assertGreaterEqual(time.monotonic() - started, .3)
+        self.after(.1, child.kill)
+        platform.wait_for_exit([(child.pid, ticks)], timeout=5)
+        self.assertLess(time.monotonic() - started, 2)
+
+    def test_preview_relaunches_its_owned_shell_when_it_exits(self):
         runtime = self.root / "runtime"
         runtime.mkdir()
-        ready = {"shell_pid": 41, "shell_start": 9, "output": "owned-output"}
+        compositor, shell = self.process(), self.process()
+        ready = {"shell_pid": shell[0].pid, "shell_start": shell[1], "output": "owned-output"}
         platform.publish(runtime / "ready.json", ready)
         config = {"runtime": str(runtime), "exit_with_shell": False}
-        identity = {"pid": 42, "start": 7}
-        child = mock.Mock(returncode=0)
-        with mock.patch.object(platform, "OWNED_SHELL", child), mock.patch.object(platform, "live", side_effect=[True, False]), \
-                mock.patch.object(platform.time, "sleep"), mock.patch.object(platform, "launch_shell", return_value=(43, 10)) as launch, mock.patch.object(platform, "command") as command:
-            platform.supervise(config, identity)
-        launch.assert_called_once_with(config, identity)
+        calls, launch = self.relaunching(runtime, then=lambda _: compositor[0].kill())
+        self.after(.2, shell[0].kill)
+        with mock.patch.object(platform, "launch_shell", side_effect=launch), mock.patch.object(platform, "command") as command:
+            self.assertLess(self.supervised(config, compositor, shell[0]), 5)
+        self.assertEqual(len(calls), 1)
         command.assert_not_called()
-        self.assertEqual(json.loads(platform.read_private(runtime / "ready.json")), {**ready, "shell_pid": 43, "shell_start": 10})
+        relaunched = json.loads(platform.read_private(runtime / "shell.pid"))
+        self.assertEqual(json.loads(platform.read_private(runtime / "ready.json")), {**ready, "shell_pid": relaunched, "shell_start": platform.start_ticks(relaunched)})
 
-    def test_exit_with_shell_review_never_relaunches(self):
+    def test_exit_with_shell_review_ends_on_shell_exit_or_recycled_pid_and_never_relaunches(self):
+        for case in ("exits", "recycled"):
+            with self.subTest(case=case):
+                runtime = self.root / case
+                runtime.mkdir()
+                compositor, shell = self.process(), self.process()
+                platform.publish(runtime / "ready.json", {"shell_pid": shell[0].pid, "shell_start": shell[1] + (case == "recycled")})
+                if case == "exits":
+                    self.after(.2, shell[0].kill)
+                with mock.patch.object(platform, "launch_shell") as launch:
+                    self.assertLess(self.supervised({"runtime": str(runtime), "exit_with_shell": True}, compositor, None), 5)
+                launch.assert_not_called()
+                self.assertIsNone(compositor[0].poll())
+                self.assertEqual(shell[0].poll() is None, case == "recycled")
+                self.assertTrue(json.loads(platform.read_private(runtime / "ended.json"))["whole_session_cleanup"])
+
+    def test_repeated_preview_restart_failures_pause_and_retain_the_compositor(self):
         runtime = self.root / "runtime"
         runtime.mkdir()
         platform.publish(runtime / "ready.json", {"shell_pid": 41, "shell_start": 9})
-        with mock.patch.object(platform, "OWNED_SHELL", None), mock.patch.object(platform, "live", side_effect=[True, False]), \
-                mock.patch.object(platform, "launch_shell") as launch:
-            platform.supervise({"runtime": str(runtime), "exit_with_shell": True}, {"pid": 42, "start": 7})
-        launch.assert_not_called()
-        self.assertTrue(json.loads(platform.read_private(runtime / "ended.json"))["whole_session_cleanup"])
-
-    def test_repeated_preview_restart_failures_retain_other_clients(self):
-        runtime = self.root / "runtime"
-        runtime.mkdir()
-        platform.publish(runtime / "ready.json", {"shell_pid": 41, "shell_start": 9})
-        with mock.patch.object(platform, "OWNED_SHELL", mock.Mock(returncode=1)), mock.patch.object(platform, "live", side_effect=[True] * 5 + [False]), \
-                mock.patch.object(platform.time, "sleep"), mock.patch.object(platform.time, "monotonic", return_value=1), \
+        compositor = self.process()
+        self.after(1, compositor[0].kill)
+        with mock.patch.object(platform.time, "monotonic", return_value=1), \
                 mock.patch.object(platform, "launch_shell", side_effect=OSError("Fixture refused")) as launch, mock.patch.object(platform, "command") as command:
-            platform.supervise({"runtime": str(runtime), "exit_with_shell": False}, {"pid": 42, "start": 7})
+            self.supervised({"runtime": str(runtime), "exit_with_shell": False}, compositor, mock.Mock(returncode=1))
         self.assertEqual(launch.call_count, 3)
         command.assert_not_called()
-        self.assertTrue(json.loads(platform.read_private(runtime / "failed.json"))["retain_compositor"])
+        self.assertIn("paused", json.loads(platform.read_private(runtime / "failed.json"))["message"])
+
+    def test_preview_supervision_ends_promptly_with_its_compositor_and_retains_apps(self):
+        compositor = self.process()
+        self.after(.2, compositor[0].kill)
+        with mock.patch.object(platform, "launch_shell") as launch, mock.patch.object(platform, "command") as command:
+            self.assertLess(self.supervised({"runtime": str(self.root)}, compositor, None), 5)
+        launch.assert_not_called()
+        command.assert_not_called()
+
+    def installed_runtime(self, shell_start_offset=0):
+        runtime = self.root / "installed"
+        runtime.mkdir()
+        compositor, shell = self.process(), self.process()
+        ready = {"shell_pid": shell[0].pid, "shell_start": shell[1] + shell_start_offset, "output": "owned-output"}
+        platform.publish(runtime / "ready.json", ready)
+        config = {"runtime": str(runtime), "installed": True, "shell_bin_dir": str(self.root), "build": str(self.root)}
+        return runtime, config, compositor, shell
+
+    def test_installed_shell_relaunch_budget_spares_output_moves_and_then_ends_the_login(self):
+        runtime, config, compositor, shell = self.installed_runtime()
+        (runtime / "outputs-changed").touch()
+        calls, launch = self.relaunching(runtime, seconds=.3)
+        self.after(.2, shell[0].kill)
+        with mock.patch.object(platform, "launch_shell", side_effect=launch), mock.patch.object(platform, "primary_output", return_value="moved-output"), \
+                mock.patch.object(platform, "control_binary", return_value="owned-control"), mock.patch.object(platform, "command") as command:
+            self.assertLess(self.supervised(config, compositor, shell[0]), 10)
+        self.assertEqual(calls, [False, True, True, True])
+        self.assertFalse((runtime / "outputs-changed").exists())
+        self.assertEqual(json.loads(platform.read_private(runtime / "output.json")), {"output": "moved-output"})
+        self.assertEqual(json.loads(platform.read_private(runtime / "ended.json")), {"reason": "shell-keeps-exiting"})
+        command.assert_called_once_with(["owned-control", "-i", "owned-instance", "dispatch", "hl.dsp.exit()"])
+        self.assertIsNone(compositor[0].poll())
+
+    def test_installed_supervision_never_adopts_a_recycled_shell_pid(self):
+        runtime, config, compositor, foreign = self.installed_runtime(shell_start_offset=1)
+        calls, launch = self.relaunching(runtime, then=lambda _: compositor[0].kill())
+        with mock.patch.object(platform, "launch_shell", side_effect=launch), mock.patch.object(platform, "command") as command:
+            self.assertLess(self.supervised(config, compositor, None), 5)
+        self.assertEqual(calls, [True])
+        self.assertIsNone(foreign[0].poll())
+        self.assertEqual(json.loads(platform.read_private(runtime / "ready.json"))["shell_pid"], json.loads(platform.read_private(runtime / "shell.pid")))
+        self.assertEqual(json.loads(platform.read_private(runtime / "ended.json")), {"reason": "compositor-exited"})
+        command.assert_not_called()
+
+    def test_installed_supervision_ends_promptly_when_the_compositor_exits(self):
+        for case in ("alone", "with-shell"):
+            with self.subTest(case=case):
+                runtime, config, compositor, shell = self.installed_runtime()
+                if case == "with-shell":
+                    self.after(.2, shell[0].kill)
+                self.after(.25, compositor[0].kill)
+                with mock.patch.object(platform, "launch_shell") as launch:
+                    self.assertLess(self.supervised(config, compositor, shell[0], restart_delay=5), 1.5)
+                launch.assert_not_called()
+                self.assertEqual(shell[0].poll() is None, case == "alone")
+                self.assertEqual(json.loads(platform.read_private(runtime / "ended.json")), {"reason": "compositor-exited"})
+                shutil.rmtree(runtime)
 
     def test_activation_updates_only_the_verified_private_bus(self):
         runtime = self.root / "runtime"
@@ -482,22 +591,6 @@ class PlatformTests(unittest.TestCase):
                 platform.delegated_root("definitely-not-this-service.service")
             prepare.assert_not_called()
 
-    def test_dead_or_reused_shell_ends_only_an_opted_in_session(self):
-        runtime = self.root / "runtime"
-        runtime.mkdir(mode=0o700)
-        platform.publish(runtime / "ready.json", {"shell_pid": 43, "shell_start": 8})
-        with mock.patch.object(platform, "live", side_effect=[True, False]) as live, mock.patch.object(platform.time, "sleep") as sleep:
-            platform.supervise({"runtime": str(runtime), "exit_with_shell": True}, {"pid": 42, "start": 7})
-            self.assertEqual(live.call_args_list, [mock.call(42, 7), mock.call(43, 8)])
-            sleep.assert_not_called()
-        self.assertTrue(json.loads(platform.read_private(runtime / "ended.json"))["whole_session_cleanup"])
-
-    def test_default_supervision_retains_apps_after_shell_exit(self):
-        with mock.patch.object(platform, "live", side_effect=[True, False]) as live, mock.patch.object(platform.time, "sleep") as sleep:
-            platform.supervise({"runtime": str(self.root)}, {"pid": 42, "start": 7})
-            self.assertEqual(live.call_args_list, [mock.call(42, 7), mock.call(42, 7)])
-            sleep.assert_called_once_with(.5)
-
     def installed_wait(self, replies, stopping=None):
         clock = iter(range(0, 1000, 1))
         calls = []
@@ -565,10 +658,11 @@ class PlatformTests(unittest.TestCase):
         runtime=self.root/"runtime";runtime.mkdir(mode=0o700)
         config={"unit":"enzui-platform-fixture-0123456789abcdef.service","profile":str(self.root/"profile"),"runtime":str(runtime),"parent_socket":"/fixture","parent_peer":{"pid":1}}
         path=runtime/"launch.json";platform.publish(path,config);digest=hashlib.sha256(platform.read_private(path)).hexdigest()
-        with mock.patch.object(platform,"ROOT",project),mock.patch.object(platform,"member",return_value=True),mock.patch.object(platform,"delegated_root"),mock.patch.object(platform,"peer",return_value={"pid":1}),mock.patch.object(platform,"private_bus",return_value={"pid":2}),mock.patch.object(platform,"prepare_desktop",side_effect=RuntimeError("fixture")),mock.patch.object(platform,"compositor",return_value={"pid":42,"start":7}),mock.patch.object(platform,"live",side_effect=[True,False]),mock.patch.object(platform.time,"sleep") as sleep,mock.patch.object(platform,"command") as command,mock.patch.dict(os.environ,{"DBUS_SESSION_BUS_ADDRESS":"unix:path=/fixture"}):
+        compositor,ticks=self.process();self.after(.2,compositor.kill)
+        with mock.patch.object(platform,"ROOT",project),mock.patch.object(platform,"member",return_value=True),mock.patch.object(platform,"delegated_root"),mock.patch.object(platform,"peer",return_value={"pid":1}),mock.patch.object(platform,"private_bus",return_value={"pid":2}),mock.patch.object(platform,"prepare_desktop",side_effect=RuntimeError("fixture")),mock.patch.object(platform,"compositor",return_value={"pid":compositor.pid,"start":ticks}),mock.patch.object(platform,"command") as command,mock.patch.dict(os.environ,{"DBUS_SESSION_BUS_ADDRESS":"unix:path=/fixture"}):
             platform.inner(str(path),digest)
-            sleep.assert_called_once_with(.5)
             command.assert_not_called()
+        self.assertIsNotNone(compositor.poll())
         self.assertTrue((runtime/"failed.json").exists())
         self.assertFalse((runtime/"ready.json").exists())
 

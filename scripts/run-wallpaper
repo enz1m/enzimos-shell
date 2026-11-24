@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import ctypes
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -135,6 +136,58 @@ def live_arguments(value, config, identity, socket_path):
             "--hyprland", str(Path(config["xdg_runtime"]) / "hypr" / identity["instance"]), "--ready"] + (["--hide-clock"] if value["hide_clock"] else []) + (["--hide-date"] if value["hide_date"] else [])
 
 
+SETTINGS_SAFETY_INTERVAL = 30
+SETTINGS_POLL_INTERVAL = 2
+UNREADABLE_RETRY_INTERVAL = 1
+IN_ATTRIB, IN_CLOSE_WRITE, IN_MOVED_FROM, IN_MOVED_TO, IN_CREATE, IN_DELETE = 0x4, 0x8, 0x40, 0x80, 0x100, 0x200
+IN_DELETE_SELF, IN_MOVE_SELF, IN_Q_OVERFLOW, IN_IGNORED, IN_ONLYDIR = 0x400, 0x800, 0x4000, 0x8000, 0x1000000
+EVENT = struct.Struct("iIII")
+
+
+class SettingsChanges:
+    """Inotify on the settings directory, which sees a file replaced by rename; without inotify,
+    `fd` is None and callers poll."""
+
+    def __init__(self, path):
+        self.name = os.fsencode(path.name)
+        self.fd = None
+        try:
+            libc = ctypes.CDLL(None, use_errno=True)
+            fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+        except (OSError, AttributeError):
+            return
+        if fd < 0:
+            return
+        mask = IN_ATTRIB | IN_CLOSE_WRITE | IN_MOVED_FROM | IN_MOVED_TO | IN_CREATE | IN_DELETE | IN_DELETE_SELF | IN_MOVE_SELF | IN_ONLYDIR
+        if libc.inotify_add_watch(fd, os.fsencode(path.parent), mask) < 0:
+            os.close(fd)
+            return
+        self.fd = fd
+
+    def changed(self):
+        """Drains pending events; true when one names the settings file or the watch was lost."""
+        names = []
+        lost = False
+        try:
+            while data := os.read(self.fd, 65536):
+                offset = 0
+                while offset + EVENT.size <= len(data):
+                    _, mask, _, length = EVENT.unpack_from(data, offset)
+                    names.append(data[offset + EVENT.size:offset + EVENT.size + length].rstrip(b"\0"))
+                    lost |= bool(mask & (IN_DELETE_SELF | IN_MOVE_SELF | IN_Q_OVERFLOW | IN_IGNORED))
+                    offset += EVENT.size + length
+        except BlockingIOError:
+            pass
+        if lost:
+            self.close()
+        return lost or self.name in names
+
+    def close(self):
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+
 def run():
     runtime = Path(os.environ["ENZUI_HYPR_RUNROOT"])
     config = json.loads(platform.read_private(runtime / "launch.json"))
@@ -150,6 +203,7 @@ def run():
     parsed = None
     last_status = None
     snapshots, logs = {}, {}
+    ended_logs = set()
     # Use per-renderer control sockets to avoid collisions during replacement.
     sockets = {}
     shown_scene = {}
@@ -173,6 +227,7 @@ def run():
         child.stderr.close()
         child.stdout.close()
         logs.pop(child.pid, None)
+        ended_logs.discard(child.pid)
         shown_scene.pop(child.pid, None)
         shown_idle.pop(child.pid, None)
         live_socket = sockets.pop(child.pid, None)
@@ -188,6 +243,7 @@ def run():
             while len(log) <= 16384:
                 data = os.read(child.stderr.fileno(), 4096)
                 if not data:
+                    ended_logs.add(child.pid)
                     break
                 log.extend(data)
         except BlockingIOError:
@@ -275,9 +331,37 @@ def run():
         retire(candidate)
         raise RuntimeError("Wallpaper could not be displayed; the previous background is retained")
 
+    def pause(timeout):
+        """Sleeps until the settings may have changed, the compositor or renderer ends, the
+        renderer logs, a stop is requested or `timeout` passes."""
+        if changes.fd is None:
+            timeout = min(timeout, SETTINGS_POLL_INTERVAL)
+        deadline = time.monotonic() + timeout
+        while not stopping:
+            processes = [(identity["pid"], identity["start"])]
+            readable = [signal_read]
+            if current is not None and current.poll() is None:
+                processes.append((current.pid, None))
+                if current.pid in logs and current.pid not in ended_logs and len(logs[current.pid]) <= 16384:
+                    readable.append(current.stderr.fileno())
+            if changes.fd is not None:
+                readable.append(changes.fd)
+            ready = platform.wait_for_exit(processes, max(0, deadline - time.monotonic()), readable)
+            if signal_read in ready:
+                while True:
+                    try:
+                        os.read(signal_read, 64)
+                    except BlockingIOError:
+                        break
+            if ready == [changes.fd] and not changes.changed():
+                continue
+            return
+
+    signal_read, signal_write = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
+    signal.set_wakeup_fd(signal_write)
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    changed_at = time.monotonic()
+    changes = SettingsChanges(settings)
     try:
         while not stopping and platform.live(identity["pid"], identity["start"]):
             try:
@@ -289,9 +373,8 @@ def run():
                 if seen == parsed and not unreadable and current is not None and current.poll() is None:
                     if failed(current):
                         status(requested, "Wallpaper rendering failed; choose the image again or retry")
-                    time.sleep(.1 if time.monotonic() - changed_at < 5 else .5)
+                    pause(SETTINGS_SAFETY_INTERVAL)
                     continue
-                changed_at = time.monotonic()
                 document = json.loads(platform.read_private(settings, 65536)) if seen is not None else {}
                 wanted = preferences(document.get("wallpaper", {}))
                 language = document.get("language", "auto")
@@ -324,9 +407,13 @@ def run():
                         pass
                 unreadable = True
                 status(None, "Cannot read wallpaper settings; the previous background is retained")
-            time.sleep(.1)
+            if unreadable:
+                pause(UNREADABLE_RETRY_INTERVAL)
+            else:
+                time.sleep(.1)
     finally:
         retire(current)
+        changes.close()
 
 
 if __name__ == "__main__":

@@ -150,6 +150,38 @@ def live(pid, ticks):
         return False
 
 
+SUPERVISION_SAFETY_INTERVAL = 30
+PIDFD_FALLBACK_INTERVAL = .5
+
+
+def wait_for_exit(processes, timeout=SUPERVISION_SAFETY_INTERVAL, readable=()):
+    """Sleeps until a listed process ends, a `readable` descriptor is ready or `timeout` passes,
+    and returns the ready `readable` descriptors.
+
+    Each process is a `(pid, start ticks)` pair, or `(pid, None)` for an unreaped child of this
+    process. Returns at once when a listed process has already ended. A process whose pidfd
+    cannot be opened is polled every half second instead."""
+    descriptors, polled = [], False
+    try:
+        for pid, ticks in processes:
+            try:
+                descriptor = os.pidfd_open(pid)
+            except ProcessLookupError:
+                return []
+            except OSError:
+                polled = True
+                continue
+            descriptors.append(descriptor)
+            # Checked after opening, so the pidfd cannot name a process that recycled the pid.
+            if ticks is not None and not live(pid, ticks):
+                return []
+        ready, _, _ = select.select(descriptors + list(readable), [], [], min(timeout, PIDFD_FALLBACK_INTERVAL) if polled else timeout)
+        return [descriptor for descriptor in ready if descriptor in readable]
+    finally:
+        for descriptor in descriptors:
+            os.close(descriptor)
+
+
 def dimensions(value):
     if not re.fullmatch(r"[0-9]{3,4}x[0-9]{3,4}", value):
         raise argparse.ArgumentTypeError("Use WIDTHxHEIGHT")
@@ -589,6 +621,16 @@ def inner(path, digest):
         supervise(config, identity)
 
 
+SHELL_RESTART_DELAY = 1
+
+
+def shell_restart_delay(identity):
+    """Waits before a shell relaunch and reports whether the compositor is still running; a shell
+    usually ends together with its compositor."""
+    wait_for_exit([(identity["pid"], identity["start"])], SHELL_RESTART_DELAY)
+    return live(identity["pid"], identity["start"])
+
+
 def supervise(config, identity):
     runtime = Path(config["runtime"])
     if config.get("installed"):
@@ -608,50 +650,57 @@ def supervise(config, identity):
             if len(restarts) > 3:
                 restart_paused = True
                 publish(runtime / "failed.json", {"message": "Shell restart paused after repeated failures; compositor and apps retained.", "retain_compositor": True})
-            else:
-                time.sleep(1)
+            elif shell_restart_delay(identity):
                 try:
                     pid, ticks = launch_shell(config, identity)
                     shell = {**shell, "shell_pid": pid, "shell_start": ticks}
                     publish(runtime / "ready.json", shell)
                 except (OSError, RuntimeError, subprocess.TimeoutExpired):
                     publish(runtime / "failed.json", {"message": "Shell restart did not complete; compositor and apps retained.", "retain_compositor": True})
-        time.sleep(.5)
+            continue
+        watched = [(identity["pid"], identity["start"])]
+        if config.get("exit_with_shell", False) and shell:
+            watched.append((shell["shell_pid"], shell["shell_start"]))
+        elif shell and not restart_paused and OWNED_SHELL is not None:
+            watched.append((OWNED_SHELL.pid, None))
+        wait_for_exit(watched)
 
 
 def supervise_installed(config, identity):
     # Compositor exit ends the login; shell crashes restart with bounded retries while retaining
     # apps.
     runtime = Path(config["runtime"])
-    binaries = Path(config["shell_bin_dir"])
     restarts = []
     while live(identity["pid"], identity["start"]):
         if OWNED_SHELL is not None:
             OWNED_SHELL.poll()
         ready = json.loads(read_private(runtime / "ready.json"))
-        if not live(ready["shell_pid"], ready["shell_start"]):
-            now = time.monotonic()
-            # Output-change markers request relocation without consuming the crash retry budget.
-            moved = runtime / "outputs-changed"
-            relocated = moved.exists()
-            if relocated:
-                moved.unlink()
-                try:
-                    publish(runtime / "output.json", {"output": primary_output(config, identity)})
-                except RuntimeError:
-                    pass
-            else:
-                restarts = [at for at in restarts if now - at < 60] + [now]
-            if len(restarts) > 3:
-                publish(runtime / "ended.json", {"reason": "shell-keeps-exiting"})
-                command([str(control_binary(config)), "-i", identity["instance"], "dispatch", "hl.dsp.exit()"])
-                return
-            time.sleep(1)
-            launch_shell(config, identity, restore_displays=not relocated)
-            shell = int(read_private(runtime / "shell.pid", 32))
-            ticks = int(read_private(runtime / "shell.pid.start", 32))
-            publish(runtime / "ready.json", {**ready, "shell_pid": shell, "shell_start": ticks})
-        time.sleep(.5)
+        if live(ready["shell_pid"], ready["shell_start"]):
+            wait_for_exit([(identity["pid"], identity["start"]), (ready["shell_pid"], ready["shell_start"])])
+            continue
+        now = time.monotonic()
+        # The shell leaves this marker just before exiting, so it is read only after an exit.
+        # Output-change markers request relocation without consuming the crash retry budget.
+        moved = runtime / "outputs-changed"
+        relocated = moved.exists()
+        if relocated:
+            moved.unlink()
+            try:
+                publish(runtime / "output.json", {"output": primary_output(config, identity)})
+            except RuntimeError:
+                pass
+        else:
+            restarts = [at for at in restarts if now - at < 60] + [now]
+        if len(restarts) > 3:
+            publish(runtime / "ended.json", {"reason": "shell-keeps-exiting"})
+            command([str(control_binary(config)), "-i", identity["instance"], "dispatch", "hl.dsp.exit()"])
+            return
+        if not shell_restart_delay(identity):
+            continue
+        launch_shell(config, identity, restore_displays=not relocated)
+        shell = int(read_private(runtime / "shell.pid", 32))
+        ticks = int(read_private(runtime / "shell.pid.start", 32))
+        publish(runtime / "ready.json", {**ready, "shell_pid": shell, "shell_start": ticks})
     publish(runtime / "ended.json", {"reason": "compositor-exited"})
 
 

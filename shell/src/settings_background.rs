@@ -155,10 +155,16 @@ fn share_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// The Files location a forwarded `Open` URI asks to set up for backups.
+/// The Files location a forwarded `Open` URI of a backups page asks to set
+/// up for backups.
 pub(super) fn opened_share(uri: &str) -> Option<String> {
+    let backups = match opened(uri)?.0 {
+        Target::Entry(route) => settings_catalog::find(route)?.category() == Page::Backups,
+        Target::Page(page) => page == Page::Backups,
+    };
     let query = uri.strip_prefix(URI_SCHEME)?.split_once('?')?.1;
-    query
+    backups
+        .then_some(query)?
         .split('&')
         .find_map(|pair| pair.strip_prefix("share="))
         .filter(|id| share_id(id))
@@ -443,6 +449,15 @@ mod tests {
                 opened_share("enzui-settings:backups/destination?plugin=clipboard&share=../x"),
                 None,
                 "a share id is a plain location id"
+            );
+            assert_eq!(
+                opened_share("enzui-settings:network/wifi?share=net-1"),
+                None,
+                "only a backups page sets up a share"
+            );
+            assert_eq!(
+                opened_share("enzui-settings:backups?share=net-1"),
+                Some("net-1".into())
             );
             assert_eq!(
                 opened("enzui-settings:backups/destination?share=net-1").map(|(target, _)| target),

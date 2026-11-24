@@ -354,6 +354,11 @@ impl SettingsApp {
             dev_tools_launch: Default::default(),
         };
         app.sync_night_labels();
+        if page == Page::Backups
+            && let Some(id) = background::launch_share()
+        {
+            app.backup_share_request(id);
+        }
         app.navigation.expanded = Some(page);
         app.navigation.selected = app.sections(page).first().map(|section| section.route);
         app

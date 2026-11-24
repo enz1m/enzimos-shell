@@ -17,6 +17,7 @@ pub mod app_theme;
 pub mod audio_devices;
 pub mod authorization;
 pub mod background_apps;
+pub mod backup_activity;
 pub mod backup_notices;
 pub mod bar_geometry;
 pub mod bar_item;

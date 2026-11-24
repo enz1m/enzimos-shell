@@ -49,6 +49,9 @@ pub fn code_message(code: &str) -> &'static str {
     match code {
         "not-authorized" => tr("shell-the-change-was-not-authorized-2"),
         "backup-destination-busy" => tr("shell-the-backup-drive-is-busy-try-again-shortly"),
+        "backup-destination-not-configured" => tr("shell-backups-need-a-drive"),
+        "backup-attempt-needs-restart" => tr("shell-backup-needs-restart"),
+        "backup-attempt-capacity" => tr("shell-backup-attempts-full"),
         "backup-destination-absent" => {
             tr("shell-the-backup-drive-is-not-connected-connect-it-and-try-again")
         }
@@ -631,6 +634,13 @@ pub struct Safety {
     pub run_since: Option<i64>,
     pub last_success: Option<i64>,
     pub run_code: Option<String>,
+    /// A backup running now, whoever started it.
+    pub running: Option<crate::backup_activity::Running>,
+    /// Where backups are written: `drive`, `share`, or `None` when neither is
+    /// ready. `primary_reported` is false for backends without the field.
+    pub primary: Option<String>,
+    pub primary_reported: bool,
+    pub recovery_exclude_uuid: Option<String>,
     /// Space the backups used on the drive at the last cleanup.
     pub repository_measured: Option<u64>,
     /// The limit is smaller than one backup.
@@ -718,6 +728,17 @@ impl Safety {
                 .to_owned(),
             run_since: backups.pointer("/run/since").and_then(Value::as_i64),
             last_success: backups.pointer("/run/last_success").and_then(Value::as_i64),
+            running: crate::backup_activity::Running::from_status(backups),
+            primary: backups
+                .get("primary")
+                .and_then(Value::as_str)
+                .filter(|primary| matches!(*primary, "drive" | "share"))
+                .map(str::to_owned),
+            primary_reported: backups.get("primary").is_some(),
+            recovery_exclude_uuid: backups
+                .get("recovery_save_exclude_uuid")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
             run_code: backups
                 .pointer("/run/code")
                 .and_then(Value::as_str)
@@ -740,6 +761,30 @@ impl Safety {
         }
     }
     /// Waiting for the backup drive to be connected.
+    /// The newest run failed: no backup succeeded since that failure began.
+    pub fn failed_since_success(&self) -> bool {
+        self.run_state == "failed"
+            && match (self.run_since, self.last_success) {
+                (Some(failed), Some(succeeded)) => failed > succeeded,
+                _ => true,
+            }
+    }
+    /// Backups go only to the network share.
+    pub fn share_only(&self) -> bool {
+        !self.local_configured && self.remote_configured
+    }
+    /// The network share receives the backups themselves.
+    pub fn share_primary(&self) -> bool {
+        self.primary.as_deref() == Some("share")
+    }
+    /// "Back up now" and the schedule have somewhere to write.
+    pub fn can_back_up(&self) -> bool {
+        if self.primary_reported {
+            self.primary.is_some()
+        } else {
+            self.local_configured
+        }
+    }
     pub fn waiting_for_drive(&self) -> bool {
         self.run_state == "waiting-for-drive" && !self.destination_available
     }

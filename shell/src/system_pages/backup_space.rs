@@ -661,15 +661,21 @@ impl SettingsApp {
         ));
         let pending = safety.pending_removals.max(state.removals.len() as u64);
         if pending > 0 {
-            let place = safety
-                .destination_label
-                .clone()
-                .unwrap_or_else(|| tr("shell-the-backup-drive").to_owned());
+            let share_only = safety.share_only();
+            let place = if share_only {
+                tr("shell-the-network-share").to_owned()
+            } else {
+                safety
+                    .destination_label
+                    .clone()
+                    .unwrap_or_else(|| tr("shell-the-backup-drive").to_owned())
+            };
             rows = rows.push(
-                crate::settings_app::settings_row(if pending == 1 {
-                    tr("shell-removals-pending-one").to_owned()
-                } else {
-                    tr!("shell-removals-pending", "arg0" => pending.to_string())
+                crate::settings_app::settings_row(match (pending, share_only) {
+                    (1, false) => tr("shell-removals-pending-one").to_owned(),
+                    (1, true) => tr("shell-removals-pending-share-one").to_owned(),
+                    (_, false) => tr!("shell-removals-pending", "arg0" => pending.to_string()),
+                    (_, true) => tr!("shell-removals-pending-share", "arg0" => pending.to_string()),
                 })
                 .subtitle(tr!("shell-removals-pending-detail", "arg0" => place))
                 .icon("trash-2")

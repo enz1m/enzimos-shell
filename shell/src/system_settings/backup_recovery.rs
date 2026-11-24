@@ -28,7 +28,13 @@ pub struct Delivered {
 }
 
 impl SystemSettings {
-    pub async fn deliver_backup_recovery(&self, delivery: Delivery) -> Result<Delivered, String> {
+    /// `share_exclude_uuid` is the status' `recovery_save_exclude_uuid`: the
+    /// filesystem a saved copy must not land on when backups go to the share.
+    pub async fn deliver_backup_recovery(
+        &self,
+        delivery: Delivery,
+        share_exclude_uuid: Option<String>,
+    ) -> Result<Delivered, String> {
         if !self.writes_allowed || self.demo {
             return Err(tr("shell-recovery-password-export-is-unavailable-in-this-session").into());
         }
@@ -48,9 +54,14 @@ impl SystemSettings {
             .filter(|s| s.len() == 64)
             .ok_or_else(|| tr("shell-invalid-recovery-export"))?
             .to_owned();
+        let share = metadata
+            .get("destination")
+            .and_then(serde_json::Value::as_str)
+            == Some("share");
         let uuid = metadata
             .get("destination_uuid")
             .and_then(serde_json::Value::as_str)
+            .or_else(|| share.then_some(share_exclude_uuid.as_deref()).flatten())
             .ok_or_else(|| tr("shell-invalid-backup-identity"))?;
         if let Some((folder, name)) = destination {
             protected_helper(

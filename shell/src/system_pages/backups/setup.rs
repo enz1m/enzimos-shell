@@ -324,7 +324,7 @@ impl SettingsApp {
                 .into_element()
         };
         if !setup.open {
-            return button(
+            let open = button(
                 if setup.job.is_some() {
                     tr("shell-view-enrollment-status")
                 } else {
@@ -336,6 +336,17 @@ impl SettingsApp {
                     && (setup.job.is_some() || safety.setup_available && !safety.local_configured),
                 "backup-setup-open".into(),
             );
+            return crate::settings_app::settings_row(tr("shell-backup-drive"))
+                .subtitle(if safety.remote_configured {
+                    tr("shell-backup-drive-optional")
+                } else {
+                    tr("shell-none-yet")
+                })
+                .subtitle_wrap(true)
+                .icon("hard-drive")
+                .id_prefix("backup-setup")
+                .control(open)
+                .into_element();
         }
         let mut body = column![self.caption_row(tr(
             "shell-use-an-existing-independent-btrfs-drive-this-does-not-format-it-delete-files"

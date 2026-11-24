@@ -123,12 +123,46 @@ pub(super) fn background_declaration() -> BackgroundDeclaration {
 // What a launch asks for, forwarded to a running instance as an `Open` URI.
 pub(super) fn launch_intent(page: Option<&str>, plugin: Option<&str>) -> ApplicationIntent {
     match page.filter(|route| settings_catalog::valid_route(route)) {
-        Some(route) => ApplicationIntent::Open(vec![match plugin.filter(|id| plugin_id(id)) {
-            Some(id) => format!("{URI_SCHEME}{route}?plugin={id}"),
-            None => format!("{URI_SCHEME}{route}"),
-        }]),
+        Some(route) => {
+            let mut uri = match plugin.filter(|id| plugin_id(id)) {
+                Some(id) => format!("{URI_SCHEME}{route}?plugin={id}"),
+                None => format!("{URI_SCHEME}{route}"),
+            };
+            if route.starts_with("backups/")
+                && let Some(id) = launch_share()
+            {
+                let separator = if uri.contains('?') { '&' } else { '?' };
+                uri = format!("{uri}{separator}share={id}");
+            }
+            ApplicationIntent::Open(vec![uri])
+        }
         None => ApplicationIntent::Activate,
     }
+}
+
+/// `ENZUI_SETTINGS_SHARE`: a Files network location to set up for backups.
+pub(super) fn launch_share() -> Option<String> {
+    std::env::var("ENZUI_SETTINGS_SHARE")
+        .ok()
+        .filter(|id| share_id(id))
+}
+
+fn share_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// The Files location a forwarded `Open` URI asks to set up for backups.
+pub(super) fn opened_share(uri: &str) -> Option<String> {
+    let query = uri.strip_prefix(URI_SCHEME)?.split_once('?')?.1;
+    query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("share="))
+        .filter(|id| share_id(id))
+        .map(str::to_owned)
 }
 
 fn plugin_id(id: &str) -> bool {
@@ -144,9 +178,10 @@ pub(super) enum Target {
 // A forwarded `Open` URI: a catalog entry or a whole page, and a plugin to select.
 pub(super) fn opened(uri: &str) -> Option<(Target, Option<String>)> {
     let rest = uri.strip_prefix(URI_SCHEME)?;
-    let (route, plugin) = rest
-        .split_once("?plugin=")
-        .map_or((rest, None), |(route, id)| (route, Some(id)));
+    let (route, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let plugin = query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("plugin="));
     let target = match settings_catalog::find(route) {
         Some(entry) => Target::Entry(entry.route),
         None => Target::Page(settings_catalog::category(route)?),
@@ -250,7 +285,10 @@ impl SettingsApp {
             return Task::none();
         };
         let mut tasks = Vec::new();
-        for (target, plugin) in uris.iter().filter_map(|uri| opened(uri)) {
+        for uri in &uris {
+            let Some((target, plugin)) = opened(uri) else {
+                continue;
+            };
             if plugin.is_some() {
                 self.plugins.select_from_launch(plugin);
             }
@@ -258,6 +296,9 @@ impl SettingsApp {
                 Target::Entry(route) => self.update(Message::Reveal(route)),
                 Target::Page(page) => self.update(Message::Page(page)),
             });
+            if let Some(id) = opened_share(uri) {
+                tasks.push(self.update(super::system_pages::backups::share_for(id)));
+            }
         }
         Task::batch(tasks)
     }
@@ -393,6 +434,19 @@ mod tests {
             assert_eq!(
                 opened(&uris[0]),
                 Some((Target::Entry("plugins/installed"), Some("clipboard".into())))
+            );
+            assert_eq!(
+                opened_share("enzui-settings:backups/destination?share=net-0906ea0a378ba969"),
+                Some("net-0906ea0a378ba969".into())
+            );
+            assert_eq!(
+                opened_share("enzui-settings:backups/destination?plugin=clipboard&share=../x"),
+                None,
+                "a share id is a plain location id"
+            );
+            assert_eq!(
+                opened("enzui-settings:backups/destination?share=net-1").map(|(target, _)| target),
+                Some(Target::Entry("backups/destination"))
             );
             assert_eq!(
                 opened("enzui-settings:plugins/installed?plugin=../x"),

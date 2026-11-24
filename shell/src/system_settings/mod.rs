@@ -10,6 +10,7 @@ pub mod backups;
 mod demo;
 pub mod display;
 pub mod enzimos;
+pub mod files_shares;
 mod nm_bus;
 pub mod pairing;
 mod parse;
@@ -678,6 +679,7 @@ impl SystemSettings {
             LongJob::BackupNow => (3, "backup-create"),
             LongJob::InstallUpdates => (5, "update-apply"),
         };
+        let started = chrono::Utc::now().timestamp();
         match backend.run(schema, operation, None, hours).await {
             Ok(result) => {
                 Ok(result.get("status").and_then(serde_json::Value::as_str) != Some("up-to-date"))
@@ -691,6 +693,21 @@ impl SystemSettings {
             }
             Err(enzimos::Refusal::NotPrepared) if job == LongJob::InstallUpdates => {
                 Err(tr("shell-no-update-could-be-prepared-so-nothing-was-changed").into())
+            }
+            // A backup refused before it captured anything ends `uncertain`
+            // in the job ledger; its run status says why.
+            Err(enzimos::Refusal::Uncertain) if job == LongJob::BackupNow => {
+                let recorded = backend.query("backups").await.ok().and_then(|status| {
+                    let run = &status["run"];
+                    (run["state"] == "failed"
+                        && run["at"]
+                            .as_i64()
+                            .or_else(|| run["since"].as_i64())
+                            .is_some_and(|at| at >= started))
+                    .then(|| run["code"].as_str().map(backup_remote::error_message))
+                    .flatten()
+                });
+                Err(recorded.unwrap_or_else(|| enzimos::Refusal::Uncertain.message()))
             }
             Err(refusal) => Err(refusal.message()),
         }

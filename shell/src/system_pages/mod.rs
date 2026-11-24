@@ -3,7 +3,7 @@ mod accessibility;
 mod agents;
 mod apps;
 mod backup_space;
-mod backups;
+pub(super) mod backups;
 mod controllers;
 mod developer;
 mod devices;
@@ -439,9 +439,12 @@ impl SettingsApp {
             } else {
                 self.backup_space_read(force)
             };
-            if space.units() > 0 {
-                return Task::batch([space, self.read_panel(force)]);
-            }
+            let files = if running {
+                Task::none()
+            } else {
+                self.backup_files_read()
+            };
+            return Task::batch([space, files, self.read_panel(force)]);
         }
         if self.page == Category::Disks {
             return self.disks_read(force);
@@ -483,6 +486,13 @@ impl SettingsApp {
         let Some(panel) = panel(self.page) else {
             return Task::none();
         };
+        if panel == Panel::Safety
+            && self
+                .safety_now()
+                .is_some_and(|safety| safety.running.is_some())
+        {
+            return self.backup_running_poll();
+        }
         if panel == Panel::Safety
             && (self.backup_read_blocked(force)
                 || self
@@ -651,6 +661,12 @@ impl SettingsApp {
                 }
                 if std::mem::take(&mut self.system.reread) {
                     return self.read_system(true);
+                }
+                if panel == Panel::Safety {
+                    let resume = self.backup_share_resume();
+                    if resume.units() > 0 {
+                        return Task::batch([resume, self.read_page_left_waiting(panel)]);
+                    }
                 }
                 self.read_page_left_waiting(panel)
             }

@@ -334,6 +334,10 @@ impl Shell {
         if let Some(value) = &progress {
             content = content
                 .push(container(enz_text(value).size_px(size).into_element()).center_x(size * 3.1));
+        } else if job.outcome.is_none() && job.work.state == activity::State::Running {
+            // Work without a measure still reads as busy; a static glyph keeps
+            // the bar from redrawing for the length of a long job.
+            content = content.push(enz_icon("loader").size(icon_size * 0.85).into_element());
         }
         if jobs.len() > 1 {
             content = content.push(

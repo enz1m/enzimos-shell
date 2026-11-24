@@ -5,6 +5,7 @@ impl SettingsApp {
     fn backups_overview<'a>(&self, safety: &Safety) -> Element<'a, Parent> {
         let now = chrono::Local::now();
         let job = self.system.jobs.get(&LongJob::BackupNow);
+        let running = matches!(job, Some(JobState::Running)) || safety.running.is_some();
         let (icon, title, subtitle, badge) = if !safety.destination() {
             (
                 "shield-alert",
@@ -16,7 +17,24 @@ impl SettingsApp {
                 },
                 Some((tr("shell-not-protected"), BadgeTone::Warning)),
             )
-        } else if safety.waiting_for_drive() && !matches!(job, Some(JobState::Running)) {
+        } else if safety.share_only() && !safety.can_back_up() && !running {
+            (
+                "shield-alert",
+                if safety.primary_reported {
+                    tr("shell-share-not-ready")
+                } else {
+                    tr("shell-backups-need-a-drive")
+                }
+                .to_owned(),
+                if safety.primary_reported {
+                    tr("shell-share-not-ready-detail")
+                } else {
+                    tr("shell-backups-need-a-drive-detail")
+                }
+                .to_owned(),
+                Some((tr("shell-not-protected"), BadgeTone::Warning)),
+            )
+        } else if safety.waiting_for_drive() && !running {
             let drive = safety
                 .destination_label
                 .clone()
@@ -34,14 +52,18 @@ impl SettingsApp {
                 },
                 Some((tr("shell-waiting-badge"), BadgeTone::Warning)),
             )
-        } else if safety.run_state == "failed" && !matches!(job, Some(JobState::Running)) {
+        } else if safety.failed_since_success() && !running {
             (
                 "shield-x",
                 tr("shell-the-last-backup-did-not-run").to_owned(),
-                safety.run_code.clone().unwrap_or_default(),
+                safety
+                    .run_code
+                    .as_deref()
+                    .map(enzui_shell::system_settings::backup_remote::error_message)
+                    .unwrap_or_default(),
                 Some((tr("shell-failed"), BadgeTone::Error)),
             )
-        } else if matches!(job, Some(JobState::Running)) {
+        } else if running {
             (
                 "refresh-cw",
                 tr("shell-backing-up-now").to_owned(),
@@ -49,10 +71,14 @@ impl SettingsApp {
                 Some((tr("shell-working"), BadgeTone::Accent)),
             )
         } else if let Some(last) = &safety.last_backup {
-            let where_ = safety
-                .destination_label
-                .clone()
-                .unwrap_or_else(|| tr("shell-the-backup-drive").into());
+            let where_ = if safety.share_only() {
+                tr!("shell-share-on-server", "arg0" => safety.remote.share.clone(), "arg1" => safety.remote.server.clone())
+            } else {
+                safety
+                    .destination_label
+                    .clone()
+                    .unwrap_or_else(|| tr("shell-the-backup-drive").into())
+            };
             let next = match (&safety.next_run, safety.schedule_enabled) {
                 (Some(next), true) => {
                     tr!("shell-next-backup-2", "arg0" => when(next, now).to_lowercase())
@@ -736,32 +762,44 @@ impl SettingsApp {
 
         // Where backups go: the drive, and a spot for the network share.
         let mut backups = column![].spacing(2);
-        if safety.local_configured || safety.remote_configured {
+        let setup_offered = (safety.setup_available || self.system.backups.setup.job_present())
+            && self.system.backups.setup.shown(safety.local_configured);
+        if safety.local_configured {
+            backups = backups.push(
+                self.mark_setting(
+                    "backups/destination",
+                    self.info_row(
+                        "hard-drive",
+                        tr("shell-backup-drive"),
+                        safety
+                            .destination_label
+                            .clone()
+                            .unwrap_or_else(|| tr("shell-a-backup-drive").to_owned()),
+                    ),
+                ),
+            );
+        } else if setup_offered {
+            backups = backups
+                .push(self.mark_setting("backups/destination", self.backup_setup_view(safety)));
+        } else {
             backups = backups.push(self.mark_setting(
                 "backups/destination",
                 self.info_row(
                     "hard-drive",
                     tr("shell-backup-drive"),
-                    match (&safety.destination_label, safety.local_configured) {
-                        (Some(label), true) => label.clone(),
-                        (None, true) => tr("shell-a-backup-drive").to_owned(),
-                        (_, false) => tr("shell-not-set-up").to_owned(),
+                    if safety.remote_configured {
+                        tr("shell-backup-drive-optional")
+                    } else {
+                        tr("shell-none-yet")
                     },
                 ),
             ));
-            backups = backups.push(self.backup_share_rows(safety));
-        } else {
-            backups = backups.push(self.mark_setting(
-                "backups/destination",
-                self.info_row("hard-drive", tr("shell-destination"), tr("shell-none-yet")),
-            ));
-            backups = backups.push(self.backup_share_rows(safety));
         }
-        if (safety.setup_available || self.system.backups.setup.job_present())
-            && self.system.backups.setup.shown(safety.local_configured)
-        {
+        if safety.local_configured && setup_offered {
             backups = backups.push(self.backup_setup_view(safety));
-        } else if !safety.destination() {
+        }
+        backups = backups.push(self.backup_share_rows(safety));
+        if !setup_offered && !safety.destination() {
             backups = backups.push(self.caption_row(tr("shell-the-system-service-does-not-offer-backup-drive-enrollment-in-settings-existi")));
         }
         let recovery = &self.system.backups;
@@ -780,7 +818,7 @@ impl SettingsApp {
                 }
             };
             let delivery_enabled =
-                self.system_writes() && safety.local_configured && !recovery.recovery_busy;
+                self.system_writes() && safety.can_back_up() && !recovery.recovery_busy;
             let deliver = |label: &'static str, delivery, id: &'static str| {
                 enz_button(label, send(BackupsMessage::RecoveryDeliver(delivery)))
                     .kind(ButtonKind::Secondary)
@@ -835,9 +873,13 @@ impl SettingsApp {
                 .control(enz_button(tr("shell-confirm-separate-copy"), send(BackupsMessage::RecoveryConfirm)).kind(ButtonKind::Secondary).size(ButtonSize::Sm).id("backup-recovery-confirm".into()).enabled(self.system_writes() && !recovery.recovery_busy).into_element()).into_element());
             }
         }
+        // The share's own repository password was typed at setup, so a
+        // share schedule needs no separate recovery confirmation.
         let can_schedule = safety.schedule_enabled
-            || safety.destination()
-                && (safety.recovery_copy_state == "user-attested" || !safety.recovery_available);
+            || safety.can_back_up()
+                && (safety.share_primary()
+                    || safety.recovery_copy_state == "user-attested"
+                    || !safety.recovery_available);
         let schedule_detail = if safety.schedule_enabled
             && safety.recovery_available
             && safety.recovery_copy_state != "user-attested"
@@ -925,7 +967,7 @@ impl SettingsApp {
         }
         backups = backups.push(self.mark_setting(
             "backups/now",
-            if safety.destination() || self.system.jobs.contains_key(&LongJob::BackupNow) {
+            if safety.can_back_up() || self.system.jobs.contains_key(&LongJob::BackupNow) {
                 self.job_row(
                     LongJob::BackupNow,
                     tr("shell-back-up-now"),
@@ -934,7 +976,11 @@ impl SettingsApp {
                 )
             } else {
                 crate::settings_app::settings_row(tr("shell-back-up-now"))
-                    .subtitle(tr("shell-available-once-a-backup-destination-is-set-up"))
+                    .subtitle(if safety.share_only() {
+                        tr("shell-back-up-now-needs-drive")
+                    } else {
+                        tr("shell-available-once-a-backup-destination-is-set-up")
+                    })
                     .icon("hard-drive-upload")
                     .into_element()
             },

@@ -5,6 +5,7 @@ use enzui_core::form::SecretText;
 use enzui_core::menu_model::{MenuEntryModel, MenuModel, MenuState};
 use enzui_shell::i18n::tr;
 use enzui_shell::system_settings::backup_remote::{self, RemoteShare, ShareInput, Tested};
+use enzui_shell::system_settings::files_shares::{self, FilesShare};
 use enzui_widgets::banner::{BannerTone, enz_banner};
 use enzui_widgets::menu_button::{MenuButtonEvent, apply_event, enz_kebab_menu_button};
 use enzui_widgets::modal_host::ModalHostEvent;
@@ -20,6 +21,11 @@ pub(super) struct Share {
     notice: Option<String>,
     menu: MenuModel,
     menu_state: MenuState,
+    files: Vec<FilesShare>,
+    // A Files location to set up from, once the backup status is known.
+    pending_pick: Option<String>,
+    connecting: Option<String>,
+    connect_error: Option<String>,
 }
 
 impl Default for Share {
@@ -36,6 +42,10 @@ impl Default for Share {
                 MenuEntryModel::command("remove", tr("shell-share-remove")).destructive(true),
             ]),
             menu_state: MenuState::closed(),
+            files: Vec::new(),
+            pending_pick: None,
+            connecting: None,
+            connect_error: None,
         }
     }
 }
@@ -51,6 +61,8 @@ struct Form {
     error: Option<String>,
     needs_repository: bool,
     change: bool,
+    picked: Option<String>,
+    password_from_files: bool,
 }
 
 impl Form {
@@ -101,6 +113,12 @@ pub(in crate::settings_app) enum ShareMessage {
     Remove(bool),
     ConfirmRemove,
     Removed(Result<(), String>),
+    FilesListed(Vec<FilesShare>),
+    OpenFor(String),
+    Pick(String),
+    PickedPassword(String, Option<SecretText>),
+    ConnectAtLogin(String),
+    ConnectedAtLogin(String, Result<(), String>),
 }
 
 fn send(message: ShareMessage) -> Parent {
@@ -113,7 +131,44 @@ fn hostname() -> String {
         .unwrap_or_default()
 }
 
+fn demo_files() -> Vec<FilesShare> {
+    vec![
+        FilesShare {
+            id: "net-demo-downloads".into(),
+            label: "Downloads on 192.168.2.86".into(),
+            server: "192.168.2.86".into(),
+            share: "Downloads".into(),
+            user: "alice".into(),
+            ..FilesShare::default()
+        },
+        FilesShare {
+            id: "net-demo-backups".into(),
+            label: "backups on nas.local".into(),
+            server: "nas.local".into(),
+            share: "backups".into(),
+            user: "alice".into(),
+            auto_connect: true,
+            ..FilesShare::default()
+        },
+    ]
+}
+
+fn files_state(share: &FilesShare) -> &'static str {
+    if share.mount_at_boot {
+        tr("shell-files-share-at-startup")
+    } else if share.auto_connect {
+        tr("shell-files-share-at-login")
+    } else {
+        tr("shell-files-share-when-opened")
+    }
+}
+
 impl Share {
+    fn files_match(&self, remote: &RemoteShare) -> Option<&FilesShare> {
+        self.files
+            .iter()
+            .find(|files| files.matches(&remote.server, &remote.share))
+    }
     pub(super) fn busy(&self) -> bool {
         self.form.as_ref().is_some_and(|form| form.working) || self.testing || self.removing
     }
@@ -126,6 +181,28 @@ impl Share {
 }
 
 impl SettingsApp {
+    pub(in crate::settings_app) fn backup_share_request(&mut self, id: String) {
+        self.system.backups.share.pending_pick = Some(id);
+    }
+
+    // Waits for the backup status: it says which passwords the share needs.
+    pub(in crate::settings_app) fn backup_share_resume(&mut self) -> Task<Parent> {
+        let share = &self.system.backups.share;
+        if share.pending_pick.is_none() || share.form.is_some() || self.safety_now().is_none() {
+            return Task::none();
+        }
+        self.backup_share_message(ShareMessage::Open)
+    }
+
+    pub(in crate::settings_app) fn backup_files_read(&self) -> Task<Parent> {
+        if self.system.backend.demo {
+            return Task::done(send(ShareMessage::FilesListed(demo_files())));
+        }
+        Task::perform(files_shares::list(), |files| {
+            send(ShareMessage::FilesListed(files))
+        })
+    }
+
     pub(super) fn backup_share_message(&mut self, message: ShareMessage) -> Task<Parent> {
         let backend = self.system.backend.clone();
         let remote = self
@@ -133,6 +210,9 @@ impl SettingsApp {
             .map(|safety| safety.remote)
             .unwrap_or_default();
         let demo = backend.demo;
+        let drive = self
+            .safety_now()
+            .is_some_and(|safety| safety.local_configured);
         let share = &mut self.system.backups.share;
         match message {
             ShareMessage::Open => {
@@ -157,10 +237,13 @@ impl SettingsApp {
                     error: None,
                     needs_repository: remote.needs_repository_password(),
                     change: remote.configured(),
+                    picked: None,
+                    password_from_files: false,
                 });
-                return iced::widget::operation::focus(iced::widget::Id::new(
-                    "backup-share-server",
-                ));
+                return Task::batch([
+                    iced::widget::operation::focus(iced::widget::Id::new("backup-share-server")),
+                    self.backup_files_read(),
+                ]);
             }
             ShareMessage::Field(field, text) => {
                 if let Some(form) = share.form.as_mut().filter(|form| !form.working) {
@@ -178,12 +261,21 @@ impl SettingsApp {
                     };
                     *slot = text;
                     form.error = None;
+                    if matches!(
+                        field,
+                        Field::Server | Field::Share | Field::User | Field::Domain
+                    ) {
+                        form.picked = None;
+                    }
                 }
             }
             ShareMessage::Secret(which, secret) => {
                 if let Some(form) = share.form.as_mut().filter(|form| !form.working) {
                     match which {
-                        Secret::Share => form.password = secret,
+                        Secret::Share => {
+                            form.password = secret;
+                            form.password_from_files = false;
+                        }
                         Secret::Repository => form.repository = secret,
                         Secret::Repeat => form.repeat = secret,
                     }
@@ -226,10 +318,11 @@ impl SettingsApp {
                         share.form = None;
                         share.tested = None;
                         share.notice = Some(
-                            if repository == "adopted" {
-                                tr("shell-share-ready-adopted")
-                            } else {
-                                tr("shell-share-ready-created")
+                            match (repository == "adopted", drive) {
+                                (true, true) => tr("shell-share-ready-adopted"),
+                                (false, true) => tr("shell-share-ready-created"),
+                                (true, false) => tr("shell-share-ready-adopted-primary"),
+                                (false, false) => tr("shell-share-ready-created-primary"),
                             }
                             .into(),
                         );
@@ -294,6 +387,102 @@ impl SettingsApp {
                     async move { backend.remote_share_remove().await },
                     |result| send(ShareMessage::Removed(result)),
                 );
+            }
+            ShareMessage::FilesListed(files) => {
+                share.files = files;
+                if share.form.is_some()
+                    && let Some(id) = share.pending_pick.take()
+                {
+                    return self.backup_share_message(ShareMessage::Pick(id));
+                }
+            }
+            ShareMessage::OpenFor(id) => {
+                share.pending_pick = Some(id);
+                return self.backup_share_resume();
+            }
+            ShareMessage::Pick(id) => {
+                let Some(files) = share.files.iter().find(|files| files.id == id).cloned() else {
+                    return Task::none();
+                };
+                let Some(form) = share.form.as_mut().filter(|form| !form.working) else {
+                    return Task::none();
+                };
+                let host = if demo {
+                    "enzimos-laptop".into()
+                } else {
+                    hostname()
+                };
+                let suggested = ShareInput::suggested(&RemoteShare::default(), &host).folder;
+                // The share already in use keeps its folder.
+                let folder = if remote.configured() && files.matches(&remote.server, &remote.share)
+                {
+                    remote.folder
+                } else if files.folder.is_empty() {
+                    suggested
+                } else {
+                    format!("{}/{suggested}", files.folder)
+                };
+                form.input = ShareInput {
+                    server: files.server.clone(),
+                    share: files.share.clone(),
+                    folder,
+                    user: files.user.clone(),
+                    domain: files.domain.clone(),
+                };
+                form.more = !files.domain.is_empty();
+                form.picked = Some(id.clone());
+                form.password = SecretText::new(String::new());
+                form.password_from_files = false;
+                form.error = None;
+                share.connect_error = None;
+                if demo {
+                    return Task::done(send(ShareMessage::PickedPassword(
+                        id,
+                        Some(SecretText::new("demo-password".into())),
+                    )));
+                }
+                return Task::perform(files_shares::password(files), move |password| {
+                    send(ShareMessage::PickedPassword(id, password))
+                });
+            }
+            ShareMessage::PickedPassword(id, password) => {
+                if let Some(form) = share
+                    .form
+                    .as_mut()
+                    .filter(|form| form.picked.as_deref() == Some(id.as_str()))
+                    && let Some(password) = password
+                    && form.password.expose_secret().is_empty()
+                {
+                    form.password = password;
+                    form.password_from_files = true;
+                }
+            }
+            ShareMessage::ConnectAtLogin(id) => {
+                if share.connecting.is_some() {
+                    return Task::none();
+                }
+                share.connecting = Some(id.clone());
+                share.connect_error = None;
+                if demo {
+                    return Task::done(send(ShareMessage::ConnectedAtLogin(id, Ok(()))));
+                }
+                return Task::perform(files_shares::connect_at_login(id.clone()), move |result| {
+                    send(ShareMessage::ConnectedAtLogin(id, result))
+                });
+            }
+            ShareMessage::ConnectedAtLogin(id, result) => {
+                share.connecting = None;
+                match result {
+                    Ok(()) => {
+                        if let Some(files) = share.files.iter_mut().find(|files| files.id == id) {
+                            files.auto_connect = true;
+                        }
+                        if !demo {
+                            return self.backup_files_read();
+                        }
+                    }
+                    Err(error) => share.connect_error = Some(error),
+                }
             }
             ShareMessage::Removed(result) => {
                 share.removing = false;
@@ -373,8 +562,10 @@ impl SettingsApp {
             state => crate::settings_app::settings_row(tr("shell-network-share"))
                 .subtitle(if state == "invalid" {
                     tr("shell-share-invalid")
-                } else {
+                } else if safety.local_configured {
                     tr("shell-share-not-set-up")
+                } else {
+                    tr("shell-share-not-set-up-primary")
                 })
                 .icon("network")
                 .control(small(
@@ -385,6 +576,12 @@ impl SettingsApp {
                 .into_element(),
         };
         rows = rows.push(row);
+        if remote.configured()
+            && let Some(files) = share.files_match(remote)
+            && !files.connects_automatically()
+        {
+            rows = rows.push(self.backup_files_warning_row(files, writes));
+        }
         if remote.configured()
             && let Some(tested) = &share.tested
         {
@@ -455,6 +652,122 @@ impl SettingsApp {
         rows.into()
     }
 
+    fn backup_files_connect_button<'a>(
+        &'a self,
+        files: &FilesShare,
+        writes: bool,
+    ) -> Element<'a, Parent> {
+        let share = &self.system.backups.share;
+        let connecting = share.connecting.as_deref() == Some(files.id.as_str());
+        enz_button(
+            if connecting {
+                tr("shell-files-share-connecting")
+            } else {
+                tr("shell-files-share-connect-at-login")
+            },
+            send(ShareMessage::ConnectAtLogin(files.id.clone())),
+        )
+        .kind(ButtonKind::Secondary)
+        .size(ButtonSize::Sm)
+        .id("backup-files-connect".into())
+        .enabled(writes && share.connecting.is_none())
+        .into_element()
+    }
+
+    fn backup_files_warning_row<'a>(
+        &'a self,
+        files: &FilesShare,
+        writes: bool,
+    ) -> Element<'a, Parent> {
+        let share = &self.system.backups.share;
+        crate::settings_app::settings_row(tr("shell-files-share-not-automatic"))
+            .subtitle(
+                share
+                    .connect_error
+                    .clone()
+                    .unwrap_or_else(|| tr("shell-files-share-not-automatic-detail").to_owned()),
+            )
+            .subtitle_wrap(true)
+            .icon("triangle-alert")
+            .id_prefix("backup-files-warning")
+            .control(self.backup_files_connect_button(files, writes))
+            .into_element()
+    }
+
+    fn backup_files_picker<'a>(&'a self, form: &'a Form) -> Option<Element<'a, Parent>> {
+        let share = &self.system.backups.share;
+        if share.files.is_empty() {
+            return None;
+        }
+        let enabled = !form.working;
+        let mut list = column![
+            enz_text(tr("shell-files-shares"))
+                .size(enzui_widgets::enz_text::TextSize::Caption)
+                .weight_rung(enzui_theme::WeightRung::Semibold)
+                .into_element()
+        ]
+        .spacing(2);
+        for files in &share.files {
+            let picked = form.picked.as_deref() == Some(files.id.as_str());
+            let address = backup_remote::address(&files.server, &files.share, &files.folder);
+            list = list.push(
+                crate::settings_app::settings_row(files.label.clone())
+                    .subtitle(format!("{address} · {}", files_state(files)))
+                    .icon(if picked { "circle-check" } else { "network" })
+                    .id_prefix(format!("backup-files-{}", files.id))
+                    .control(
+                        enz_button(
+                            if picked {
+                                tr("shell-files-share-chosen")
+                            } else {
+                                tr("shell-files-share-use")
+                            },
+                            send(ShareMessage::Pick(files.id.clone())),
+                        )
+                        .kind(if picked {
+                            ButtonKind::Ghost
+                        } else {
+                            ButtonKind::Secondary
+                        })
+                        .id(format!("backup-files-use-{}", files.id).into())
+                        .size(ButtonSize::Sm)
+                        .enabled(enabled && !picked)
+                        .into_element(),
+                    )
+                    .into_element(),
+            );
+        }
+        if let Some(files) = form
+            .picked
+            .as_deref()
+            .and_then(|id| share.files.iter().find(|files| files.id == id))
+            && !files.connects_automatically()
+        {
+            list = list.push(
+                iced::widget::container(
+                    enz_banner(tr("shell-files-share-not-automatic"))
+                        .tone(BannerTone::Warning)
+                        .body(share.connect_error.clone().unwrap_or_else(|| {
+                            tr("shell-files-share-not-automatic-detail").to_owned()
+                        }))
+                        .action_text(if share.connecting.is_some() {
+                            tr("shell-files-share-connecting")
+                        } else {
+                            tr("shell-files-share-connect-at-login")
+                        })
+                        .on_action(send(ShareMessage::ConnectAtLogin(files.id.clone())))
+                        .id("backup-files-banner")
+                        .into_element(),
+                )
+                .padding(iced::Padding {
+                    top: 6.0,
+                    ..iced::Padding::ZERO
+                }),
+            );
+        }
+        Some(list.into())
+    }
+
     /// The set-up dialog, while open.
     pub(in crate::settings_app) fn backup_share_dialog<'a>(
         &'a self,
@@ -479,12 +792,16 @@ impl SettingsApp {
                 enabled,
             )
         };
-        let mut body = column![
-            self.caption(if form.needs_repository {
-                tr("shell-share-note-own-password")
-            } else {
-                tr("shell-share-note")
-            }),
+        let mut body = column![self.caption(if form.needs_repository {
+            tr("shell-share-note-own-password")
+        } else {
+            tr("shell-share-note")
+        })]
+        .spacing(12);
+        if let Some(files) = self.backup_files_picker(form) {
+            body = body.push(files);
+        }
+        let fields = column![
             field(
                 Field::Server,
                 current.text("shell-share-server"),
@@ -513,15 +830,23 @@ impl SettingsApp {
                 &form.input.user,
                 "backup-share-user"
             ),
-            secret(
-                Secret::Share,
-                current.text("shell-share-password"),
-                form.password.expose_secret(),
-                "backup-share-password"
-            )
-            .into_element(),
+            {
+                let password = secret(
+                    Secret::Share,
+                    current.text("shell-share-password"),
+                    form.password.expose_secret(),
+                    "backup-share-password",
+                );
+                if form.password_from_files {
+                    password.description(current.text("shell-files-share-password-filled"))
+                } else {
+                    password
+                }
+                .into_element()
+            },
         ]
         .spacing(12);
+        body = body.push(fields);
         if form.needs_repository {
             let entered = !form.repository.expose_secret().is_empty();
             let invalid = entered && !backup_setup_password_ok(&form.repository);

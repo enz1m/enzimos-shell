@@ -41,6 +41,8 @@ pub(super) struct Backups {
     recovery_notice: Option<String>,
     setup: setup::Setup,
     share: share::Share,
+    // When the status of a backup running elsewhere was last asked.
+    running_checked: Option<std::time::Instant>,
 }
 
 struct RestoreForm {
@@ -99,6 +101,12 @@ pub(in crate::settings_app) enum BackupsMessage {
     RecoveryConfirmed(Result<(), String>),
     Setup(setup::SetupMessage),
     Share(share::ShareMessage),
+    RunningChecked(Option<serde_json::Value>),
+}
+
+/// Opens the network share set-up for a Files location.
+pub(in crate::settings_app) fn share_for(id: String) -> Parent {
+    send(BackupsMessage::Share(share::ShareMessage::OpenFor(id)))
 }
 
 pub(super) fn share_host(event: enzui_widgets::modal_host::ModalHostEvent) -> Parent {
@@ -173,8 +181,46 @@ impl SettingsApp {
             || (!force && (state.restore.is_some() || state.retention.is_some()))
     }
 
+    /// While a backup started elsewhere runs, only its status is asked:
+    /// listing recovery points would wait on the backup's lock.
+    pub(super) fn backup_running_poll(&mut self) -> Task<Parent> {
+        let state = &mut self.system.backups;
+        if self.system.backend.demo
+            || state
+                .running_checked
+                .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(5))
+        {
+            return Task::none();
+        }
+        state.running_checked = Some(std::time::Instant::now());
+        Task::perform(
+            async {
+                let backend = enzui_shell::system_settings::enzimos::Backend::connect().await?;
+                backend.query("backups").await.ok()
+            },
+            |status| send(BackupsMessage::RunningChecked(status)),
+        )
+    }
+
     pub(super) fn backups_message(&mut self, message: BackupsMessage) -> Task<Parent> {
         let message = match message {
+            BackupsMessage::RunningChecked(status) => {
+                let Some(status) = status else {
+                    return Task::none();
+                };
+                let running = enzui_shell::backup_activity::Running::from_status(&status);
+                let ended = running.is_none();
+                if let Some(Reading::Safety(Backed::Ready(safety))) =
+                    self.system.readings.get_mut(&Panel::Safety)
+                {
+                    safety.running = running;
+                }
+                return if ended {
+                    self.read_system(true)
+                } else {
+                    Task::none()
+                };
+            }
             BackupsMessage::Setup(message) => return self.backup_setup_message(message),
             BackupsMessage::Share(message) => return self.backup_share_message(message),
             message => message,
@@ -182,6 +228,7 @@ impl SettingsApp {
         let safety = matches!(
             message,
             BackupsMessage::Restore
+                | BackupsMessage::RecoveryDeliver(_)
                 | BackupsMessage::EditRetention(Some(_))
                 | BackupsMessage::ApplyRetention
         )
@@ -191,7 +238,9 @@ impl SettingsApp {
         let backend = self.system.backend.clone();
         let state = &mut self.system.backups;
         match message {
-            BackupsMessage::Setup(_) | BackupsMessage::Share(_) => unreachable!(),
+            BackupsMessage::Setup(_)
+            | BackupsMessage::Share(_)
+            | BackupsMessage::RunningChecked(_) => unreachable!(),
             BackupsMessage::RecoveryDeliver(delivery) => {
                 if state.recovery_busy {
                     return Task::none();
@@ -201,7 +250,14 @@ impl SettingsApp {
                 state.recovery_delivery = None;
                 state.recovery_notice = None;
                 return Task::perform(
-                    async move { backend.deliver_backup_recovery(delivery).await },
+                    async move {
+                        backend
+                            .deliver_backup_recovery(
+                                delivery,
+                                safety.and_then(|safety| safety.recovery_exclude_uuid),
+                            )
+                            .await
+                    },
                     |result| send(BackupsMessage::RecoveryDelivered(result)),
                 );
             }

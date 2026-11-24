@@ -700,7 +700,7 @@ fn demo_safety() -> enzimos::Safety {
         point(1, 53, Place::Both, 20 << 30),
         point(9, 24 * 9, Place::Remote, 19 << 30),
     ];
-    enzimos::Safety {
+    let mut safety = enzimos::Safety {
         home_history: true,
         home_history_state: "active".into(),
         root_snapshots: Some(system.len() as u64),
@@ -771,5 +771,30 @@ fn demo_safety() -> enzimos::Safety {
         budget_over: false,
         pending_removals: 1,
         destination_available: std::env::var_os("ENZUI_DEMO_BACKUP_WAITING").is_none(),
+        primary: Some("drive".into()),
+        primary_reported: true,
+        recovery_exclude_uuid: None,
+        // ENZUI_DEMO_BACKUP_RUNNING=1 shows a backup started elsewhere.
+        running: std::env::var_os("ENZUI_DEMO_BACKUP_RUNNING")
+            .is_some()
+            .then(|| crate::backup_activity::Running {
+                since: chrono::Utc::now().timestamp() - 90,
+                phase: "transferring".into(),
+                target: "drive".into(),
+            }),
+    };
+    // ENZUI_DEMO_BACKUP_DRIVE=none: backups go only to the network share.
+    if std::env::var("ENZUI_DEMO_BACKUP_DRIVE").as_deref() == Ok("none") {
+        safety.local_configured = false;
+        safety.destination_label = None;
+        safety.destination_free = None;
+        safety.local_cleanup = None;
+        safety.primary = Some("share".into());
     }
+    // ENZUI_DEMO_BACKUP_STALE_FAILURE=1: a failure older than the last success.
+    if std::env::var_os("ENZUI_DEMO_BACKUP_STALE_FAILURE").is_some() {
+        safety.run_state = "failed".into();
+        safety.run_code = Some("backup-destination-absent".into());
+    }
+    safety
 }

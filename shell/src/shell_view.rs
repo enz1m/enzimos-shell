@@ -43,6 +43,7 @@ impl Shell {
                 }),
             iced::time::every(self.settings_tick_period()).map(|_| Message::SettingsTick),
             enzui_shell::backup_notices::subscription().map(|()| Message::BackupCheck),
+            enzui_shell::backup_activity::subscription().map(|()| Message::BackupCheck),
             enzui_shell::desktop_glass::luminance_changes().map(|()| Message::GlassBackdrop(false)),
             window::events().map(|(id, event)| Message::Window(id, event)),
             iced::event::listen_with(|event, status, id| match (event, status) {

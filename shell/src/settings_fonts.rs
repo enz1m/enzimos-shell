@@ -155,6 +155,7 @@ impl SettingsApp {
                     .focus_on_mount(true)
                     .into_element(),
                 enz_button(tr("shell-cancel"), Message::FontQuery(None))
+                    .id("font-query-cancel".into())
                     .kind(ButtonKind::Plain)
                     .into_element(),
             ]

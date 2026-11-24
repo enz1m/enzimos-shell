@@ -156,3 +156,59 @@ fn settings_app_behaviour() {
         assert_eq!(app.settings.fonts.weight, Weight::Light);
     }
 }
+
+#[test]
+fn settings_pages_publish_routable_controls() {
+    use enzui_core::collect::SemanticsCollector;
+    use iced::advanced::{
+        layout::{Limits, Measure as _},
+        renderer,
+        widget::Tree,
+    };
+    use iced::{Rectangle, Size};
+
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::at(directory.path().join("settings.json")).unwrap();
+    let mut app = SettingsApp::model(store);
+    app.layout_preview = true;
+    app.wallpaper.supported = true;
+    app.system.platform = Some(enzui_shell::platform::Platform::everything());
+    let renderer = iced::futures::executor::block_on(<iced::Renderer as renderer::Headless>::new(
+        renderer::Settings::default(),
+        Some("tiny-skia"),
+    ))
+    .unwrap();
+    let size = Size::new(900.0, 100_000.0);
+    let mut failures = Vec::new();
+    for category in enzui_shell::settings_catalog::Category::ALL {
+        app.page = category;
+        let mut page = app.settings_page();
+        let widget = page.as_widget_mut();
+        let mut tree = Tree::new(&*widget);
+        tree.diff(&mut *widget);
+        let node = widget.measure_snapshot(&mut tree, &renderer, &Limits::new(Size::ZERO, size));
+        let mut semantics = SemanticsCollector::new();
+        widget.operate(
+            &mut tree,
+            iced::advanced::Layout::of(&node),
+            &Rectangle::with_size(size),
+            &renderer,
+            &mut semantics,
+        );
+        let anonymous: Vec<_> = semantics
+            .collected()
+            .iter()
+            .filter(|node| node.id.is_none() && node.semantics.advertises_action())
+            .map(|node| (node.semantics.role, node.semantics.label.clone()))
+            .collect();
+        let duplicates = semantics.duplicate_ids();
+        if !anonymous.is_empty() || !duplicates.is_empty() {
+            failures.push(format!("{category:?}: {anonymous:?} {duplicates:?}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "Settings pages published unroutable controls:\n{}",
+        failures.join("\n")
+    );
+}

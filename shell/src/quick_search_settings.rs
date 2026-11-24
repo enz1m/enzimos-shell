@@ -428,6 +428,7 @@ impl SettingsApp {
                             .icon(if excluded { "folder-x" } else { "folder" })
                             .control(
                                 enzui_widgets::toolbar_icon::enz_toolbar_icon("x", change(removal))
+                                    .id(format!("quick-search-root-remove-{path}").into())
                                     .aria_label(tr!("shell-remove-3", "arg0" => path.clone()))
                                     .tooltip(tr("shell-remove"))
                                     .enabled(self.controls_live())
@@ -525,6 +526,7 @@ impl SettingsApp {
                             "x",
                             change(Change::Alias(key.clone(), None)),
                         )
+                        .id(format!("quick-search-alias-remove-{key}").into())
                         .aria_label(tr!("shell-remove-3", "arg0" => target.clone()))
                         .tooltip(tr("shell-remove"))
                         .enabled(enabled)
@@ -544,6 +546,7 @@ impl SettingsApp {
                             "x",
                             change(Change::Favorite(target.clone(), false)),
                         )
+                        .id(format!("quick-search-favorite-remove-{target}").into())
                         .aria_label(tr!("shell-remove-3", "arg0" => target.clone()))
                         .tooltip(tr("shell-remove"))
                         .enabled(enabled)

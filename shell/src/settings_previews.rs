@@ -326,6 +326,7 @@ impl SettingsApp {
                         tr("shell-use-the-default-everywhere"),
                         Message::Change(Change::DesktopTilingReset)
                     )
+                    .id("tiling-reset-default".into())
                     .kind(ButtonKind::Quiet)
                     .enabled(!self.closing)
                     .into_element(),
@@ -374,8 +375,9 @@ impl SettingsApp {
         } else {
             4
         });
-        let action = |label: &'static str, kind: ButtonKind| {
+        let action = |key: &str, label: &'static str, kind: ButtonKind| {
             enz_button(label, Message::PreviewNotification)
+                .id(format!("notification-preview-{key}").into())
                 .kind(kind)
                 .size(ButtonSize::Sm)
                 .enabled(!self.closing && !self.preview_notification_busy)
@@ -407,8 +409,8 @@ impl SettingsApp {
                 image: None,
                 dismiss: Some(enz_icon("x").size(14.0).into_element()),
                 actions: vec![vec![
-                    action(tr("shell-snooze"), ButtonKind::Secondary),
-                    action(tr("shell-open"), ButtonKind::Secondary),
+                    action("snooze", tr("shell-snooze"), ButtonKind::Secondary),
+                    action("open", tr("shell-open"), ButtonKind::Secondary),
                 ]],
                 height: None,
                 progress: None,

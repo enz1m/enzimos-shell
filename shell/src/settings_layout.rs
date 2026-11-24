@@ -395,6 +395,7 @@ pub fn view<'a, Message: Clone + 'a>(
         row![
             space::horizontal(),
             enz_button(tr("shell-reset-bar-layout"), action(Action::Reset))
+                .id("bar-layout-reset".into())
                 .kind(ButtonKind::Quiet)
                 .icon("rotate-ccw")
                 .enabled(enabled && reset_enabled)

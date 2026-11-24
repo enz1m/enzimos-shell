@@ -536,6 +536,7 @@ impl SettingsApp {
                 msg(Message::Picture(account.uid))
             )
             .icon("image")
+            .id(format!("user-picture-{}", account.uid).into())
             .kind(ButtonKind::Secondary)
             .size(enzui_widgets::button::ButtonSize::Sm)
             .enabled(edit && !self.wallpaper.pending())
@@ -550,6 +551,7 @@ impl SettingsApp {
                     tr("shell-use-initials"),
                     msg(Message::Apply(Action::Avatar(account.uid, String::new()))),
                 )
+                .id(format!("user-initials-{}", account.uid).into())
                 .kind(ButtonKind::Plain)
                 .size(enzui_widgets::button::ButtonSize::Sm)
                 .enabled(edit)
@@ -631,6 +633,7 @@ impl SettingsApp {
                     .icon("lock-keyhole")
                     .control(
                         enz_button(tr("shell-unlock"), msg(Message::Unlock))
+                            .id("users-unlock".into())
                             .kind(ButtonKind::Secondary)
                             .size(enzui_widgets::button::ButtonSize::Sm)
                             .enabled(writable)
@@ -687,6 +690,7 @@ impl SettingsApp {
                             tr("shell-set-password"),
                             msg(Message::PasswordDialog(Some(account.uid))),
                         )
+                        .id(format!("user-set-password-{}", account.uid).into())
                         .kind(ButtonKind::Secondary)
                         .size(enzui_widgets::button::ButtonSize::Sm)
                         .enabled(writable && !editing_password)
@@ -700,9 +704,11 @@ impl SettingsApp {
                     row![
                         iced::widget::Space::new().width(Length::Fill),
                         enz_button(tr("shell-cancel"), msg(Message::PasswordDialog(None)))
+                            .id("user-password-cancel".into())
                             .kind(ButtonKind::Secondary)
                             .into_element(),
                         enz_button(tr("shell-save-password"), msg(Message::SavePassword))
+                            .id("user-password-save".into())
                             .enabled(writable && fields.valid())
                             .into_element()
                     ]
@@ -718,6 +724,7 @@ impl SettingsApp {
                             tr("shell-remove-2"),
                             msg(Message::Remove(Some(account.uid))),
                         )
+                        .id(format!("user-remove-{}", account.uid).into())
                         .kind(ButtonKind::DestructiveOutlined)
                         .size(enzui_widgets::button::ButtonSize::Sm)
                         .enabled(writable && data.removable(account.uid) && u.confirm.is_none())
@@ -732,9 +739,11 @@ impl SettingsApp {
                 row![
                     iced::widget::Space::new().width(Length::Fill),
                     enz_button(tr("shell-cancel"), msg(Message::Remove(None)))
+                        .id("user-remove-cancel".into())
                         .kind(ButtonKind::Secondary)
                         .into_element(),
                     enz_button(tr("shell-remove-account-2"), msg(Message::ConfirmRemove))
+                        .id("user-remove-confirm".into())
                         .kind(ButtonKind::Destructive)
                         .enabled(writable && admin && data.removable(account.uid))
                         .into_element()
@@ -768,7 +777,7 @@ impl SettingsApp {
             };
             return body
                 .push(self.user_section("users/profile",enz_text(tr("shell-select-an-available-account-to-edit-its-profile")).into_element()).title(tr("shell-profile")).into_element())
-                .push(self.user_section("users/accounts",column![enz_text(notice).into_element(),enz_button(enzui_shell::i18n::tr("shell-retry"),msg(Message::Refresh)).enabled(!u.busy).into_element()].spacing(10)).title(tr("shell-accounts")).into_element())
+                .push(self.user_section("users/accounts",column![enz_text(notice).into_element(),enz_button(enzui_shell::i18n::tr("shell-retry"),msg(Message::Refresh)).id("users-retry".into()).enabled(!u.busy).into_element()].spacing(10)).title(tr("shell-accounts")).into_element())
                 .push(self.user_section("users/new",enz_text(tr("shell-account-creation-needs-the-system-account-service-and-administrator-authoriz")).into_element()).title(tr("shell-add-user")).into_element()).into();
         };
         let writable =
@@ -892,9 +901,11 @@ impl SettingsApp {
                         row![
                             iced::widget::Space::new().width(Length::Fill),
                             enz_button(tr("shell-cancel"), msg(Message::New(false)))
+                                .id("user-new-cancel".into())
                                 .kind(ButtonKind::Secondary)
                                 .into_element(),
                             enz_button(tr("shell-add-user"), msg(Message::Create))
+                                .id("user-new-create".into())
                                 .enabled(
                                     writable
                                         && user_accounts::valid_name(&n.name)

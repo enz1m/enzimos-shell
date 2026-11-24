@@ -109,6 +109,7 @@ impl SettingsApp {
                                     enzui_shell::i18n::tr("shell-desktop"),
                                     change(SessionChange::LockBackground(None))
                                 )
+                                .id("lock-background-desktop".into())
                                 .kind(ButtonKind::Plain)
                                 .size(ButtonSize::Sm)
                                 .enabled(self.controls_live() && p.background.is_some())
@@ -117,6 +118,7 @@ impl SettingsApp {
                                     enzui_shell::i18n::tr("shell-image-2"),
                                     Message::LockBackgroundChoose
                                 )
+                                .id("lock-background-image".into())
                                 .kind(ButtonKind::Secondary)
                                 .size(ButtonSize::Sm)
                                 .enabled(self.controls_live() && !self.wallpaper.pending())

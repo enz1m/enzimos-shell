@@ -620,6 +620,7 @@ impl SettingsApp {
                         },
                         send(Message::ToggleAdvanced),
                     )
+                    .id("local-ai-advanced".into())
                     .kind(ButtonKind::Secondary)
                     .into_element(),
                 )
@@ -751,8 +752,10 @@ impl SettingsApp {
         let account_button = |signed_in: bool| {
             if signed_in {
                 enz_button(tr("shell-sign-out"), send(Message::SignOut))
+                    .id("local-ai-chatgpt-sign-out".into())
             } else {
                 enz_button(tr("shell-sign-in"), send(Message::SignIn))
+                    .id("local-ai-chatgpt-sign-in".into())
             }
             .kind(ButtonKind::Secondary)
             .enabled(editing)
@@ -784,6 +787,7 @@ impl SettingsApp {
                         tr("shell-remove"),
                         send(Message::Edit(ProviderEdit::Remove(provider.id.clone()))),
                     )
+                    .id(format!("local-ai-provider-remove-{}", provider.id).into())
                     .kind(ButtonKind::Secondary)
                     .enabled(editing)
                     .into_element(),
@@ -814,6 +818,7 @@ impl SettingsApp {
         let mut names: Vec<String> = PRESETS.iter().map(|(name, _)| (*name).to_owned()).collect();
         names.push(tr("shell-another-provider").into());
         let preset = enz_combo_box("", names, None, |_| ParentMessage::Noop)
+            .id("local-ai-provider-preset".into())
             .aria_label(tr("shell-provider"))
             .on_select_index(|index| send(Message::Preset(index)))
             .selected_index((!state.url.is_empty()).then_some(state.preset))
@@ -845,6 +850,7 @@ impl SettingsApp {
             key: Some(state.key.clone()).filter(|k| !k.trim().is_empty()),
         });
         let add = enz_button(tr("shell-add"), send(Message::Edit(edit)))
+            .id("local-ai-provider-add".into())
             .kind(ButtonKind::Secondary)
             .enabled(editing && ready)
             .into_element();
@@ -925,6 +931,7 @@ impl SettingsApp {
                 };
                 row = row.control(
                     enz_button(action, send(Message::Fetch(offer.id.clone())))
+                        .id(format!("local-ai-model-fetch-{}", offer.id).into())
                         .kind(ButtonKind::Secondary)
                         .enabled(live && !offer.needs_runtime)
                         .into_element(),
@@ -989,6 +996,7 @@ impl SettingsApp {
                 tr("shell-model-browse"),
                 ParentMessage::FileChooser(super::settings_file_chooser::Message::OpenModel),
             )
+            .id("local-ai-model-import".into())
             .kind(enzui_widgets::button::ButtonKind::Secondary)
             .enabled(!state.model_busy() && self.controls_live())
             .into_element();
@@ -1045,6 +1053,7 @@ impl SettingsApp {
                     None,
                     |_| ParentMessage::Noop,
                 )
+                .id("local-ai-speech-model".into())
                 .aria_label(tr("shell-speech-model"))
                 .on_select_index(move |index| {
                     models.get(index).map_or(ParentMessage::Noop, |id| {
@@ -1073,6 +1082,7 @@ impl SettingsApp {
                                 super::settings_file_chooser::Message::OpenModelFolder,
                             ),
                         )
+                        .id("local-ai-speech-import".into())
                         .kind(ButtonKind::Secondary)
                         .enabled(!state.model_busy() && self.controls_live())
                         .into_element(),

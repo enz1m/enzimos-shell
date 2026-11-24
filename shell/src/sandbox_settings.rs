@@ -406,6 +406,7 @@ impl SettingsApp {
                             tr("shell-refresh-review"),
                             ParentMessage::Sandbox(Message::Refresh(self.sandbox.generation))
                         )
+                        .id("sandbox-refresh".into())
                         .size(ButtonSize::Sm)
                         .into_element()
                     ]
@@ -424,7 +425,7 @@ impl SettingsApp {
         let mut body = column![].spacing(4);
         if let Some(error) = &self.sandbox.error {
             body = body.push(note(tr!("shell-showing-the-last-confirmed-review-refresh-before-another-change", "arg0" => error.clone())))
-                .push(enz_button(tr("shell-refresh-review"), ParentMessage::Sandbox(Message::Refresh(generation))).size(ButtonSize::Sm).enabled(self.sandbox.pending.is_none()).into_element());
+                .push(enz_button(tr("shell-refresh-review"), ParentMessage::Sandbox(Message::Refresh(generation))).id("sandbox-refresh-stale".into()).size(ButtonSize::Sm).enabled(self.sandbox.pending.is_none()).into_element());
         }
         if self.sandbox.pending.is_some() {
             body = body.push(note(
@@ -470,6 +471,7 @@ impl SettingsApp {
                         tr("shell-refresh-review"),
                         ParentMessage::Sandbox(Message::Refresh(generation)),
                     )
+                    .id("sandbox-refresh-portals".into())
                     .size(ButtonSize::Sm)
                     .enabled(!self.sandbox.busy && self.sandbox.pending.is_none())
                     .into_element(),
@@ -509,6 +511,7 @@ impl SettingsApp {
                                         None
                                     ))
                                 )
+                                .id(format!("sandbox-forget-{}-{}", grant.table, grant.resource).into())
                                 .kind(ButtonKind::Quiet)
                                 .size(ButtonSize::Sm)
                                 .enabled(
@@ -660,6 +663,7 @@ impl SettingsApp {
                                     edit,
                                 )),
                             )
+                            .id(format!("sandbox-entry-{category:?}-{}", entry.value).into())
                             .kind(ButtonKind::Secondary)
                             .size(ButtonSize::Sm)
                             .enabled(live)
@@ -708,6 +712,7 @@ impl SettingsApp {
                 },
                 ParentMessage::Sandbox(Message::Advanced(!self.sandbox.advanced)),
             )
+            .id("sandbox-advanced".into())
             .kind(ButtonKind::Quiet)
             .size(ButtonSize::Sm)
             .icon(if self.sandbox.advanced {
@@ -754,6 +759,7 @@ impl SettingsApp {
                             snapshot.review_token.clone(),
                         )),
                     )
+                    .id("sandbox-reset".into())
                     .kind(ButtonKind::Secondary)
                     .size(ButtonSize::Sm)
                     .icon("rotate-ccw")

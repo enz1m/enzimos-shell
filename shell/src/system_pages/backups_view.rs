@@ -261,6 +261,7 @@ impl SettingsApp {
                         label,
                         send(BackupsMessage::AllSnapshots(!state.all_snapshots)),
                     )
+                    .id("backups-all-snapshots".into())
                     .kind(ButtonKind::Ghost)
                     .size(ButtonSize::Sm)
                     .into_element(),
@@ -276,7 +277,7 @@ impl SettingsApp {
                 crate::settings_app::settings_row(tr("shell-go-back-to-an-earlier-system"))
                     .subtitle(tr("shell-each-update-is-kept-as-its-own-version-start-an-earlier-one-from-updates-you"))
                     .icon("rotate-ccw")
-                    .control(enz_button(tr("shell-versions"), Parent::Page(enzui_shell::settings_catalog::Category::Updates)).kind(ButtonKind::Secondary).size(ButtonSize::Sm).into_element())
+                    .control(enz_button(tr("shell-versions"), Parent::Page(enzui_shell::settings_catalog::Category::Updates)).id("backups-versions".into()).kind(ButtonKind::Secondary).size(ButtonSize::Sm).into_element())
                     .into_element(),
             );
         }
@@ -400,6 +401,7 @@ impl SettingsApp {
         let buttons = row![
             iced::widget::space::horizontal(),
             enz_button(tr("shell-cancel"), send(BackupsMessage::CloseRestore))
+                .id("backups-restore-cancel".into())
                 .kind(ButtonKind::Ghost)
                 .size(ButtonSize::Sm)
                 .enabled(!working)
@@ -515,6 +517,7 @@ impl SettingsApp {
                         !self.system.backups.cleanup_details,
                     )),
                 )
+                .id("backups-cleanup-details".into())
                 .kind(ButtonKind::Quiet)
                 .size(ButtonSize::Sm)
                 .into_element(),
@@ -612,6 +615,7 @@ impl SettingsApp {
                     tr("shell-cancel"),
                     send(BackupsMessage::EditRetention(None))
                 )
+                .id("backups-retention-cancel".into())
                 .kind(ButtonKind::Ghost)
                 .size(ButtonSize::Sm)
                 .enabled(!asking)
@@ -1048,6 +1052,7 @@ impl SettingsApp {
                 rows = rows.push(
                     iced::widget::container(
                         enz_button(label, send(BackupsMessage::AllPoints(!state.all_points)))
+                            .id("backups-all-points".into())
                             .kind(ButtonKind::Ghost)
                             .size(ButtonSize::Sm)
                             .into_element(),

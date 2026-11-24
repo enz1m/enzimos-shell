@@ -869,6 +869,7 @@ impl SettingsApp {
                     })
                     .into_element(),
                 enzui_widgets::button::enz_button(tr("shell-cancel"), set_query(None))
+                    .id("datetime-search-cancel".into())
                     .kind(enzui_widgets::button::ButtonKind::Plain)
                     .into_element(),
             ]
@@ -995,6 +996,7 @@ impl SettingsApp {
                                 tr("shell-cancel"),
                                 Parent::System(Message::Form(Form::Hostname(None)))
                             )
+                            .id("hostname-cancel".into())
                             .kind(enzui_widgets::button::ButtonKind::Plain)
                             .into_element(),
                             enzui_widgets::button::enz_button(

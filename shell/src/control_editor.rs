@@ -285,6 +285,7 @@ impl SettingsApp {
                         .kind(ButtonKind::Secondary)
                         .size(ButtonSize::Sm)
                         .icon("plus")
+                        .id(format!("controls-add-{}", action.key()).into())
                         .enabled(!self.closing)
                         .into_element(),
                     )
@@ -474,6 +475,7 @@ impl SettingsApp {
                     "eye-off",
                     Parent::Controls(Message::Visible(action, false, self.settings.quick_actions))
                 )
+                .id(format!("controls-hide-{}", action.key()).into())
                 .aria_label(enzui_shell::tr!("shell-a11y-hide", "arg0" => enzui_shell::i18n::argument(&(action.label()))))
                 .tooltip(tr("shell-hide-control"))
                 .enabled(!self.closing)
@@ -539,6 +541,7 @@ impl SettingsApp {
             )
             .kind(ButtonKind::Quiet)
             .icon("rotate-ccw")
+            .id("controls-reset".into())
             .enabled(!self.closing)
             .into_element(),
         ])

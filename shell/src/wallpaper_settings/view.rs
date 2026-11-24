@@ -152,10 +152,12 @@ impl SettingsApp {
                                         enzui_shell::i18n::tr("shell-cancel"),
                                         message(Message::CancelColor)
                                     )
+                                    .id("wallpaper-color-cancel".into())
                                     .kind(ButtonKind::Quiet)
                                     .enabled(enabled)
                                     .into_element(),
                                     enz_button(tr("shell-use-color"), message(Message::ApplyColor))
+                                        .id("wallpaper-color-apply".into())
                                         .icon("check")
                                         .enabled(
                                             enabled && parse_color(&self.wallpaper.color).is_some()
@@ -222,6 +224,7 @@ impl SettingsApp {
                     },
                     message(Message::RefreshGallery)
                 )
+                .id("wallpaper-gallery-refresh".into())
                 .kind(ButtonKind::Quiet)
                 .icon("refresh-cw")
                 .size(ButtonSize::Sm)
@@ -233,6 +236,7 @@ impl SettingsApp {
                 )
                 .into_element(),
                 enz_button(tr("shell-choose-file"), message(Message::Browse))
+                    .id("wallpaper-choose-file".into())
                     .kind(ButtonKind::Quiet)
                     .icon("folder-open")
                     .size(ButtonSize::Sm)
@@ -351,6 +355,7 @@ impl SettingsApp {
         if let Some(error) = &self.wallpaper.status {
             body = body.push(enz_text(error).into_element()).push(
                 enz_button(tr("shell-retry-background"), message(Message::Retry))
+                    .id("wallpaper-retry".into())
                     .kind(ButtonKind::Secondary)
                     .icon("refresh-cw")
                     .enabled(enabled)

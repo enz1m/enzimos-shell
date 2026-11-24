@@ -107,6 +107,7 @@ impl SettingsApp {
                 .id("startup-choices"),
             vec![
                 enz_button(tr("shell-cancel"), Parent::Startup(Message::Close))
+                    .id("startup-cancel".into())
                     .kind(ButtonKind::Secondary)
                     .into_element(),
             ],

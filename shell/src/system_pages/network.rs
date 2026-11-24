@@ -104,7 +104,7 @@ impl SettingsApp {
                         .into_element(),
                     row![
                         iced::widget::Space::new().width(Length::Fill),
-                        enz_button(tr("shell-cancel"), form(Form::Dns(None))).kind(ButtonKind::Plain).into_element(),
+                        enz_button(tr("shell-cancel"), form(Form::Dns(None))).id("network-dns-cancel".into()).kind(ButtonKind::Plain).into_element(),
                         enz_button(enzui_shell::i18n::tr("shell-save"), form(Form::DnsSave)).id("network-dns-save".into()).enabled(writes).into_element(),
                     ]
                     .spacing(8),
@@ -267,6 +267,7 @@ impl SettingsApp {
             row![
                 iced::widget::Space::new().width(Length::Fill),
                 enz_button(tr("shell-cancel"), form(Form::Ipv4(None)))
+                    .id("network-ipv4-cancel".into())
                     .kind(ButtonKind::Plain)
                     .enabled(!saving)
                     .into_element(),
@@ -368,6 +369,7 @@ impl SettingsApp {
                 if join.revealed { "eye-off" } else { "eye" },
                 form(Form::JoinReveal),
             )
+            .id("network-join-reveal".into())
             .aria_label(if join.revealed {
                 enzui_shell::i18n::current().text("shell-hide-password")
             } else {
@@ -392,6 +394,7 @@ impl SettingsApp {
             row![
                 iced::widget::Space::new().width(Length::Fill),
                 enz_button(tr("shell-cancel"), form(Form::Join(None)))
+                    .id("network-join-cancel".into())
                     .kind(ButtonKind::Plain)
                     .enabled(!joining)
                     .into_element(),
@@ -478,6 +481,7 @@ impl SettingsApp {
             if point.saved {
                 trailing = trailing.push(
                     enz_toolbar_icon("x", Self::request(Request::Forget(point.ssid.clone())))
+                        .id(format!("wifi-forget-{}", point.ssid).into())
                         .aria_label(tr!("shell-forget-2", "arg0" => point.ssid.clone()))
                         .tooltip(tr("shell-forget"))
                         .enabled(self.system_writes())
@@ -721,6 +725,7 @@ impl SettingsApp {
                                         Some(vpn.uuid.clone())
                                     }))
                                 )
+                                .id(format!("vpn-settings-{}", vpn.uuid).into())
                                 .aria_label(enzui_shell::tr!("shell-a11y-options-for", "arg0" => enzui_shell::i18n::argument(&(vpn.name))))
                                 .tooltip(enzui_shell::i18n::tr("shell-options"))
                                 .into_element(),
@@ -804,6 +809,7 @@ impl SettingsApp {
                                 if vpn.active { self.caption(tr("shell-turn-the-vpn-off-to-remove-it")) } else { iced::widget::Space::new().into() },
                                 iced::widget::Space::new().width(Length::Fill),
                                 enz_button(tr("shell-remove-vpn"), Self::request(Request::VpnRemove(vpn.uuid.clone())))
+                                    .id(format!("vpn-remove-{}", vpn.uuid).into())
                                     .kind(ButtonKind::DestructiveOutlined)
                                     .size(ButtonSize::Sm)
                                     .enabled(writes && !vpn.active)
@@ -873,6 +879,7 @@ impl SettingsApp {
                                 row![
                                     iced::widget::Space::new().width(Length::Fill),
                                     enz_button(tr("shell-cancel"), form(Form::VpnPath(None)))
+                                        .id("network-vpn-path-cancel".into())
                                         .kind(ButtonKind::Plain)
                                         .into_element(),
                                     enz_button(
@@ -1012,6 +1019,7 @@ impl SettingsApp {
             row![
                 iced::widget::Space::new().width(Length::Fill),
                 enz_button(tr("shell-cancel"), form(Form::VpnManual(false)))
+                    .id("network-vpn-manual-cancel".into())
                     .kind(ButtonKind::Plain)
                     .into_element(),
                 enz_button(
@@ -1094,6 +1102,7 @@ impl SettingsApp {
                             },
                             Self::request(Request::ConnectivityCheck),
                         )
+                        .id("network-connectivity-check".into())
                         .kind(ButtonKind::Secondary)
                         .size(ButtonSize::Sm)
                         .enabled(writes && !checking)
@@ -1113,6 +1122,7 @@ impl SettingsApp {
                                 .into_element(),
                                 iced::widget::Space::new().width(Length::Fill),
                                 enz_button(tr("shell-not-now"), form(Form::PortalDismiss))
+                                    .id("network-portal-dismiss".into())
                                     .kind(ButtonKind::Plain)
                                     .size(ButtonSize::Sm)
                                     .into_element(),

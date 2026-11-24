@@ -350,6 +350,7 @@ impl SettingsApp {
         let busy = state.busy || self.system.backend.demo || !self.system.backend.writes_allowed;
         let button = |label: &'static str, event: PhoneMessage| {
             enz_button(tr(label), message(event))
+                .id(format!("phone-{label}").into())
                 .kind(ButtonKind::Secondary)
                 .size(ButtonSize::Sm)
                 .enabled(!busy)
@@ -440,6 +441,7 @@ impl SettingsApp {
             } else if matches!(&state.network, Some(Err(_))) {
                 access = access.control(
                     enz_button(tr("shell-retry"), message(PhoneMessage::NetworkRefresh))
+                        .id("phone-network-retry".into())
                         .kind(ButtonKind::Secondary)
                         .size(ButtonSize::Sm)
                         .enabled(!state.network_reading && !state.busy)
@@ -516,6 +518,7 @@ impl SettingsApp {
                                     target: pending.code.clone()
                                 }))
                             )
+                            .id(format!("phone-approve-{}", pending.code).into())
                             .kind(ButtonKind::Accent)
                             .size(ButtonSize::Sm)
                             .enabled(!busy)
@@ -613,6 +616,8 @@ impl SettingsApp {
             } else {
                 let key = key.to_owned();
                 let draft_key = key.clone();
+                let (field_id, apply_id) =
+                    (format!("phone-field-{key}"), format!("phone-apply-{key}"));
                 let changed = state.dirty_drafts.contains(&key);
                 let value = state.drafts.get(&key).map_or("", String::as_str);
                 sharing = sharing.push(
@@ -623,6 +628,7 @@ impl SettingsApp {
                                     enz_text_field("", "", value, move |value| message(
                                         PhoneMessage::Draft(draft_key.clone(), value)
                                     ))
+                                    .id(field_id.into())
                                     .enabled(enabled)
                                     .into_element()
                                 )
@@ -631,6 +637,7 @@ impl SettingsApp {
                                     tr("shell-apply"),
                                     message(PhoneMessage::ApplyField(key))
                                 )
+                                .id(apply_id.into())
                                 .kind(ButtonKind::Secondary)
                                 .enabled(enabled && changed)
                                 .size(ButtonSize::Sm)
@@ -656,10 +663,19 @@ impl SettingsApp {
                     crate::settings_app::settings_row(session.app_name.clone())
                         .icon("cast")
                         .subtitle(session.device_name.clone())
-                        .control(button(
-                            "shell-phone-end-session",
-                            PhoneMessage::Ask(Confirm::Close(session.session_id.clone())),
-                        ))
+                        .control(
+                            enz_button(
+                                tr("shell-phone-end-session"),
+                                message(PhoneMessage::Ask(Confirm::Close(
+                                    session.session_id.clone(),
+                                ))),
+                            )
+                            .id(format!("phone-end-session-{}", session.session_id).into())
+                            .kind(ButtonKind::Secondary)
+                            .size(ButtonSize::Sm)
+                            .enabled(!busy)
+                            .into_element(),
+                        )
                         .into_element(),
                 );
             }
@@ -686,10 +702,12 @@ impl SettingsApp {
             row![
                 Space::new().width(iced::Length::Fill),
                 enz_button(tr("shell-cancel"), message(PhoneMessage::Cancel))
+                    .id("phone-confirm-cancel".into())
                     .kind(ButtonKind::Secondary)
                     .size(ButtonSize::Sm)
                     .into_element(),
                 enz_button(tr("shell-continue"), message(PhoneMessage::Confirm))
+                    .id("phone-confirm-continue".into())
                     .kind(ButtonKind::Destructive)
                     .size(ButtonSize::Sm)
                     .enabled(!busy)
@@ -709,6 +727,7 @@ impl SettingsApp {
     ) -> Element<'a, Parent> {
         let small = |label: &'static str, event: PhoneMessage| {
             enz_button(tr(label), message(event))
+                .id(format!("phone-{}-{label}", device.device_id).into())
                 .kind(ButtonKind::Secondary)
                 .size(ButtonSize::Sm)
                 .enabled(!busy)
@@ -729,6 +748,7 @@ impl SettingsApp {
             "x",
             message(PhoneMessage::Ask(Confirm::Forget(device.device_id.clone()))),
         )
+        .id(format!("phone-forget-{}", device.device_id).into())
         .aria_label(enzui_shell::tr!("shell-forget-2", "arg0" => device.name.clone()))
         .tooltip(tr("shell-phone-forget"))
         .enabled(!busy)

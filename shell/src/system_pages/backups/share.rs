@@ -616,6 +616,7 @@ impl SettingsApp {
                     .control(
                         row![
                             enz_button(tr("shell-cancel"), send(ShareMessage::Remove(false)))
+                                .id("backup-share-remove-cancel".into())
                                 .kind(ButtonKind::Secondary)
                                 .size(ButtonSize::Sm)
                                 .enabled(!share.removing)
@@ -943,6 +944,7 @@ impl SettingsApp {
         let footer: Element<'a, Parent> = row![
             iced::widget::space::horizontal(),
             enz_button(tr("shell-cancel"), close.clone())
+                .id("backup-share-form-cancel".into())
                 .kind(ButtonKind::Secondary)
                 .enabled(!form.working)
                 .into_element(),

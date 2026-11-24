@@ -203,6 +203,7 @@ impl SettingsApp {
                     Change::ResetIslandSizing
                 }),
             )
+            .id("shell-style-reset".into())
             .kind(ButtonKind::Quiet)
             .icon("rotate-ccw")
             .enabled(!self.closing)

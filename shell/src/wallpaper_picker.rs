@@ -369,6 +369,7 @@ impl SettingsApp {
                     enzui_shell::i18n::tr("shell-cancel"),
                     message(Message::Cancel(ticket))
                 )
+                .id("wallpaper-picker-cancel".into())
                 .kind(ButtonKind::Quiet)
                 .into_element()
             ]
@@ -378,6 +379,7 @@ impl SettingsApp {
                     enzui_shell::i18n::tr("shell-up"),
                     message(Message::Up(ticket))
                 )
+                .id("wallpaper-picker-up".into())
                 .kind(ButtonKind::Quiet)
                 .icon("arrow-up")
                 .enabled(enabled && picker.folder.parent().is_some())
@@ -398,6 +400,7 @@ impl SettingsApp {
                     enzui_shell::i18n::tr("shell-go"),
                     message(Message::Go(ticket))
                 )
+                .id("wallpaper-picker-go".into())
                 .kind(ButtonKind::Secondary)
                 .enabled(enabled)
                 .into_element()
@@ -434,6 +437,7 @@ impl SettingsApp {
                     },
                     message(Message::Accept(ticket, picker.selected.clone())),
                 )
+                .id("wallpaper-picker-accept".into())
                 .icon(if folder_selected {
                     "folder-open"
                 } else {

@@ -370,6 +370,7 @@ impl SettingsApp {
                         .icon("user")
                         .control(
                             enz_button(tr("shell-done"), Parent::System(Message::ParentalClose))
+                                .id("parental-done".into())
                                 .kind(ButtonKind::Secondary)
                                 .into_element(),
                         )

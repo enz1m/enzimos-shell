@@ -431,6 +431,7 @@ impl SettingsApp {
                         },
                         wrap(SpaceMessage::Exclude(absolute.clone(), !is_excluded)),
                     )
+                    .id(format!("backup-space-exclude-{absolute}").into())
                     .kind(ButtonKind::Secondary)
                     .size(ButtonSize::Sm)
                     .enabled(!state.busy)
@@ -443,6 +444,7 @@ impl SettingsApp {
                         },
                         wrap(SpaceMessage::OpenFolder((!open).then(|| path.clone()))),
                     )
+                    .id(format!("backup-space-folder-{absolute}").into())
                     .kind(ButtonKind::Ghost)
                     .size(ButtonSize::Sm)
                     .into_element();
@@ -486,8 +488,12 @@ impl SettingsApp {
                                             } else {
                                                 tr("shell-exclude-from-backups")
                                             },
-                                            wrap(SpaceMessage::Exclude(absolute, !is_excluded)),
+                                            wrap(SpaceMessage::Exclude(
+                                                absolute.clone(),
+                                                !is_excluded,
+                                            )),
                                         )
+                                        .id(format!("backup-space-exclude-{absolute}").into())
                                         .kind(ButtonKind::Secondary)
                                         .size(ButtonSize::Sm)
                                         .enabled(!state.busy)
@@ -528,6 +534,7 @@ impl SettingsApp {
                             },
                             wrap(SpaceMessage::ShowSkipped(!state.show_skipped)),
                         )
+                        .id("backup-space-skipped".into())
                         .kind(ButtonKind::Ghost)
                         .size(ButtonSize::Sm)
                         .into_element(),
@@ -646,6 +653,7 @@ impl SettingsApp {
                             tr("shell-include-in-backups"),
                             wrap(SpaceMessage::Exclude(path.clone(), false)),
                         )
+                        .id(format!("backup-space-include-{path}").into())
                         .kind(ButtonKind::Secondary)
                         .size(ButtonSize::Sm)
                         .enabled(!state.busy)

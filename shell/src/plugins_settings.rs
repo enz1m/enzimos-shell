@@ -700,6 +700,7 @@ impl SettingsApp {
                     },
                     message(Message::CatalogCheck)
                 )
+                .id("plugins-check-catalog".into())
                 .icon("refresh-cw")
                 .enabled(enabled && !self.plugins.catalog_busy)
                 .into_element(),
@@ -716,10 +717,12 @@ impl SettingsApp {
                     let action: Element<'_, AppMessage> = match installed {
                         Some(version) if version == entry.version => enz_text(tr("shell-installed")).muted_on(palette.surface).into_element(),
                         Some(_) => enz_button(tr("shell-review-update"), message(Message::CatalogReview(entry.clone())))
+                            .id(format!("plugins-catalog-review-{}", entry.id).into())
                             .icon("shield-check")
                             .enabled(enabled && !self.plugins.review_busy)
                             .into_element(),
                         None => enz_button(tr("shell-review"), message(Message::CatalogReview(entry.clone())))
+                            .id(format!("plugins-catalog-review-{}", entry.id).into())
                             .icon("shield-check")
                             .enabled(enabled && !self.plugins.review_busy)
                             .into_element(),
@@ -777,6 +780,7 @@ impl SettingsApp {
             .push(
                 enz_button(tr("shell-review-package"), message(Message::Review))
                     .icon("shield-check")
+                    .id("plugin-review-package".into())
                     .enabled(enabled && !self.plugins.review_busy)
                     .into_element(),
             );
@@ -795,6 +799,11 @@ impl SettingsApp {
                             enzui_shell::i18n::tr("shell-review"),
                             message(Message::ReviewInstalled(app, id))
                         )
+                        .id(format!(
+                            "plugins-review-installed-{}-{}",
+                            candidate.app_id, package.id
+                        )
+                        .into())
                         .icon("shield-check")
                         .enabled(enabled && !self.plugins.review_busy)
                         .into_element()
@@ -858,6 +867,7 @@ impl SettingsApp {
                         tr("shell-install-apply-and-enable"),
                         message(Message::Install(true))
                     )
+                    .id("plugins-install-enable".into())
                     .icon("download")
                     .enabled(enabled && runtime_available())
                     .into_element(),
@@ -865,6 +875,7 @@ impl SettingsApp {
                         tr("shell-install-apply-disabled"),
                         message(Message::Install(false))
                     )
+                    .id("plugins-install-disabled".into())
                     .kind(ButtonKind::Secondary)
                     .icon("download")
                     .enabled(enabled)
@@ -873,6 +884,7 @@ impl SettingsApp {
                         enzui_shell::i18n::tr("shell-cancel"),
                         message(Message::CancelReview)
                     )
+                    .id("plugins-review-cancel".into())
                     .kind(ButtonKind::Quiet)
                     .enabled(enabled)
                     .into_element()
@@ -980,6 +992,7 @@ impl SettingsApp {
                     tr("shell-review-permissions"),
                     message(Message::Permissions(id.clone())),
                 )
+                .id("plugins-review-permissions".into())
                 .kind(ButtonKind::Quiet)
                 .icon("shield-check")
                 .enabled(enabled)
@@ -1075,13 +1088,14 @@ impl SettingsApp {
             .as_ref()
             .is_some_and(|(selected, _, _)| *selected == id)
         {
-            details=details.push(column![enz_text(enzui_shell::tr!("shell-remove-this-stops-the-plugin-and-removes-its-package-and-configuration", "arg0" => enzui_shell::i18n::argument(&(id)))).into_element(),row![enz_button(tr("shell-remove-package"),message(Message::Remove)).kind(ButtonKind::Destructive).icon("trash-2").enabled(enabled).into_element(),enz_button(enzui_shell::i18n::tr("shell-cancel"),message(Message::CancelRemove)).kind(ButtonKind::Quiet).enabled(enabled).into_element()].spacing(8)].spacing(8));
+            details=details.push(column![enz_text(enzui_shell::tr!("shell-remove-this-stops-the-plugin-and-removes-its-package-and-configuration", "arg0" => enzui_shell::i18n::argument(&(id)))).into_element(),row![enz_button(tr("shell-remove-package"),message(Message::Remove)).id("plugins-remove-confirm".into()).kind(ButtonKind::Destructive).icon("trash-2").enabled(enabled).into_element(),enz_button(enzui_shell::i18n::tr("shell-cancel"),message(Message::CancelRemove)).id("plugins-remove-cancel".into()).kind(ButtonKind::Quiet).enabled(enabled).into_element()].spacing(8)].spacing(8));
         } else {
             details = details.push(
                 enz_button(
                     tr("shell-remove-2"),
                     message(Message::AskRemove(id.clone())),
                 )
+                .id("plugins-remove".into())
                 .kind(ButtonKind::QuietDestructive)
                 .icon("trash-2")
                 .enabled(enabled)

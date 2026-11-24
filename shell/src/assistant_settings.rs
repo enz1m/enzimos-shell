@@ -452,7 +452,7 @@ impl SettingsApp {
                             .subtitle(tr("shell-uses-the-local-provider-only-with-no-folders-and-no-action-without-asking-no"))
                             .subtitle_wrap(true)
                             .icon("bot")
-                            .control(enz_button(tr("shell-set-up"), ParentMessage::Assistant(Message::Create)).kind(ButtonKind::Secondary).enabled(live).into_element())
+                            .control(enz_button(tr("shell-set-up"), ParentMessage::Assistant(Message::Create)).id("assistant-set-up".into()).kind(ButtonKind::Secondary).enabled(live).into_element())
                             .into_element(),
                     );
                 }
@@ -503,6 +503,7 @@ impl SettingsApp {
                     },
                     ParentMessage::Assistant(Message::Run(!state.running)),
                 )
+                .id("assistant-run".into())
                 .kind(ButtonKind::Secondary)
                 .enabled(live && (state.running || !summary.roots.is_empty()))
                 .into_element(),
@@ -546,6 +547,7 @@ impl SettingsApp {
                             enzui_shell::i18n::tr("shell-list"),
                             ParentMessage::Assistant(Message::ListModels)
                         )
+                        .id("assistant-list-models".into())
                         .kind(ButtonKind::Secondary)
                         .size(ButtonSize::Sm)
                         .enabled(live)
@@ -617,6 +619,7 @@ impl SettingsApp {
                     enzui_shell::i18n::tr("shell-add-2"),
                     edit(Edit::AddRoot(state.root.clone()))
                 )
+                .id("assistant-add-root".into())
                 .kind(ButtonKind::Secondary)
                 .enabled(live && !state.root.trim().is_empty())
                 .into_element(),
@@ -691,6 +694,7 @@ impl SettingsApp {
                     enzui_shell::i18n::tr("shell-add-2"),
                     edit(Edit::AddSkills(state.skills.clone()))
                 )
+                .id("assistant-add-skills".into())
                 .kind(ButtonKind::Secondary)
                 .enabled(live && !state.skills.trim().is_empty())
                 .into_element(),
@@ -763,6 +767,7 @@ impl SettingsApp {
                     "x",
                     edit(Edit::RemoveServer(name.clone()))
                 )
+                .id(format!("assistant-server-remove-{name}").into())
                 .aria_label(enzui_shell::tr!("shell-remove-3", "arg0" => enzui_shell::i18n::argument(&(name))))
                 .tooltip(enzui_shell::i18n::tr("shell-remove"))
                 .enabled(live)
@@ -876,12 +881,14 @@ impl SettingsApp {
             let footer = row![
                 iced::widget::space::horizontal(),
                 enz_button(enzui_shell::i18n::tr("shell-cancel"), close.clone())
+                    .id("assistant-server-cancel".into())
                     .kind(ButtonKind::Secondary)
                     .into_element(),
                 enz_button(
                     enzui_shell::i18n::tr("shell-add-2"),
                     ParentMessage::Assistant(Message::SaveServer)
                 )
+                .id("assistant-server-save".into())
                 .kind(ButtonKind::Primary)
                 .enabled(
                     !draft.name.trim().is_empty()
@@ -985,6 +992,7 @@ impl SettingsApp {
             let footer = row![
                 iced::widget::space::horizontal(),
                 enz_button(enzui_shell::i18n::tr("shell-cancel"), close.clone())
+                    .id("assistant-skill-cancel".into())
                     .kind(ButtonKind::Secondary)
                     .enabled(!draft.busy)
                     .into_element(),
@@ -996,6 +1004,7 @@ impl SettingsApp {
                     },
                     ParentMessage::Assistant(Message::CreateSkill)
                 )
+                .id("assistant-skill-create".into())
                 .kind(ButtonKind::Primary)
                 .enabled(!draft.busy && !draft.name.trim().is_empty())
                 .into_element(),

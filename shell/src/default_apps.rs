@@ -445,6 +445,8 @@ fn query_now(mime: &str) -> Option<String> {
     (!id.is_empty()).then_some(id)
 }
 
+const INSTALLED_TERMINAL: &str = "/usr/lib/enzui/apps/terminal-emulator";
+
 /// The installed candidates and current choices (blocking); `terminal` is
 /// the chosen program, empty for the installed one.
 #[must_use]
@@ -472,8 +474,13 @@ pub fn read(terminal: &str) -> Choices {
         apps.sort_by_key(|a| a.name.to_lowercase());
         let current = if kind == Kind::Terminal {
             // The running desktop's ENZUI_TERMINAL, which the choice sets.
+            // Without either, the desktop starts the installed terminal, as
+            // start-shell-platform does; D-Bus-activated Settings lacks the variable.
             let program = if terminal.is_empty() {
-                std::env::var("ENZUI_TERMINAL").unwrap_or_default()
+                std::env::var("ENZUI_TERMINAL")
+                    .ok()
+                    .filter(|program| !program.is_empty())
+                    .unwrap_or_else(|| INSTALLED_TERMINAL.to_owned())
             } else {
                 terminal.to_owned()
             };

@@ -712,6 +712,7 @@ impl SettingsApp {
             Message::Tick => Task::batch([self.read_controls(), self.system_tick()]),
             Message::Connectivity => self.network_changed(),
             Message::Close | Message::Window(WindowCommand::Close) => {
+                let displays = self.revert_display_on_close();
                 self.file_chooser_leave();
                 self.startup.close();
                 self.sandbox_leave();
@@ -742,7 +743,10 @@ impl SettingsApp {
                 } else {
                     iced::exit()
                 };
-                Task::batch([numeric, close])
+                match displays {
+                    Some(revert) => Task::batch([numeric, revert.chain(close)]),
+                    None => Task::batch([numeric, close]),
+                }
             }
             Message::Window(command) => self.chrome.run_command(command),
             Message::WindowState(event) => self.chrome.update(event).map(Message::WindowState),

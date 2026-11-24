@@ -17,7 +17,7 @@ use wayland_protocols_wlr::output_management::v1::client::{
     zwlr_output_mode_v1::{self, ZwlrOutputModeV1},
 };
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mode {
     pub width: i32,
     pub height: i32,
@@ -153,7 +153,7 @@ fn logical(mode: Mode, scale: f64, rotation: Rotation) -> (f64, f64) {
 }
 
 /// The requested state of one output. A layout lists every output.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Change {
     pub output: String,
     pub enabled: bool,
@@ -792,6 +792,75 @@ pub fn restore_on_connect(layouts: std::sync::mpsc::Receiver<Vec<Saved>>, restor
             watch = None;
             std::thread::sleep(Duration::from_secs(2));
         }
+    }
+}
+
+/// The argument that runs the Settings executable as a [`RevertGuard`].
+pub const REVERT_GUARD_ARGUMENT: &str = "--display-revert-guard";
+
+/// A separate process that restores a display layout unless released, so an
+/// unconfirmed change is undone even when Settings exits or stops responding.
+pub struct RevertGuard(std::process::ChildStdin);
+
+impl RevertGuard {
+    /// Starts `executable` as the guard for `previous`. It restores that layout
+    /// when its input ends or `limit` passes without [`RevertGuard::release`].
+    pub fn start(
+        executable: &std::path::Path,
+        previous: &[Change],
+        limit: Duration,
+    ) -> Option<Self> {
+        use std::io::Write;
+        use std::os::unix::process::CommandExt;
+        let line = serde_json::to_string(previous).ok()?;
+        let mut child = std::process::Command::new(executable)
+            .arg(REVERT_GUARD_ARGUMENT)
+            .arg(limit.as_secs().to_string())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .process_group(0)
+            .spawn()
+            .ok()?;
+        let mut input = child.stdin.take()?;
+        let sent = writeln!(input, "{line}").is_ok();
+        std::thread::spawn(move || child.wait());
+        sent.then_some(Self(input))
+    }
+    /// Keeps the current layout; the guard exits without restoring.
+    pub fn release(mut self) {
+        use std::io::Write;
+        let _ = self.0.write_all(b"keep\n");
+    }
+}
+
+/// Runs a [`RevertGuard`] process and returns its exit code.
+pub fn revert_guard(arguments: &[String], restore: impl FnOnce(Vec<Change>) -> bool) -> i32 {
+    use std::io::{BufRead, Read};
+    let [seconds] = arguments else {
+        return 2;
+    };
+    let Ok(seconds) = seconds.parse::<u64>() else {
+        return 2;
+    };
+    let mut input = std::io::BufReader::new(std::io::stdin().take(1 << 20));
+    let mut line = String::new();
+    if input.read_line(&mut line).is_err() {
+        return 2;
+    }
+    let Ok(previous) = serde_json::from_str::<Vec<Change>>(&line) else {
+        return 2;
+    };
+    let (answered, answer) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = input.read_line(&mut line);
+        let _ = answered.send(line);
+    });
+    match answer.recv_timeout(Duration::from_secs(seconds.min(600))) {
+        Ok(line) if line == "keep\n" => 0,
+        _ if restore(previous) => 0,
+        _ => 1,
     }
 }
 

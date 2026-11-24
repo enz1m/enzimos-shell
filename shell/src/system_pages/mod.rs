@@ -51,7 +51,7 @@ pub(super) struct State {
     pub(super) layout_query: Option<String>,
     display_selected: Option<String>,
     // The layout to restore, and when, until the user keeps a change.
-    display_confirm: Option<(Vec<enzui_shell::system_settings::display::Change>, Instant)>,
+    display_confirm: Option<display::DisplayConfirm>,
     forms: forms::Forms,
     // The request the backend is running now, for progress labels.
     current: Option<Request>,
@@ -387,7 +387,7 @@ impl SettingsApp {
             .system
             .display_confirm
             .as_ref()
-            .is_some_and(|(_, deadline)| Instant::now() >= *deadline)
+            .is_some_and(|confirm| Instant::now() >= confirm.deadline)
         {
             return self.system_message(Message::RevertDisplay);
         }
@@ -863,7 +863,9 @@ impl SettingsApp {
             }
             Message::SetDisplay(change) => self.request_display(change),
             Message::KeepDisplay => {
-                self.system.display_confirm = None;
+                if let Some(confirm) = self.system.display_confirm.take() {
+                    confirm.finish();
+                }
                 match self.system.readings.get(&Panel::Display) {
                     Some(Reading::Display(d)) => {
                         let saved = enzui_shell::system_settings::display::saved(
@@ -878,8 +880,8 @@ impl SettingsApp {
                 }
             }
             Message::RevertDisplay => match self.system.display_confirm.take() {
-                Some((previous, _)) => {
-                    self.system_message(Message::Request(Request::Display(previous)))
+                Some(confirm) => {
+                    self.system_message(Message::Request(Request::Display(confirm.finish())))
                 }
                 None => Task::none(),
             },
@@ -1019,8 +1021,8 @@ impl SettingsApp {
                     // Only a failed display change ends its own confirmation; another
                     // request failing meanwhile must leave the countdown and its revert.
                     let display = matches!(request, Some(Request::Display(_)));
-                    if display {
-                        self.system.display_confirm = None;
+                    if display && let Some(confirm) = self.system.display_confirm.take() {
+                        confirm.finish();
                     }
                     if !handled {
                         self.system.failure = request.map(|request| (request, error.clone()));

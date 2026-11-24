@@ -12,6 +12,36 @@ use iced::{
 
 pub(super) const CONFIRM: Duration = Duration::from_secs(15);
 const PREVIEW: (f32, f32) = (560.0, 190.0);
+// The guard waits past the countdown so Settings' own revert comes first.
+const GUARD_GRACE: Duration = Duration::from_secs(5);
+
+/// A display change waiting for the user to keep it.
+pub(super) struct DisplayConfirm {
+    previous: Vec<Change>,
+    pub(super) deadline: Instant,
+    guard: Option<display::RevertGuard>,
+}
+
+impl DisplayConfirm {
+    fn new(previous: Vec<Change>, guarded: bool) -> Self {
+        let guard = guarded
+            .then(std::env::current_exe)
+            .and_then(Result::ok)
+            .and_then(|exe| display::RevertGuard::start(&exe, &previous, CONFIRM + GUARD_GRACE));
+        Self {
+            previous,
+            deadline: Instant::now() + CONFIRM,
+            guard,
+        }
+    }
+    /// Ends the confirmation and returns the layout it would restore.
+    pub(super) fn finish(self) -> Vec<Change> {
+        if let Some(guard) = self.guard {
+            guard.release();
+        }
+        self.previous
+    }
+}
 
 fn preview_geometry(outputs: &[&Output]) -> ((f64, f64), f64, (f64, f64)) {
     let (mut min_x, mut min_y, mut max_x, mut max_y) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
@@ -109,6 +139,25 @@ impl SettingsApp {
             // Every output can be off for a moment, while one is plugged in.
             .or_else(|| displays.outputs.first())
     }
+    /// Restores an unconfirmed display change before Settings exits.
+    pub(crate) fn revert_display_on_close(&mut self) -> Option<Task<Parent>> {
+        let confirm = self.system.display_confirm.take()?;
+        let backend = self.system.backend.clone();
+        // The guard stays armed until the layout is back.
+        let DisplayConfirm {
+            previous, guard, ..
+        } = confirm;
+        Some(
+            Task::future(async move {
+                if backend.apply(&Request::Display(previous)).await.is_ok()
+                    && let Some(guard) = guard
+                {
+                    guard.release();
+                }
+            })
+            .discard(),
+        )
+    }
     pub(super) fn request_display(&mut self, layout: Vec<Change>) -> Task<Parent> {
         let previous = match self.system.readings.get(&Panel::Display) {
             Some(Reading::Display(d)) => display::layout(d),
@@ -119,7 +168,8 @@ impl SettingsApp {
         }
         // A revert keeps the original layout, not the one being undone.
         if self.system.display_confirm.is_none() && !previous.is_empty() {
-            self.system.display_confirm = Some((previous, Instant::now() + CONFIRM));
+            let guarded = !self.system.backend.demo && !cfg!(test);
+            self.system.display_confirm = Some(DisplayConfirm::new(previous, guarded));
         }
         self.system_message(Message::Request(Request::Display(layout)))
     }
@@ -458,7 +508,7 @@ impl SettingsApp {
     pub(crate) fn display_confirm_notice(
         &self,
     ) -> Option<enzui_widgets::notice_stack::EnzNotice<Parent>> {
-        let (_, deadline) = self.system.display_confirm.as_ref()?;
+        let deadline = self.system.display_confirm.as_ref()?.deadline;
         let left = deadline.saturating_duration_since(Instant::now()).as_secs();
         Some(
             enzui_widgets::notice_stack::EnzNotice::new(

@@ -171,11 +171,12 @@ fn valid_gateway(host: &str) -> bool {
 /// The first problem found.
 pub fn validate(spec: &Spec) -> Result<(), &'static str> {
     let fields = spec.kind.fields();
-    if spec.name.trim().is_empty() || !clean(spec.name.trim(), 64) {
-        return Err(tr("shell-vpn-name-invalid"));
-    }
+    // An empty name is taken from the server, so the server comes first.
     if !valid_gateway(spec.gateway.trim()) {
         return Err(tr("shell-vpn-server-invalid"));
+    }
+    if spec.name.trim().is_empty() || !clean(spec.name.trim(), 64) {
+        return Err(tr("shell-vpn-name-invalid"));
     }
     if fields.user
         && !(spec.kind == Kind::Ikev2 && spec.psk)

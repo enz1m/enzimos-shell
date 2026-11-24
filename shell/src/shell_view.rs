@@ -1,5 +1,5 @@
 use super::{Message, Shell};
-use crate::{control_center, region, sidebar_view, workspace_view};
+use crate::{control_center, region, sidebar_view, theme_cache, workspace_view};
 use enzui_shell::i18n::{self, tr};
 use enzui_shell::tr;
 use enzui_shell::{
@@ -183,10 +183,34 @@ impl Shell {
     }
 
     pub(crate) fn tokens(&self) -> EnzTheme {
-        let base = self.base_tokens();
-        let mut theme = self.plugin.theme_tokens(&base).unwrap_or(base);
-        enzui_shell::motion::scale(&mut theme, self.desired_settings.compositor.animation_rate);
-        theme
+        let rate = self.desired_settings.compositor.animation_rate;
+        self.theme_cache.tokens(
+            &self.theme_inputs(),
+            theme_cache::Overlay {
+                plugin: self.plugin.theme_claim(),
+                animation_rate: rate,
+            },
+            || self.resolve_base(),
+            |base| {
+                let mut theme = self
+                    .plugin
+                    .theme_tokens(base)
+                    .unwrap_or_else(|| base.clone());
+                enzui_shell::motion::scale(&mut theme, rate);
+                theme
+            },
+        )
+    }
+
+    fn theme_inputs(&self) -> theme_cache::Inputs<'_> {
+        theme_cache::Inputs {
+            document: &self.theme_document,
+            light: self.light,
+            scheme: self.desired_settings.theme_scheme.as_deref(),
+            chrome: self.desired_settings.chrome,
+            fonts: &self.desired_settings.fonts,
+            text_scale: self.metrics.text_scale(),
+        }
     }
 
     pub(crate) fn themed_surface(&self) -> Option<[u8; 3]> {
@@ -200,6 +224,11 @@ impl Shell {
     /// The chrome's colour when the person chose one (the accent or their
     /// own), opaque.
     pub(crate) fn chrome_color(&self) -> Option<Color> {
+        self.theme_cache
+            .chrome(&self.theme_inputs(), || self.resolve_base())
+    }
+
+    fn resolve_chrome_color(&self) -> Option<Color> {
         use enzui_shell::chrome_style::ChromeColor;
         let color = self.desired_settings.chrome.color;
         let accent = if color == ChromeColor::Accent {
@@ -219,11 +248,18 @@ impl Shell {
     }
 
     pub(crate) fn base_tokens(&self) -> EnzTheme {
-        let chrome = self.chrome_color();
-        let mut theme = self.theme_tokens_in(self.chrome_light(), chrome);
+        self.theme_cache
+            .base(&self.theme_inputs(), || self.resolve_base())
+            .theme
+    }
+
+    fn resolve_base(&self) -> theme_cache::Base {
+        let chrome = self.resolve_chrome_color();
+        let light = chrome.map_or(self.light, enzui_shell::chrome_style::is_light);
+        let mut theme = self.theme_tokens_in(light, chrome);
         // Solid chrome's see-through; glass takes its tint instead.
         theme.palette.surface.a = f32::from(self.desired_settings.chrome.opacity) / 100.0;
-        theme
+        theme_cache::Base { chrome, theme }
     }
 
     // The shell's theme in `light` or dark mode, its surface `chrome` when

@@ -143,7 +143,7 @@ impl Shell {
                     let same = result
                         .as_ref()
                         .is_ok_and(|settings| *settings == self.desired_settings);
-                    let theme = self.theme_document.clone();
+                    let theme = std::sync::Arc::clone(&self.theme_document);
                     let night_light = self.night_light_target;
                     let glass = self.bar_glass_on;
                     let task =

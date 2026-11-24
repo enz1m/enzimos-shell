@@ -314,7 +314,7 @@ fn shell_behaviour() {
         ));
         assert_eq!(shell.bar, BarEdge::Bottom);
         assert!(shell.frame_appearance.borrow().bottom);
-        shell.theme_document = enzui_core::theme_file::ThemeDocument::empty();
+        shell.theme_document = std::sync::Arc::new(enzui_core::theme_file::ThemeDocument::empty());
         let mut preferences = Settings::default();
         preferences.fonts.interface = Some("Desktop Interface".into());
         preferences.fonts.weight = enzui_shell::font_settings::Weight::Light;

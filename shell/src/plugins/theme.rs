@@ -3,7 +3,7 @@ use enzui_theme::EnzTheme;
 use iced::Color;
 use std::collections::BTreeMap;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq)]
 pub struct Colors(BTreeMap<String, [u8; 3]>);
 impl Colors {
     pub fn new(colors: BTreeMap<String, [u8; 3]>) -> Result<Self, String> {

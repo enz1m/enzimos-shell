@@ -78,7 +78,7 @@ impl Shell {
             self.notice = Some(tr!("shell-reduced-motion-could-not-be-saved", "arg0" => error));
             return Task::none();
         }
-        self.theme_document = store.into_document();
+        self.theme_document = std::sync::Arc::new(store.into_document());
         self.save_setting(Change::Compositor(
             OptionKey::Animations,
             i32::from(!reduced),

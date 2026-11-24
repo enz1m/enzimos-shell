@@ -42,6 +42,7 @@ mod shell_view;
 mod shell_window_settings;
 mod shell_windows;
 mod sidebar_view;
+mod theme_cache;
 mod window_spread;
 mod workspace_view;
 
@@ -110,7 +111,8 @@ struct Shell {
     busy: bool,
     requests: VecDeque<Request>,
     light: bool,
-    theme_document: enzui_core::theme_file::ThemeDocument,
+    theme_document: std::sync::Arc<enzui_core::theme_file::ThemeDocument>,
+    theme_cache: theme_cache::ThemeCache,
     renderer_font: Option<iced::Font>,
     clock: String,
     quiet: bool,
@@ -374,10 +376,13 @@ impl Shell {
             requests: VecDeque::new(),
             light,
             renderer_font: None,
-            theme_document: enzui_shell::theme_store::Store::read(
-                &enzui_core::theme_file::ThemePaths::from_env(),
-            )
-            .into_document(),
+            theme_document: std::sync::Arc::new(
+                enzui_shell::theme_store::Store::read(
+                    &enzui_core::theme_file::ThemePaths::from_env(),
+                )
+                .into_document(),
+            ),
+            theme_cache: theme_cache::ThemeCache::default(),
             clock: clock(&Default::default()),
             quiet: false,
             renderer_logged: false,

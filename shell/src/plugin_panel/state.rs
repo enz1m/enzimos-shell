@@ -16,6 +16,10 @@ impl State {
             .then(|| claim.colors.apply(base).ok())
             .flatten()
     }
+    pub(crate) fn theme_claim(&self) -> Option<(bool, &enzui_shell::plugins::theme::Colors)> {
+        let claim = self.theme.as_ref()?;
+        Some((claim.authority.load(Ordering::Acquire), &claim.colors))
+    }
     pub(crate) fn theme_surface(&self, base: &enzui_theme::EnzTheme) -> Option<[u8; 3]> {
         let color = self.theme_tokens(base)?.palette.surface;
         Some([color.r, color.g, color.b].map(|v| (v * 255.0).round() as u8))

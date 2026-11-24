@@ -102,9 +102,12 @@ impl Shell {
         self.light = settings.light;
         // Re-read on the same poll that carries Settings' own changes, so a
         // saved accent reaches the bar without restarting the shell.
-        self.theme_document =
+        let document =
             enzui_shell::theme_store::Store::read(&enzui_core::theme_file::ThemePaths::from_env())
                 .into_document();
+        if *self.theme_document != document {
+            self.theme_document = std::sync::Arc::new(document);
+        }
         let icons = if enzui_shell::icon_theme::select(settings.icon_theme.as_deref())
             || language_changed
         {

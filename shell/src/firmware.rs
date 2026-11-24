@@ -23,8 +23,10 @@ const FLAG_INTERNAL: u64 = 1 << 0;
 const FLAG_UPDATABLE: u64 = 1 << 1;
 const FLAG_REQUIRE_AC: u64 = 1 << 3;
 const FLAG_LOCKED: u64 = 1 << 4;
-const FLAG_NEEDS_REBOOT: u64 = 1 << 8;
-const FLAG_NEEDS_SHUTDOWN: u64 = 1 << 17;
+// fwupd update states: an update waits for a restart. The needs-reboot and
+// needs-shutdown device flags only say how any update would be applied.
+const UPDATE_STATE_PENDING: u64 = 1;
+const UPDATE_STATE_NEEDS_REBOOT: u64 = 4;
 
 /// One device fwupd knows.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -164,7 +166,10 @@ fn device(dict: &Dict) -> Device {
         internal: flags & FLAG_INTERNAL != 0,
         updatable: flags & FLAG_UPDATABLE != 0 && flags & FLAG_LOCKED == 0,
         needs_power: flags & FLAG_REQUIRE_AC != 0,
-        pending_restart: flags & (FLAG_NEEDS_REBOOT | FLAG_NEEDS_SHUTDOWN) != 0,
+        pending_restart: matches!(
+            number(dict, "UpdateState"),
+            UPDATE_STATE_PENDING | UPDATE_STATE_NEEDS_REBOOT
+        ),
         update: None,
     }
 }

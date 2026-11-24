@@ -752,7 +752,7 @@ impl App {
                     .into_element(),
             );
         }
-        content = content.push(Space::new().height(Length::Fill)).push(
+        content = content.push(
             row![
                 Space::new().width(Length::Fill),
                 enz_button(request.deny_label.clone(), Message::Grant(window, false))
@@ -765,10 +765,12 @@ impl App {
             ]
             .spacing(8),
         );
+        // The window's size is fixed; spare height goes evenly above and below.
         container(content)
             .padding(24)
             .width(Length::Fill)
             .height(Length::Fill)
+            .center_y(Length::Fill)
             .style(move |_| container::Style {
                 background: Some(palette.surface.into()),
                 ..Default::default()

@@ -320,7 +320,6 @@ impl App {
                 .into_element(),
                 who,
                 field.into_element(),
-                Space::new().height(Length::Fill),
                 row![
                     Space::new().width(Length::Fill),
                     enz_button(enzui_shell::i18n::tr("shell-cancel"), Message::Cancel)
@@ -342,10 +341,13 @@ impl App {
                 .spacing(8),
             ]
             .spacing(14);
+            // The compositor fixes the window's size; spare height goes evenly
+            // above and below rather than between the field and its buttons.
             container(content)
                 .padding(24)
                 .width(Length::Fill)
                 .height(Length::Fill)
+                .center_y(Length::Fill)
                 .style(move |_| container::Style {
                     background: Some(palette.surface.into()),
                     ..Default::default()

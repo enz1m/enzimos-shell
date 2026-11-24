@@ -94,7 +94,7 @@ impl SettingsApp {
                     Some((tr("shell-protected"), BadgeTone::Success)),
                 ),
                 "uncertain" => (
-                    "shield-question",
+                    "shield-question-mark",
                     tr("shell-the-last-backup-s-result-is-not-known").to_owned(),
                     tr("shell-it-may-or-may-not-have-finished-back-up-again-to-be-sure").to_owned(),
                     Some((tr("shell-check"), BadgeTone::Warning)),

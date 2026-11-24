@@ -5173,6 +5173,7 @@ shell-files-share-not-automatic-detail = Las copias se conectan al recurso por s
 shell-files-share-connect-at-login = Conectar al iniciar sesión
 shell-files-share-connecting = Conectando…
 shell-files-share-unavailable = El servicio de unidades de Archivos no está disponible.
+shell-files-share-no-answer = Archivos no respondió. Inténtalo de nuevo.
 shell-share-on-server = { $arg0 } en { $arg1 }
 shell-backup-drive-optional = Opcional. Las copias van al recurso de red.
 shell-share-not-set-up-primary = Haz copias en un NAS de tu red. No necesitas una unidad.

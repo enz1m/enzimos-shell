@@ -129,11 +129,16 @@ pub async fn connect_at_login(id: String) -> Result<(), String> {
     let proxy = mount_proxy()
         .await
         .ok_or_else(|| crate::i18n::tr("shell-files-share-unavailable").to_owned())?;
-    let options = HashMap::from([("auto_connect", Variant::from(true))]);
-    proxy
-        .call::<_, _, ()>("UpdateLocation", &(id.as_str(), options))
-        .await
-        .map_err(|_| crate::i18n::tr("shell-files-share-unavailable").to_owned())
+    let arguments = (
+        id.as_str(),
+        HashMap::from([("auto_connect", Variant::from(true))]),
+    );
+    let call = proxy.call::<_, _, ()>("UpdateLocation", &arguments);
+    match tokio::time::timeout(std::time::Duration::from_secs(10), call).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err(crate::i18n::tr("shell-files-share-unavailable").to_owned()),
+        Err(_) => Err(crate::i18n::tr("shell-files-share-no-answer").to_owned()),
+    }
 }
 
 /// The password Files remembers for this share, when the keyring is unlocked.
@@ -145,6 +150,10 @@ pub async fn password(share: FilesShare) -> Option<SecretText> {
 }
 
 async fn lookup(share: &FilesShare) -> Option<SecretText> {
+    // A location's password belongs to the account it was saved for.
+    if share.user.is_empty() {
+        return None;
+    }
     let connection = zbus::Connection::session().await.ok()?;
     let service = zbus::Proxy::new(
         &connection,
@@ -161,6 +170,7 @@ async fn lookup(share: &FilesShare) -> Option<SecretText> {
     let by_location = HashMap::from([
         ("xdg:schema", PASSWORD_SCHEMA),
         ("location", share.id.as_str()),
+        ("user", share.user.as_str()),
     ]);
     let by_account = HashMap::from([
         ("xdg:schema", PASSWORD_SCHEMA),
@@ -169,13 +179,7 @@ async fn lookup(share: &FilesShare) -> Option<SecretText> {
         ("user", share.user.as_str()),
     ]);
     let mut found = None;
-    for attributes in [
-        Some(by_location),
-        (!share.user.is_empty()).then_some(by_account),
-    ]
-    .into_iter()
-    .flatten()
-    {
+    for attributes in [by_location, by_account] {
         let (unlocked, _locked): (Vec<OwnedObjectPath>, Vec<OwnedObjectPath>) =
             service.call("SearchItems", &(attributes,)).await.ok()?;
         if let Some(item) = unlocked.into_iter().next() {

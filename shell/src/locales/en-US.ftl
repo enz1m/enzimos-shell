@@ -5179,6 +5179,7 @@ shell-files-share-not-automatic-detail = Backups connect to the share on their o
 shell-files-share-connect-at-login = Connect at login
 shell-files-share-connecting = Connecting…
 shell-files-share-unavailable = Files' drive service isn't available.
+shell-files-share-no-answer = Files didn't answer. Try again.
 shell-share-on-server = { $arg0 } on { $arg1 }
 shell-backup-drive-optional = Optional. Backups go to the network share.
 shell-share-not-set-up-primary = Back up to a NAS on your network. No drive needed.

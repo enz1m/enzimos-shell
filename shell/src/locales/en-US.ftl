@@ -4580,10 +4580,10 @@ relative-yesterday = Yesterday, { $time }
 background-running = Running · { $windows ->
     [one] 1 window
    *[other] { $windows } windows
-    } { $minimized ->
+    }{ $minimized ->
     [0] { "" }
-    [one] · 1 minimized
-   *[other] · { $minimized } minimized
+    [one] { " " }· 1 minimized
+   *[other] { " " }· { $minimized } minimized
     }
 amount-requests-running = { $count ->
     [one] 1 request running

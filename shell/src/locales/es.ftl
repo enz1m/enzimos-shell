@@ -4634,10 +4634,10 @@ relative-yesterday = Ayer, { $time }
 background-running = En ejecución · { $windows ->
     [one] 1 ventana
    *[other] { $windows } ventanas
-    } { $minimized ->
+    }{ $minimized ->
     [0] { "" }
-    [one] · 1 minimizada
-   *[other] · { $minimized } minimizadas
+    [one] { " " }· 1 minimizada
+   *[other] { " " }· { $minimized } minimizadas
     }
 amount-requests-running = { $count ->
     [one] 1 solicitud en curso

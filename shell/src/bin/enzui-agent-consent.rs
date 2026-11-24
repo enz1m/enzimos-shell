@@ -1,6 +1,7 @@
 //! MCP Center consent dialog; unanswered requests remain subject to the broker's deny timeout.
 
 use enzui_shell::agent_center::{self, Decision, Pending};
+use enzui_shell::arm_delay::ArmGate;
 use enzui_shell::i18n::{self, tr};
 use enzui_shell::tr;
 use enzui_theme::EnzTheme;
@@ -21,6 +22,9 @@ enum Message {
     Decided(String, Result<(), String>),
     Closed(window::Id),
     Key(iced::keyboard::Key),
+    Shown(window::Id),
+    Focused(window::Id),
+    Armed,
 }
 
 struct Dialog {
@@ -28,6 +32,7 @@ struct Dialog {
     window: window::Id,
     deciding: bool,
     notice: Option<String>,
+    gate: ArmGate,
 }
 
 struct App {
@@ -108,8 +113,9 @@ impl App {
             window,
             deciding: false,
             notice: None,
+            gate: ArmGate::default(),
         });
-        open.discard()
+        open.map(Message::Shown)
     }
     fn close_current(&mut self) -> Task<Message> {
         self.current
@@ -149,17 +155,33 @@ impl App {
                 }
                 close
             }
+            Message::Shown(window) => {
+                if let Some(dialog) = self.current.as_mut().filter(|d| d.window == window) {
+                    dialog.gate.shown(std::time::Instant::now());
+                    return ArmGate::wake(Message::Armed);
+                }
+                Task::none()
+            }
+            Message::Focused(window) => {
+                if let Some(dialog) = self.current.as_mut().filter(|d| d.window == window)
+                    && dialog.gate.focused(std::time::Instant::now())
+                {
+                    return ArmGate::wake(Message::Armed);
+                }
+                Task::none()
+            }
+            Message::Armed => Task::none(),
             Message::Decide(decision) => {
                 let Some(dialog) = self.current.as_mut().filter(|d| !d.deciding) else {
                     return Task::none();
                 };
-                if decision != Decision::Deny
-                    && decision != Decision::Never
-                    && !dialog
-                        .request
-                        .allowed
-                        .iter()
-                        .any(|scope| scope == scope_key(decision))
+                if grants(decision)
+                    && (!dialog.gate.armed()
+                        || !dialog
+                            .request
+                            .allowed
+                            .iter()
+                            .any(|scope| scope == scope_key(decision)))
                 {
                     return Task::none();
                 }
@@ -261,15 +283,16 @@ impl App {
         ]
         .spacing(2);
         let busy = dialog.deciding;
+        let can_grant = !busy && dialog.gate.armed();
         let mut allow = row![Space::new().width(Length::Fill)].spacing(8);
         if allowed(Decision::Always) {
-            allow = allow.push(enz_button(tr("shell-always-allow"), Message::Decide(Decision::Always)).kind(ButtonKind::Secondary).enabled(!busy).into_element());
+            allow = allow.push(enz_button(tr("shell-always-allow"), Message::Decide(Decision::Always)).kind(ButtonKind::Secondary).enabled(can_grant).into_element());
         }
         if allowed(Decision::Session) {
-            allow = allow.push(enz_button(tr("shell-allow-this-session"), Message::Decide(Decision::Session)).kind(ButtonKind::Secondary).enabled(!busy).into_element());
+            allow = allow.push(enz_button(tr("shell-allow-this-session"), Message::Decide(Decision::Session)).kind(ButtonKind::Secondary).enabled(can_grant).into_element());
         }
         if allowed(Decision::Once) {
-            allow = allow.push(enz_button(tr("shell-allow-once"), Message::Decide(Decision::Once)).enabled(!busy).into_element());
+            allow = allow.push(enz_button(tr("shell-allow-once"), Message::Decide(Decision::Once)).enabled(can_grant).into_element());
         }
         let refuse = row![
             enz_button(enzui_shell::i18n::tr("shell-deny"), Message::Decide(Decision::Deny)).kind(ButtonKind::Secondary).id("agent-consent-deny".into()).enabled(!busy).into_element(),
@@ -322,6 +345,9 @@ impl App {
         Subscription::batch([
             Subscription::run(poll).map(Message::Pending),
             window::close_requests().map(Message::Closed),
+            window::events().filter_map(|(id, event)| {
+                matches!(event, window::Event::Focused).then_some(Message::Focused(id))
+            }),
             iced::event::listen_with(|event, status, _| match (event, status) {
                 (
                     iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. }),
@@ -331,6 +357,10 @@ impl App {
             }),
         ])
     }
+}
+
+fn grants(decision: Decision) -> bool {
+    !matches!(decision, Decision::Deny | Decision::Never)
 }
 
 fn scope_key(decision: Decision) -> &'static str {

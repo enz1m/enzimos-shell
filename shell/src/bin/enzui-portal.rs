@@ -2,6 +2,7 @@
 
 use enzui_core::file_browser::{FileBrowserModel, FileEntry, SortKey};
 use enzui_icons::file_type::FileTypeTable;
+use enzui_shell::arm_delay::ArmGate;
 use enzui_shell::chooser_places::{self as places, Place};
 use enzui_shell::desktop_portal::{self, AccessRequest, Event, Kind, Outcome, Request};
 use enzui_shell::i18n::{self, tr};
@@ -52,6 +53,9 @@ enum Message {
     CreateFolder(window::Id),
     Recent(window::Id),
     Grid(window::Id),
+    Shown(window::Id),
+    Focused(window::Id),
+    Armed,
 }
 
 const PATH_BAR: &str = "chooser-path";
@@ -80,11 +84,14 @@ struct Dialog {
     standard: Vec<Place>,
     pinned: Vec<Place>,
     devices: Vec<Place>,
+    sensitive: bool,
+    gate: ArmGate,
 }
 
 struct Consent {
     request: AccessRequest,
     reply: Option<oneshot::Sender<bool>>,
+    gate: ArmGate,
 }
 
 struct App {
@@ -153,6 +160,8 @@ impl Dialog {
             standard,
             pinned,
             devices: places::devices(),
+            sensitive: false,
+            gate: ArmGate::default(),
         };
         dialog.read();
         dialog
@@ -186,6 +195,7 @@ impl Dialog {
         let folders_only = self.picks_folders();
         let mut entries = Vec::new();
         self.notice = None;
+        self.sensitive = !self.recent && places::is_sensitive(&self.folder, &home());
         let listing: std::io::Result<Vec<(PathBuf, String)>> = if self.recent {
             Ok(places::recent()
                 .into_iter()
@@ -401,8 +411,40 @@ impl App {
         self.consents.remove(&window);
         window::close(window)
     }
+    fn armed(&self, window: window::Id) -> bool {
+        self.dialogs
+            .get(&window)
+            .map(|d| d.gate)
+            .or_else(|| self.consents.get(&window).map(|c| c.gate))
+            .is_some_and(|gate| gate.armed())
+    }
+    fn gate_mut(&mut self, window: window::Id) -> Option<&mut ArmGate> {
+        match self.dialogs.get_mut(&window) {
+            Some(dialog) => Some(&mut dialog.gate),
+            None => self.consents.get_mut(&window).map(|c| &mut c.gate),
+        }
+    }
     fn update(&mut self, message: Message) -> Task<Message> {
+        if let Some(window) = acting_window(&message)
+            && !self.armed(window)
+        {
+            return Task::none();
+        }
         match message {
+            Message::Shown(window) => {
+                if let Some(gate) = self.gate_mut(window) {
+                    gate.shown(std::time::Instant::now());
+                    return ArmGate::wake(Message::Armed);
+                }
+            }
+            Message::Focused(window) => {
+                if let Some(gate) = self.gate_mut(window)
+                    && gate.focused(std::time::Instant::now())
+                {
+                    return ArmGate::wake(Message::Armed);
+                }
+            }
+            Message::Armed => {}
             Message::Portal(Incoming(event)) => {
                 match event.lock().ok().and_then(|mut e| e.take()) {
                     Some(Event::Appearance { light }) => self.light = light,
@@ -422,7 +464,7 @@ impl App {
                             ..Default::default()
                         });
                         self.dialogs.insert(window, Dialog::new(request, reply));
-                        return open.discard();
+                        return open.map(Message::Shown);
                     }
                     Some(Event::Access(request, reply)) => {
                         if self.closed.remove(&request.id) {
@@ -444,9 +486,10 @@ impl App {
                             Consent {
                                 request,
                                 reply: Some(reply),
+                                gate: ArmGate::default(),
                             },
                         );
-                        return open.discard();
+                        return open.map(Message::Shown);
                     }
                     Some(Event::Close(id)) => {
                         let window = self
@@ -503,8 +546,6 @@ impl App {
                         return self.update(Message::NewFolder(window, None));
                     }
                     Key::Named(Named::Escape) => return self.finish(window, Outcome::Cancelled),
-                    // Enter never grants a permission; it only accepts a file choice.
-                    Key::Named(Named::Enter) => return self.update(Message::Accept(window)),
                     Key::Character("l") if modifiers.command() => {
                         return self.update(Message::PathEdit(window, BreadcrumbEditEvent::Begin));
                     }
@@ -761,6 +802,7 @@ impl App {
                     .into_element(),
                 enz_button(request.grant_label.clone(), Message::Grant(window, true))
                     .id("access-grant".into())
+                    .enabled(consent.gate.armed())
                     .into_element(),
             ]
             .spacing(8),
@@ -1155,13 +1197,23 @@ impl App {
         } else {
             footer = footer
                 .push(enz_button(tr("shell-cancel"), Message::Cancel(window)).kind(ButtonKind::Secondary).id("chooser-cancel".into()).into_element())
-                .push(enz_button(accept, Message::Accept(window)).id("chooser-accept".into()).enabled(dialog.choice().is_ok()).into_element());
+                .push(enz_button(accept, Message::Accept(window)).id("chooser-accept".into()).enabled(dialog.gate.armed() && dialog.choice().is_ok()).into_element());
         }
         // Why Save is unavailable here; an open request simply waits for a pick.
         let problem = (request.kind != Kind::Open && !dialog.name.trim().is_empty() || request.kind == Kind::SaveFiles)
             .then(|| dialog.choice().err())
             .flatten();
         let mut bottom = column![].spacing(6);
+        if dialog.sensitive {
+            bottom = bottom.push(
+                row![
+                    enzui_widgets::icon::enz_icon("triangle-alert").size(14.0).into_element(),
+                    enz_text(tr("shell-chooser-sensitive-folder")).size(TextSize::Footnote).into_element(),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            );
+        }
         if let Some(notice) = dialog.notice.clone().or(problem) {
             bottom = bottom.push(enz_text(notice).size(TextSize::Footnote).into_element());
         }
@@ -1182,6 +1234,9 @@ impl App {
         Subscription::batch([
             Subscription::run(portal).map(Message::Portal),
             window::close_requests().map(Message::Closed),
+            window::events().filter_map(|(id, event)| {
+                matches!(event, window::Event::Focused).then_some(Message::Focused(id))
+            }),
             iced::event::listen_with(|event, status, window| match (event, status) {
                 (
                     iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
@@ -1192,6 +1247,41 @@ impl App {
                 _ => None,
             }),
         ])
+    }
+}
+
+// The window that a message would act in before the user could have seen it; only
+// cancelling, denying and portal traffic pass before the dialog is armed.
+fn acting_window(message: &Message) -> Option<window::Id> {
+    use iced::keyboard::{Key, key::Named};
+    match message {
+        Message::Portal(_)
+        | Message::Shown(_)
+        | Message::Focused(_)
+        | Message::Armed
+        | Message::Cancel(_)
+        | Message::Closed(_)
+        | Message::Grant(_, false)
+        | Message::Key(_, Key::Named(Named::Escape), _) => None,
+        Message::Go(window, _)
+        | Message::Up(window)
+        | Message::Activate(window, _)
+        | Message::Select(window, _)
+        | Message::Sort(window, _)
+        | Message::Name(window, _)
+        | Message::Filter(window, _)
+        | Message::Hidden(window)
+        | Message::Accept(window)
+        | Message::Replace(window)
+        | Message::Key(window, ..)
+        | Message::Grant(window, true)
+        | Message::Query(window, _)
+        | Message::PathEdit(window, _)
+        | Message::Crumb(window, _)
+        | Message::NewFolder(window, _)
+        | Message::CreateFolder(window)
+        | Message::Recent(window)
+        | Message::Grid(window) => Some(*window),
     }
 }
 
@@ -1241,4 +1331,90 @@ fn main() -> iced::Result {
         enzui_widgets::app_setup::AppServices::default()
             .localizer(enzui_shell::i18n::localizer().clone()),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use enzui_shell::arm_delay::ARM_DELAY;
+    use iced::keyboard::{Key, Modifiers, key::Named};
+    use std::time::Instant;
+
+    fn chooser(
+        kind: Kind,
+        directory: bool,
+        folder: &Path,
+    ) -> (App, window::Id, oneshot::Receiver<Outcome>) {
+        let (reply, outcome) = oneshot::channel();
+        let request = Request {
+            id: 1,
+            kind,
+            app_id: "org.example.App".into(),
+            title: String::new(),
+            accept_label: None,
+            multiple: false,
+            directory,
+            filters: Vec::new(),
+            current_filter: None,
+            current_name: Some("notes.txt".into()),
+            current_folder: Some(folder.to_path_buf()),
+            current_file: None,
+            files: Vec::new(),
+            choices: Vec::new(),
+        };
+        let window = window::Id::unique();
+        let mut app = App {
+            dialogs: HashMap::new(),
+            consents: HashMap::new(),
+            closed: Default::default(),
+            light: false,
+        };
+        app.dialogs.insert(window, Dialog::new(request, reply));
+        (app, window, outcome)
+    }
+
+    #[test]
+    fn chooser_accepts_only_explicit_input_once_armed() {
+        let folder = tempfile::tempdir().unwrap();
+        for (kind, directory, chosen) in [
+            (Kind::Save, false, folder.path().join("notes.txt")),
+            (Kind::Open, true, folder.path().to_path_buf()),
+        ] {
+            let (mut app, window, mut outcome) = chooser(kind, directory, folder.path());
+            let _ = app.update(Message::Accept(window));
+            assert!(
+                outcome.try_recv().is_err(),
+                "{kind:?} accepted before it was shown"
+            );
+            app.gate_mut(window).unwrap().shown(Instant::now());
+            let _ = app.update(Message::Accept(window));
+            assert!(
+                outcome.try_recv().is_err(),
+                "{kind:?} accepted before arming"
+            );
+
+            *app.gate_mut(window).unwrap() = ArmGate::default();
+            app.gate_mut(window)
+                .unwrap()
+                .shown(Instant::now().checked_sub(ARM_DELAY).unwrap());
+            let _ = app.update(Message::Key(
+                window,
+                Key::Named(Named::Enter),
+                Modifiers::empty(),
+            ));
+            assert!(
+                outcome.try_recv().is_err(),
+                "{kind:?} accepted an unhandled Enter"
+            );
+
+            let _ = app.update(Message::Accept(window));
+            assert_eq!(
+                outcome.try_recv().unwrap(),
+                Outcome::Chosen {
+                    paths: vec![chosen],
+                    filter: None
+                }
+            );
+        }
+    }
 }

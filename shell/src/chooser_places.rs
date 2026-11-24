@@ -266,6 +266,20 @@ pub fn recent() -> Vec<PathBuf> {
     .collect()
 }
 
+/// Whether `folder` holds configuration or other hidden data, such as `~/.config/autostart`,
+/// where a written file can change how the session behaves.
+pub fn is_sensitive(folder: &Path, home: &Path) -> bool {
+    let folder = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_path_buf());
+    let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    let config = std::fs::canonicalize(config_home(&home)).unwrap_or_else(|_| config_home(&home));
+    folder.starts_with(&config)
+        || folder.strip_prefix(&home).is_ok_and(|inside| {
+            inside
+                .components()
+                .any(|part| part.as_os_str().as_encoded_bytes().starts_with(b"."))
+        })
+}
+
 /// Resolves typed paths lexically; relative paths start in `folder`, and `//` or `/~/` restarts
 /// the path.
 pub fn resolve(typed: &str, folder: &Path, home: &Path) -> Option<PathBuf> {

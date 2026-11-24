@@ -4358,6 +4358,7 @@ shell-kb-3 = { $arg0 } KB
 shell-bytes-2 = { $arg0 } bytes
 shell-doesn-t-exist = “{ $arg0 }” doesn't exist.
 shell-isn-t-here = “{ $arg0 }” isn't here.
+shell-chooser-sensitive-folder = This is a hidden settings folder. Files here can change how apps and the computer behave.
 shell-in = In { $arg0 }
 shell-is-unavailable = { $arg0 } is unavailable
 shell-focus-was-rejected = { $arg0 } focus was rejected

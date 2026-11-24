@@ -14,6 +14,7 @@ pub mod agent_mock;
 pub mod app_permissions;
 pub mod app_scope;
 pub mod app_theme;
+pub mod arm_delay;
 pub mod audio_devices;
 pub mod authorization;
 pub mod background_apps;

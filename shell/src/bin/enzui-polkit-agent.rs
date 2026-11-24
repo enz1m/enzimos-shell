@@ -2,6 +2,7 @@
 //! and shows a password dialog whenever an action needs an administrator.
 
 use enzui_security::secret::SecretText;
+use enzui_shell::arm_delay::ArmGate;
 use enzui_shell::i18n::{self, tr};
 use enzui_shell::polkit_agent::{AuthRequest, Command, Event};
 use enzui_theme::EnzTheme;
@@ -34,7 +35,8 @@ enum Message {
     NextIdentity,
     Closed(window::Id),
     Focused(window::Id),
-    Key(iced::keyboard::Key, Option<String>),
+    Shown(window::Id),
+    Armed,
 }
 
 struct Dialog {
@@ -45,6 +47,7 @@ struct Dialog {
     password: SecretText,
     notice: Option<(String, bool)>,
     checking: bool,
+    gate: ArmGate,
 }
 
 struct App {
@@ -98,12 +101,28 @@ impl App {
             password: SecretText::new(String::new()),
             notice: None,
             checking: false,
+            gate: ArmGate::default(),
         });
-        open.discard()
-            .chain(iced::widget::operation::focus("authentication-password"))
+        open.map(Message::Shown)
+            .chain(iced::widget::operation::focus(PASSWORD))
     }
     fn update(&mut self, message: Message) -> Task<Message> {
+        // Typing aimed at another window must not reach a dialog that just took focus.
+        if matches!(
+            message,
+            Message::Password(_) | Message::Submit | Message::NextIdentity
+        ) && !self.current.as_ref().is_some_and(|d| d.gate.armed())
+        {
+            return Task::none();
+        }
         match message {
+            Message::Shown(window) => {
+                if let Some(dialog) = self.current.as_mut().filter(|d| d.window == window) {
+                    dialog.gate.shown(std::time::Instant::now());
+                    return ArmGate::wake(Message::Armed);
+                }
+            }
+            Message::Armed => {}
             Message::Agent(Event::Begin(request)) => {
                 if self.current.is_some() {
                     self.waiting.push_back(request);
@@ -115,7 +134,7 @@ impl App {
                 if let Some(dialog) = self.current.as_mut().filter(|d| d.request.id == id) {
                     dialog.prompt = Some((text, secret));
                     dialog.checking = false;
-                    return iced::widget::operation::focus("authentication-password");
+                    return iced::widget::operation::focus(PASSWORD);
                 }
             }
             Message::Agent(Event::Notice { id, text, error }) => {
@@ -191,38 +210,15 @@ impl App {
             }
             // A click elsewhere unfocuses the field; the compositor gives the
             // dialog its focus back, and the typing should go on landing here.
-            Message::Focused(window)
-                if self.current.as_ref().is_some_and(|d| d.window == window) =>
-            {
-                return iced::widget::operation::focus("authentication-password");
-            }
-            Message::Focused(_) => {}
-            Message::Key(iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape), _) => {
-                return self.update(Message::Cancel);
-            }
-            Message::Key(iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter), _) => {
-                return self.update(Message::Submit);
-            }
-            Message::Key(iced::keyboard::Key::Named(iced::keyboard::key::Named::Backspace), _) => {
-                if let Some(dialog) = self.current.as_mut() {
-                    let mut password = dialog.password.expose_secret().to_owned();
-                    password.pop();
-                    dialog.password = SecretText::new(password);
+            Message::Focused(window) => {
+                if let Some(dialog) = self.current.as_mut().filter(|d| d.window == window) {
+                    let focus = iced::widget::operation::focus(PASSWORD);
+                    if dialog.gate.focused(std::time::Instant::now()) {
+                        return Task::batch([focus, ArmGate::wake(Message::Armed)]);
+                    }
+                    return focus;
                 }
-                return iced::widget::operation::focus("authentication-password");
             }
-            Message::Key(_, Some(text)) if !text.chars().any(char::is_control) => {
-                if let Some(dialog) = self
-                    .current
-                    .as_mut()
-                    .filter(|d| d.prompt.is_some() && !d.checking)
-                {
-                    dialog.password =
-                        SecretText::new(format!("{}{text}", dialog.password.expose_secret()));
-                }
-                return iced::widget::operation::focus("authentication-password");
-            }
-            Message::Key(..) => {}
         }
         Task::none()
     }
@@ -302,7 +298,7 @@ impl App {
             })
             .secure(secret)
             .on_submit(Message::Submit)
-            .id("authentication-password".into())
+            .id(PASSWORD.into())
             .enabled(dialog.prompt.is_some() && !dialog.checking);
             if let Some((notice, true)) = &dialog.notice {
                 field = field.error(notice.clone());
@@ -372,14 +368,25 @@ impl App {
             window::events().filter_map(|(id, event)| {
                 matches!(event, window::Event::Focused).then_some(Message::Focused(id))
             }),
-            iced::event::listen_with(|event, status, _| match (event, status) {
-                (
-                    iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, text, .. }),
-                    iced::event::Status::Ignored,
-                ) => Some(Message::Key(key, text.map(|t| t.to_string()))),
-                _ => None,
-            }),
+            iced::event::listen_with(|event, status, _| unhandled_key(&event, status)),
         ])
+    }
+}
+
+const PASSWORD: &str = "authentication-password";
+
+// Only the focused password field takes text or submits; a key nothing handled can
+// only cancel.
+fn unhandled_key(event: &iced::Event, status: iced::event::Status) -> Option<Message> {
+    match (event, status) {
+        (
+            iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                ..
+            }),
+            iced::event::Status::Ignored,
+        ) => Some(Message::Cancel),
+        _ => None,
     }
 }
 
@@ -422,4 +429,74 @@ fn main() -> iced::Result {
         enzui_widgets::app_setup::AppServices::default()
             .localizer(enzui_shell::i18n::localizer().clone()),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use enzui_shell::arm_delay::ARM_DELAY;
+    use iced::keyboard::{Key, Location, Modifiers, key};
+    use std::time::Instant;
+
+    fn prompting() -> App {
+        let mut app = App {
+            current: None,
+            waiting: VecDeque::new(),
+            light: false,
+        };
+        let _ = app.open(AuthRequest {
+            id: 7,
+            action: "org.example.change".into(),
+            message: String::new(),
+            identities: Vec::new(),
+            preferred: 0,
+        });
+        let dialog = app.current.as_mut().unwrap();
+        dialog.prompt = Some(("Password:".into(), true));
+        app
+    }
+
+    fn press(key: Key, text: Option<&str>) -> iced::Event {
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            modified_key: key.clone(),
+            key,
+            physical_key: key::Physical::Unidentified(key::NativeCode::Unidentified),
+            location: Location::Standard,
+            modifiers: Modifiers::empty(),
+            text: text.map(Into::into),
+            repeat: false,
+        })
+    }
+
+    #[test]
+    fn password_takes_only_focused_input_once_armed() {
+        let mut app = prompting();
+        let _ = app.update(Message::Password(SecretText::new("typed-elsewhere".into())));
+        app.current.as_mut().unwrap().gate.shown(Instant::now());
+        let _ = app.update(Message::Password(SecretText::new("typed-elsewhere".into())));
+        assert!(app.current.as_ref().unwrap().password.is_empty());
+
+        app.current.as_mut().unwrap().gate = ArmGate::default();
+        app.current
+            .as_mut()
+            .unwrap()
+            .gate
+            .shown(Instant::now().checked_sub(ARM_DELAY).unwrap());
+        let unhandled = |app: &mut App, event: iced::Event| {
+            if let Some(message) = unhandled_key(&event, iced::event::Status::Ignored) {
+                let _ = app.update(message);
+            }
+        };
+        unhandled(&mut app, press(Key::Character("x".into()), Some("x")));
+        assert!(app.current.as_ref().unwrap().password.is_empty());
+
+        let _ = app.update(Message::Password(SecretText::new("secret".into())));
+        unhandled(&mut app, press(Key::Named(key::Named::Enter), Some("\r")));
+        let dialog = app.current.as_ref().unwrap();
+        assert!(dialog.password.expose_secret() == "secret" && !dialog.checking);
+
+        let _ = app.update(Message::Submit);
+        let dialog = app.current.as_ref().unwrap();
+        assert!(dialog.password.is_empty() && dialog.checking);
+    }
 }

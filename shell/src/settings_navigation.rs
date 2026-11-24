@@ -628,6 +628,10 @@ impl Navigation {
         self.scroll = Default::default();
         self.scroll_generation = self.scroll_generation.wrapping_add(1);
     }
+    /// Still resting where a jump left it: no scroll has moved away since.
+    pub(super) fn resting(&self) -> bool {
+        self.held.is_some()
+    }
     pub(super) fn interrupt(&mut self) {
         self.epoch = self.epoch.wrapping_add(1);
         self.pending = None;

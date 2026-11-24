@@ -198,9 +198,11 @@ impl SettingsApp {
                 Task::none()
             }
             Message::InterruptScroll(reason) => {
+                // A resize reflows the page, so a highlighted target is found
+                // again unless the reader has scrolled away from it.
                 let relocate = matches!(reason, navigation::Interruption::Resize)
                     && self.highlighted.is_some()
-                    && self.navigation.moving();
+                    && (self.navigation.moving() || self.navigation.resting());
                 self.navigation.interrupt();
                 if matches!(reason, navigation::Interruption::User) {
                     self.reveal_pending = false;

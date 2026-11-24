@@ -86,6 +86,8 @@ impl Shell {
             self.controllers = Default::default();
         }
         self.desired_settings = settings.clone();
+        // A changed clock format shows now, not at the next minute.
+        self.clock = super::shell_window_settings::clock(&self.desired_settings.session);
         self.activity_settings_changed();
         let activity = if !settings.activity_status {
             self.sync_activity_panel()

@@ -23,10 +23,20 @@ pub async fn read() -> Option<Status> {
     let connection = tokio::time::timeout(TIMEOUT, crate::bus::session())
         .await
         .ok()??;
-    let owner = tokio::time::timeout(TIMEOUT, owner(&connection))
+    let Some(owner) = tokio::time::timeout(TIMEOUT, owner(&connection))
         .await
         .ok()?
-        .ok()?;
+        .ok()
+    else {
+        // gamemoded starts on a game's first request; until then it is off.
+        return tokio::time::timeout(TIMEOUT, activatable(&connection))
+            .await
+            .ok()?
+            .then_some(Status {
+                clients: 0,
+                requested: false,
+            });
+    };
     tokio::time::timeout(
         TIMEOUT,
         status(&connection, &owner, std::process::id() as i32),
@@ -34,6 +44,15 @@ pub async fn read() -> Option<Status> {
     .await
     .ok()?
     .ok()
+}
+
+async fn activatable(connection: &zbus::Connection) -> bool {
+    let Ok(bus) = zbus::fdo::DBusProxy::new(connection).await else {
+        return false;
+    };
+    bus.list_activatable_names()
+        .await
+        .is_ok_and(|names| names.iter().any(|name| name.as_str() == NAME))
 }
 
 async fn owner(connection: &zbus::Connection) -> Result<String, String> {

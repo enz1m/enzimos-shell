@@ -1139,16 +1139,30 @@ impl SettingsApp {
         )
     }
     fn demo_notice(&self) -> Option<Element<'_, Parent>> {
+        let hardware = matches!(
+            self.page,
+            Category::Network
+                | Category::Bluetooth
+                | Category::Phone
+                | Category::Display
+                | Category::Sound
+                | Category::Power
+                | Category::Printers
+                | Category::Thunderbolt
+                | Category::Disks
+                | Category::Updates
+                | Category::About
+        );
         self.system.backend.demo.then(|| {
-            enz_banner(if self.page == Category::Developer {
-                tr("shell-sample-data")
-            } else {
+            enz_banner(if hardware {
                 tr("shell-sample-devices")
+            } else {
+                tr("shell-sample-data")
             })
-                .body(if self.page == Category::Developer {
-                    tr("shell-this-page-shows-example-data")
-                } else {
+                .body(if hardware {
                     tr("shell-this-page-shows-example-hardware-so-it-can-be-reviewed-without-it-nothing-he")
+                } else {
+                    tr("shell-this-page-shows-example-data")
                 })
                 .tone(BannerTone::Warning)
                 .icon("flask-conical")

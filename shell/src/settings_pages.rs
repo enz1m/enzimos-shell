@@ -173,8 +173,19 @@ impl SettingsApp {
         } else {
             tr("shell-separate-floating-pills-with-clear-space-around-them-sizes-are-logical-pixel")
         };
-        let mut body = column![
-            self.section_card_for("appearance/shell_style", self.shell_style_choices())
+        let mut style = column![self.shell_style_choices()].spacing(8);
+        if !self.islands_supported {
+            style = style.push(
+                container(
+                    enz_text(tr("shell-islands-requires-a-newly-prepared-native-shell-existing-desktops-are-not-res"))
+                        .size(TextSize::Caption)
+                        .muted_on(self.tokens().palette.surface),
+                )
+                .padding([0, 12]),
+            );
+        }
+        let body = column![
+            self.section_card_for("appearance/shell_style", style)
                 .title(tr("shell-shell-style"))
                 .description(tr(
                     "shell-choose-the-desktop-s-shape-illustrations-use-your-current-sizing"
@@ -182,9 +193,6 @@ impl SettingsApp {
                 .into_element(),
         ]
         .spacing(32);
-        if !self.islands_supported {
-            body = body.push(enz_text(tr("shell-islands-requires-a-newly-prepared-native-shell-existing-desktops-are-not-res")).size(TextSize::Caption).muted_on(self.tokens().palette.background).into_element());
-        }
         let reset = row![
             Space::new().width(Length::Fill),
             enz_button(

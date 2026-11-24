@@ -201,16 +201,19 @@ impl SettingsApp {
                 // Leaving the preview drops the display where it left.
                 .on_exit(Parent::System(Message::DisplayDragEnd(true))),
         );
-        column![
-            container(layers).center_x(Length::Fill).padding([12, 12]),
-            container(self.caption(if enabled.len() > 1 {
-                tr("shell-drag-a-display-to-move-it-next-to-another-it-snaps-edge-to-edge")
-            } else {
-                tr("shell-select-a-display-to-change-it")
-            }))
-            .padding([0, 12]),
-        ]
-        .into()
+        let hint = if enabled.len() > 1 {
+            Some(tr(
+                "shell-drag-a-display-to-move-it-next-to-another-it-snaps-edge-to-edge",
+            ))
+        } else {
+            // One connected display is already the one being changed.
+            (displays.outputs.len() > 1).then(|| tr("shell-select-a-display-to-change-it"))
+        };
+        let mut arrangement = column![container(layers).center_x(Length::Fill).padding([12, 12])];
+        if let Some(hint) = hint {
+            arrangement = arrangement.push(container(self.caption(hint)).padding([0, 12]));
+        }
+        arrangement.into()
     }
     fn display_rows<'a>(&self, output: &Output, displays: &Displays) -> Element<'a, Parent> {
         let enabled = displays.outputs.iter().filter(|o| o.enabled).count();

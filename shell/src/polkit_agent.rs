@@ -1,6 +1,7 @@
 //! Session polkit agent relaying PAM prompts through polkit's helper.
 //! The helper authenticates with polkitd; this client only relays questions and answers.
 
+use enzui_security::secret::SecretText;
 use enzui_shell::i18n::tr;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
@@ -9,6 +10,7 @@ use tokio::sync::mpsc;
 use zbus::zvariant::{OwnedValue, Value};
 
 const AGENT_PATH: &str = "/dev/enzui/PolicyKit1/AuthenticationAgent";
+const AUTHORITY: &str = "org.freedesktop.PolicyKit1";
 const HELPER_SOCKET: &str = "/run/polkit/agent-helper.socket";
 const HELPERS: [&str; 2] = [
     "/usr/lib/polkit-1/polkit-agent-helper-1",
@@ -60,7 +62,7 @@ pub enum Event {
 pub enum Command {
     Answer {
         id: u64,
-        text: String,
+        text: SecretText,
     },
     /// Authenticate as someone else from the request's identities.
     Identity {
@@ -213,6 +215,14 @@ async fn helper(
     Ok((Box::new(stdout), Box::new(stdin), Some(child)))
 }
 
+// The last question shown, and an answer sent before the helper asked again
+// together with the question it was typed for.
+#[derive(Default)]
+struct Asked {
+    question: Option<(String, bool)>,
+    early: Option<(Option<(String, bool)>, SecretText)>,
+}
+
 // One PAM conversation through polkit's helper.
 async fn converse(
     user: &str,
@@ -220,6 +230,7 @@ async fn converse(
     id: u64,
     events: &mpsc::UnboundedSender<Event>,
     commands: &mut mpsc::UnboundedReceiver<Command>,
+    asked: &mut Asked,
 ) -> Outcome {
     let (read, mut write, _child) = match helper(user, cookie).await {
         Ok(parts) => parts,
@@ -232,7 +243,10 @@ async fn converse(
             command = commands.recv() => match command {
                 Some(Command::Cancel { .. }) | None => return Outcome::Cancelled,
                 Some(Command::Identity { uid, .. }) => return Outcome::Switch(uid),
-                Some(Command::Answer { .. }) => continue,
+                Some(Command::Answer { text, .. }) => {
+                    asked.early = Some((asked.question.clone(), text));
+                    continue;
+                }
             },
         };
         let Ok(Some(line)) = line else {
@@ -247,29 +261,46 @@ async fn converse(
             (false, None)
         };
         if let Some(text) = question {
-            let _ = events.send(Event::Prompt {
-                id,
-                text: text.trim().chars().take(200).collect(),
-                secret,
-            });
-            let answer = match commands.recv().await {
-                Some(Command::Answer { text, .. }) => text,
-                Some(Command::Identity { uid, .. }) => return Outcome::Switch(uid),
-                Some(Command::Cancel { .. }) | None => return Outcome::Cancelled,
+            let question = (text.trim().chars().take(200).collect::<String>(), secret);
+            let answer = match asked.early.take() {
+                Some((typed_for, answer)) if typed_for.as_ref() == Some(&question) => answer,
+                early => {
+                    if early.is_some() {
+                        let _ = events.send(Event::Notice {
+                            id,
+                            text: tr("shell-the-question-changed-answer-it-again").into(),
+                            error: true,
+                        });
+                    }
+                    let _ = events.send(Event::Prompt {
+                        id,
+                        text: question.0.clone(),
+                        secret,
+                    });
+                    asked.question = Some(question);
+                    match commands.recv().await {
+                        Some(Command::Answer { text, .. }) => text,
+                        Some(Command::Identity { uid, .. }) => return Outcome::Switch(uid),
+                        Some(Command::Cancel { .. }) | None => return Outcome::Cancelled,
+                    }
+                }
             };
             // The helper reads one line per answer.
-            let answer: String = answer
-                .chars()
-                .filter(|c| *c != '\n' && *c != '\r')
-                .collect();
+            let line = SecretText::new(
+                answer
+                    .expose_secret()
+                    .chars()
+                    .filter(|c| *c != '\n' && *c != '\r')
+                    .chain(['\n'])
+                    .collect(),
+            );
             if write
-                .write_all(format!("{answer}\n").as_bytes())
+                .write_all(line.expose_secret().as_bytes())
                 .await
                 .is_err()
             {
                 return Outcome::Failed;
             }
-            drop(answer);
             continue;
         }
         if let Some(text) = line.strip_prefix("PAM_ERROR_MSG ") {
@@ -292,8 +323,28 @@ async fn converse(
     }
 }
 
+// Only the current polkit authority may start or cancel a conversation.
+async fn from_authority(header: &zbus::message::Header<'_>, connection: &zbus::Connection) -> bool {
+    let Some(sender) = header.sender() else {
+        return false;
+    };
+    let Ok(bus) = zbus::fdo::DBusProxy::new(connection).await else {
+        return false;
+    };
+    let Ok(authority) = zbus::names::BusName::try_from(AUTHORITY) else {
+        return false;
+    };
+    bus.get_name_owner(authority)
+        .await
+        .is_ok_and(|owner| owner.as_str() == sender.as_str())
+}
+
 #[zbus::interface(name = "org.freedesktop.PolicyKit1.AuthenticationAgent")]
 impl Agent {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The D-Bus method signature fixes the arguments."
+    )]
     async fn begin_authentication(
         &self,
         action_id: String,
@@ -302,7 +353,14 @@ impl Agent {
         _details: HashMap<String, String>,
         cookie: String,
         identities: Vec<(String, HashMap<String, OwnedValue>)>,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<(), AgentError> {
+        if !from_authority(&header, connection).await {
+            return Err(AgentError::Failed(
+                "Only the polkit authority may begin authentication".into(),
+            ));
+        }
         let people = identities_now(&identities);
         if people.is_empty() {
             return Err(AgentError::Failed(
@@ -335,11 +393,12 @@ impl Agent {
             identities: people.clone(),
             preferred: uid,
         }));
+        let mut asked = Asked::default();
         let result = loop {
             let Some(user) = people.iter().find(|p| p.uid == uid).map(|p| p.name.clone()) else {
                 break Err(AgentError::Failed(tr("shell-unknown-identity").into()));
             };
-            match converse(&user, &cookie, id, &self.events, &mut commands).await {
+            match converse(&user, &cookie, id, &self.events, &mut commands, &mut asked).await {
                 Outcome::Success => break Ok(()),
                 Outcome::Failed => {
                     let _ = self.events.send(Event::Notice {
@@ -348,7 +407,10 @@ impl Agent {
                         error: true,
                     });
                 }
-                Outcome::Switch(next) if people.iter().any(|p| p.uid == next) => uid = next,
+                Outcome::Switch(next) if people.iter().any(|p| p.uid == next) => {
+                    uid = next;
+                    asked = Asked::default();
+                }
                 Outcome::Switch(_) => {}
                 Outcome::Cancelled => {
                     break Err(AgentError::Cancelled(
@@ -365,11 +427,15 @@ impl Agent {
         let _ = self.events.send(Event::Done { id });
         result
     }
-    #[allow(
-        clippy::unused_async,
-        reason = "This method implements an asynchronous D-Bus interface."
-    )]
-    async fn cancel_authentication(&self, cookie: String) {
+    async fn cancel_authentication(
+        &self,
+        cookie: String,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) {
+        if !from_authority(&header, connection).await {
+            return;
+        }
         let pending = self
             .pending
             .lock()
@@ -447,7 +513,7 @@ pub async fn run(
     let session = session_id(&system).await?;
     let authority = zbus::Proxy::new(
         &system,
-        "org.freedesktop.PolicyKit1",
+        AUTHORITY,
         "/org/freedesktop/PolicyKit1/Authority",
         "org.freedesktop.PolicyKit1.Authority",
     )
@@ -522,4 +588,83 @@ pub fn supervise(binary: std::path::PathBuf) {
             std::thread::sleep(std::time::Duration::from_secs(2 * u64::from(failures)));
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn only_the_polkit_authority_begins_or_cancels_authentication() {
+        let bus = crate::test_bus::Bus::start();
+        let (events, mut shown) = mpsc::unbounded_channel();
+        let pending: Pending = Arc::default();
+        let agent_name = "dev.enzui.TestPolkitAgent";
+        let _agent = bus
+            .serve(
+                agent_name,
+                AGENT_PATH,
+                Agent {
+                    events,
+                    pending: Arc::clone(&pending),
+                    next: Mutex::new(0),
+                },
+            )
+            .await;
+        let authority = bus.client().await;
+        authority.request_name(AUTHORITY).await.unwrap();
+        let intruder = bus.client().await;
+        // Empty identities stop an admitted request before any helper starts.
+        let begin = async |caller: &zbus::Connection| {
+            let identities: Vec<(String, HashMap<String, OwnedValue>)> = Vec::new();
+            match caller
+                .call_method(
+                    Some(agent_name),
+                    AGENT_PATH,
+                    Some("org.freedesktop.PolicyKit1.AuthenticationAgent"),
+                    "BeginAuthentication",
+                    &(
+                        "org.example.action",
+                        "message",
+                        "",
+                        HashMap::<String, String>::new(),
+                        "cookie",
+                        identities,
+                    ),
+                )
+                .await
+            {
+                Err(zbus::Error::MethodError(_, Some(message), _)) => message,
+                other => panic!("unexpected reply {other:?}"),
+            }
+        };
+        assert_eq!(
+            begin(&intruder).await,
+            "Only the polkit authority may begin authentication"
+        );
+        assert_eq!(
+            begin(&authority).await,
+            tr("shell-no-one-can-authenticate-this-request")
+        );
+
+        let (tx, mut commands) = mpsc::unbounded_channel();
+        pending.lock().unwrap().insert(7, ("cookie".into(), tx));
+        let cancel = async |caller: &zbus::Connection| {
+            caller
+                .call_method(
+                    Some(agent_name),
+                    AGENT_PATH,
+                    Some("org.freedesktop.PolicyKit1.AuthenticationAgent"),
+                    "CancelAuthentication",
+                    &("cookie",),
+                )
+                .await
+                .unwrap();
+        };
+        cancel(&intruder).await;
+        assert!(commands.try_recv().is_err());
+        cancel(&authority).await;
+        assert_eq!(commands.try_recv().unwrap(), Command::Cancel { id: 7 });
+        assert!(shown.try_recv().is_err(), "no dialog opened");
+    }
 }

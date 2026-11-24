@@ -1611,6 +1611,7 @@ shell-polkit-s-authentication-helper-could-not-start = polkit's authentication h
 shell-no-one-can-authenticate-this-request = No one can authenticate this request
 shell-unknown-identity = Unknown identity
 shell-that-password-is-not-correct-try-again = That password is not correct. Try again.
+shell-the-question-changed-answer-it-again = The question changed. Answer it again.
 shell-authentication-was-cancelled = Authentication was cancelled
 shell-this-process-is-not-in-a-login-session = This process is not in a login session
 shell-polkit-is-not-available = polkit is not available

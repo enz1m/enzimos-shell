@@ -1,6 +1,7 @@
 //! The enzUI polkit authentication agent: registers for this login session
 //! and shows a password dialog whenever an action needs an administrator.
 
+use enzui_security::secret::SecretText;
 use enzui_shell::i18n::{self, tr};
 use enzui_shell::polkit_agent::{AuthRequest, Command, Event};
 use enzui_theme::EnzTheme;
@@ -27,7 +28,7 @@ fn send(command: Command) {
 #[derive(Clone, Debug)]
 enum Message {
     Agent(Event),
-    Password(String),
+    Password(SecretText),
     Submit,
     Cancel,
     NextIdentity,
@@ -41,7 +42,7 @@ struct Dialog {
     window: window::Id,
     uid: u32,
     prompt: Option<(String, bool)>,
-    password: String,
+    password: SecretText,
     notice: Option<(String, bool)>,
     checking: bool,
 }
@@ -94,7 +95,7 @@ impl App {
             request,
             window,
             prompt: None,
-            password: String::new(),
+            password: SecretText::new(String::new()),
             notice: None,
             checking: false,
         });
@@ -138,7 +139,8 @@ impl App {
             Message::Agent(Event::Unavailable(error)) => eprintln!("enzui-polkit-agent: {error}"),
             Message::Password(text) => {
                 if let Some(dialog) = self.current.as_mut() {
-                    dialog.password = text.chars().take(512).collect();
+                    dialog.password =
+                        SecretText::new(text.expose_secret().chars().take(512).collect());
                 }
             }
             Message::Submit => {
@@ -151,7 +153,10 @@ impl App {
                     dialog.notice = None;
                     send(Command::Answer {
                         id: dialog.request.id,
-                        text: std::mem::take(&mut dialog.password),
+                        text: std::mem::replace(
+                            &mut dialog.password,
+                            SecretText::new(String::new()),
+                        ),
                     });
                 }
             }
@@ -171,7 +176,7 @@ impl App {
                     let at = people.iter().position(|p| p.uid == dialog.uid).unwrap_or(0);
                     dialog.uid = people[(at + 1) % people.len()].uid;
                     dialog.prompt = None;
-                    dialog.password.clear();
+                    dialog.password = SecretText::new(String::new());
                     dialog.notice = None;
                     send(Command::Identity {
                         id: dialog.request.id,
@@ -200,7 +205,9 @@ impl App {
             }
             Message::Key(iced::keyboard::Key::Named(iced::keyboard::key::Named::Backspace), _) => {
                 if let Some(dialog) = self.current.as_mut() {
-                    dialog.password.pop();
+                    let mut password = dialog.password.expose_secret().to_owned();
+                    password.pop();
+                    dialog.password = SecretText::new(password);
                 }
                 return iced::widget::operation::focus("authentication-password");
             }
@@ -210,7 +217,8 @@ impl App {
                     .as_mut()
                     .filter(|d| d.prompt.is_some() && !d.checking)
                 {
-                    dialog.password.push_str(&text);
+                    dialog.password =
+                        SecretText::new(format!("{}{text}", dialog.password.expose_secret()));
                 }
                 return iced::widget::operation::focus("authentication-password");
             }
@@ -289,11 +297,13 @@ impl App {
                 }
                 None => (enzui_shell::i18n::current().text("shell-password"), true),
             };
-            let mut field = enz_text_field(question, "", &dialog.password, Message::Password)
-                .secure(secret)
-                .on_submit(Message::Submit)
-                .id("authentication-password".into())
-                .enabled(dialog.prompt.is_some() && !dialog.checking);
+            let mut field = enz_text_field(question, "", dialog.password.expose_secret(), |text| {
+                Message::Password(SecretText::new(text))
+            })
+            .secure(secret)
+            .on_submit(Message::Submit)
+            .id("authentication-password".into())
+            .enabled(dialog.prompt.is_some() && !dialog.checking);
             if let Some((notice, true)) = &dialog.notice {
                 field = field.error(notice.clone());
             } else if let Some((notice, false)) = &dialog.notice {

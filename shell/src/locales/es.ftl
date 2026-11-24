@@ -1665,6 +1665,7 @@ shell-polkit-s-authentication-helper-could-not-start = El ayudante de autenticac
 shell-no-one-can-authenticate-this-request = Nadie puede autenticar esta petición
 shell-unknown-identity = Identidad desconocida
 shell-that-password-is-not-correct-try-again = Esa contraseña no es correcta. Inténtalo de nuevo.
+shell-the-question-changed-answer-it-again = La pregunta cambió. Respóndela de nuevo.
 shell-authentication-was-cancelled = Se canceló la autenticación
 shell-this-process-is-not-in-a-login-session = Este proceso no está en una sesión de inicio de sesión
 shell-polkit-is-not-available = polkit no está disponible

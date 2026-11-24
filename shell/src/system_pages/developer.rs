@@ -837,27 +837,38 @@ impl SettingsApp {
                 tools = tools.push(self.caption(format!("{} — {status}", tool.package)));
             }
         }
-        Some(
-            container(
-                enzui_widgets::expander::enz_expander(
-                    tr("shell-installed-package-versions"),
-                    self.system.developer.tools_expanded.contains(ALL_TOOLS),
-                    |expanded| {
-                        Parent::System(Message::Developer(DeveloperMessage::Tools(
-                            ALL_TOOLS.into(),
-                            expanded,
-                        )))
-                    },
-                )
-                .id("developer-tools-versions")
-                .icon("package")
-                .variant(enzui_widgets::expander::ExpanderVariant::Plain)
-                .content(tools.into())
-                .into_element(),
+        // A row like its neighbours; the versions follow it when shown.
+        let open = self.system.developer.tools_expanded.contains(ALL_TOOLS);
+        let toggle = crate::settings_app::settings_row(tr("shell-installed-package-versions"))
+            .icon("package")
+            .action(
+                if open {
+                    tr("shell-hide")
+                } else {
+                    tr("shell-show")
+                },
+                Parent::System(Message::Developer(DeveloperMessage::Tools(
+                    ALL_TOOLS.into(),
+                    !open,
+                ))),
             )
-            .padding([0, 2])
-            .into(),
-        )
+            .id("developer-tools-versions".into())
+            .into_element();
+        Some(if open {
+            column![
+                toggle,
+                container(tools).padding(iced::Padding {
+                    left: 44.0,
+                    right: 12.0,
+                    bottom: 8.0,
+                    ..iced::Padding::ZERO
+                })
+            ]
+            .spacing(2)
+            .into()
+        } else {
+            toggle
+        })
     }
 
     pub(super) fn developer_page<'a>(

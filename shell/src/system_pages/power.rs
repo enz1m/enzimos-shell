@@ -1053,19 +1053,21 @@ impl SettingsApp {
                     details = details.push(self.detail_row_owned(name.clone(), version.clone()));
                 }
                 system = system.push(
-                    container(
-                        enzui_widgets::expander::enz_expander(
-                            tr("shell-technical-details"),
-                            open,
-                            |open| Parent::System(Message::AboutDetails(open)),
+                    crate::settings_app::settings_row(tr("shell-technical-details"))
+                        .action(
+                            if open {
+                                tr("shell-hide")
+                            } else {
+                                tr("shell-show")
+                            },
+                            Parent::System(Message::AboutDetails(!open)),
                         )
-                        .id("about-technical-details")
-                        .variant(enzui_widgets::expander::ExpanderVariant::Plain)
-                        .content(details.into())
+                        .id("about-technical-details".into())
                         .into_element(),
-                    )
-                    .padding(iced::Padding::ZERO),
                 );
+                if open {
+                    system = system.push(details);
+                }
             }
         }
         let processor = match (&about.cpu, about.threads) {

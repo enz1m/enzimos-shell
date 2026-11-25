@@ -19,11 +19,11 @@
   },
   "framework": {
     "url": "https://github.com/enz1m/enzui.git",
-    "revision": "b2e8584be08abc5fbe18005eccaea8cb8c1b0fed"
+    "revision": "0ed41783775a9bf1b431a7f5b57f782e30210552"
   },
   "iced": {
     "url": "https://github.com/enz1m/enzim-iced.git",
-    "revision": "986a8faaf730d29939cf92f9c2bf188fef8ef264",
+    "revision": "523c1755479c55ba4030dafb2be9c05bf8a1def4",
     "destination": "vendor/iced"
   },
   "winit": {
@@ -32,7 +32,7 @@
   },
   "enzwall": {
     "url": "https://github.com/enz1m/enzwall.git",
-    "revision": "ec326f343a24b814e4955d9ffa76aa3010001159",
+    "revision": "0c0d6316ea85f749c67ab55c9492211c8a39cc2b",
     "destination": "enzwall"
   },
   "remote_desktop_portal": {

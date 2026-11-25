@@ -280,15 +280,9 @@ fn window(
     s
 }
 
-// The chosen style as two windows, light and dark, with the current mode in
-// front: one colour makes both palettes, so the picture shows both.
-pub(super) fn card(choices: Choices, mode: EnzThemeMode) -> String {
-    let other = match mode {
-        EnzThemeMode::Dark => EnzThemeMode::Light,
-        _ => EnzThemeMode::Dark,
-    };
+pub(super) fn card(choices: Choices, mode: EnzThemeMode, back_mode: EnzThemeMode) -> String {
     let back = window(
-        &shown(choices.scheme, other),
+        &shown(choices.scheme, back_mode),
         choices,
         [258.0, 14.0, 318.0, 196.0],
     );

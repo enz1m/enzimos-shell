@@ -93,7 +93,12 @@ impl SettingsApp {
     }
 
     fn theme_mockup(&self, choices: Choices) -> Element<'_, Message> {
-        let art = super::theme_preview::card(choices, self.theme_mode());
+        let mode = self.theme_mode();
+        let other = match mode {
+            EnzThemeMode::Dark => EnzThemeMode::Light,
+            _ => EnzThemeMode::Dark,
+        };
+        let art = super::theme_preview::card(choices, mode, other);
         container(
             svg(svg::Handle::from_memory(art.into_bytes()))
                 .width(Length::Fill)

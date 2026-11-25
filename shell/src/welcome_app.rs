@@ -23,15 +23,18 @@ use enzui_widgets::{
     banner::{BannerTone, enz_banner},
     button::{ButtonKind, enz_button},
     color_swatch::enz_color_swatch,
+    motion::fade_on_change,
     preferences_row::enz_preferences_row,
     pressable::{PressableStyle, enz_pressable},
     scroll_view::enz_scroll_view,
     secure_field::enz_secure_field,
-    text::{TextSize, TextTone, enz_text},
+    slider::enz_slider,
+    text::{TextAlign, TextSize, TextTone, enz_text},
     title_bar::enz_title_bar,
-    wizard::{WizardEvent, enz_wizard},
+    view_switcher::{SwitcherPage, enz_view_switcher},
+    wizard::WizardEvent,
 };
-use iced::widget::{column, container, responsive, row, svg};
+use iced::widget::{Space, column, container, responsive, row, svg};
 use iced::{Alignment, Element, Length, Subscription, Task};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -72,6 +75,7 @@ pub(crate) enum Message {
     Choose(Choices),
     ThemeSaved(Result<Choices, String>),
     DisplaysRead(Displays),
+    ScaleMenu(bool),
     Scale(f64),
     ScaleApplied(Result<Vec<display::Change>, String>),
     KeepScale,
@@ -114,6 +118,7 @@ pub(crate) struct Welcome {
     writing: bool,
     choices: Choices,
     displays: Option<Displays>,
+    scale_menu_open: bool,
     scale: Option<PendingScale>,
     now: Instant,
     ai: bool,
@@ -149,6 +154,7 @@ impl Welcome {
             writing: false,
             choices: Choices::default(),
             displays: None,
+            scale_menu_open: false,
             scale: None,
             now: Instant::now(),
             ai: welcome::record_path().is_some_and(|path| welcome::completed(&path))
@@ -430,7 +436,12 @@ impl Welcome {
                 self.displays = Some(displays);
                 Task::none()
             }
+            Message::ScaleMenu(open) => {
+                self.scale_menu_open = open;
+                Task::none()
+            }
             Message::Scale(scale) => {
+                self.scale_menu_open = false;
                 let Some(displays) = self.displays.clone() else {
                     return Task::none();
                 };
@@ -586,24 +597,47 @@ impl Welcome {
             .layout(ShellLayout::TitlebarContent)
             .titlebar(move || {
                 enz_title_bar()
-                    .title(tr("welcome-window-title"))
+                    .center(self.progress_indicator())
+                    .show_close(false)
                     .id("welcome-titlebar")
                     .into_element()
             })
-            .on_close(Message::CloseRequested)
             .into_element()
+    }
+
+    fn progress_indicator(&self) -> Element<'_, Message> {
+        let steps = [
+            ("desktop", tr("welcome-step-desktop")),
+            ("appearance", tr("welcome-step-appearance")),
+            ("ai", tr("welcome-step-ai")),
+        ];
+        let current = self.wizard.current();
+        let pages = steps
+            .into_iter()
+            .enumerate()
+            .map(|(index, (id, label))| {
+                SwitcherPage::new(id, format!("{}  {label}", index + 1))
+                    .with_enabled(self.wizard.is_reached(index))
+            })
+            .collect();
+        enz_view_switcher(pages, current, |step| {
+            Message::Wizard(WizardEvent::GoTo(step))
+        })
+        .aria_label(enzui_core::localized!(
+            "enzui-wizard-step",
+            "current" => (current + 1).to_string(),
+            "total" => self.wizard.steps().to_string()
+        ))
+        .tab_id_prefix("welcome-progress")
+        .into_element()
     }
 
     fn body(&self) -> Element<'_, Message> {
         let spacing = self.themes.theme().spacing;
-        let titles = [
-            tr("welcome-step-desktop").to_owned(),
-            tr("welcome-step-appearance").to_owned(),
-            tr("welcome-step-ai").to_owned(),
-        ];
+        let current = self.wizard.current();
         let page = column![
             self.heading(),
-            match self.wizard.current() {
+            match current {
                 DESKTOP => self.desktop_page(),
                 APPEARANCE => self.appearance_page(),
                 _ => self.ai_page(),
@@ -644,8 +678,41 @@ impl Welcome {
             }
             content = content.push(banner);
         }
-        let can_advance = self.live() && self.scale.is_none() && !self.adding;
-        let wizard = enz_wizard(&self.wizard, &titles, content, can_advance, Message::Wizard);
+        let (label, event) = if self.wizard.is_last() {
+            (
+                enzui_core::localized!("enzui-wizard-finish"),
+                WizardEvent::Finish,
+            )
+        } else {
+            (
+                enzui_core::localized!("enzui-wizard-next"),
+                WizardEvent::Next,
+            )
+        };
+        let footer = row![
+            enz_button(
+                enzui_core::localized!("enzui-wizard-cancel"),
+                Message::Wizard(WizardEvent::Cancel),
+            )
+            .kind(ButtonKind::Quiet),
+            Space::new().width(Length::Fill),
+            enz_button(
+                enzui_core::localized!("enzui-wizard-back"),
+                Message::Wizard(WizardEvent::Back),
+            )
+            .kind(ButtonKind::Secondary)
+            .enabled(self.wizard.can_go_back()),
+            enz_button(label, Message::Wizard(event))
+                .kind(ButtonKind::Accent)
+                .enabled(self.live() && self.scale.is_none() && !self.adding),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center);
+        let wizard = column![
+            fade_on_change(current, content.height(Length::Fill)),
+            footer,
+        ]
+        .spacing(16);
         container(container(wizard).width(Length::Fill.max(enzui_theme::text_scale::ui_px(880.0))))
             .center_x(Length::Fill)
             .padding(spacing.space6)
@@ -721,15 +788,18 @@ impl Welcome {
         column![
             enz_text(label.to_owned())
                 .weight_rung(enzui_theme::WeightRung::Semibold)
+                .full_width()
+                .align(TextAlign::Center)
                 .into_element(),
             enz_text(detail.to_owned())
                 .size(TextSize::Footnote)
                 .tone(TextTone::Muted)
                 .wrap(true)
+                .full_width()
+                .align(TextAlign::Center)
                 .into_element(),
         ]
         .spacing(2)
-        .align_x(Alignment::Center)
         .into()
     }
 
@@ -807,16 +877,24 @@ impl Welcome {
                     .into_element(),
             );
         }
-        body.push(self.section(
-            "welcome-bar-position",
-            self.segments(
-                "welcome-bar",
-                BarEdge::ALL.map(|edge| (edge, edge.label().to_owned())),
-                Some(self.settings.bar),
-                |edge| Message::Change(Change::Bar(edge)),
-                true,
-            ),
-        ))
+        let bar_position = tr("welcome-bar-position");
+        let bar_switcher = enz_view_switcher(
+            vec![
+                SwitcherPage::new("top", BarEdge::Top.label()),
+                SwitcherPage::new("bottom", BarEdge::Bottom.label()),
+            ],
+            usize::from(self.settings.bar == BarEdge::Bottom),
+            |index| Message::Change(Change::Bar(BarEdge::ALL[index])),
+        )
+        .aria_label(bar_position)
+        .tab_id_prefix("welcome-bar")
+        .enabled(self.live());
+        body.push(
+            enz_preferences_row(bar_position)
+                .control(bar_switcher)
+                .enabled(self.live())
+                .into_element(),
+        )
         .into()
     }
 
@@ -839,7 +917,7 @@ impl Welcome {
                 label.to_owned(),
                 dark == is_dark,
                 column![
-                    Self::picture(theme_preview::card(choices, mode), 120.0),
+                    Self::picture(theme_preview::card(choices, mode, mode), 120.0),
                     enz_text(label)
                         .weight_rung(enzui_theme::WeightRung::Semibold)
                         .into_element(),
@@ -915,9 +993,9 @@ impl Welcome {
                 tr("shell-deeper-surfaces-brighter-text-and-stronger-lines-in-the-colour")
             }
         };
-        let text = TextStep::nearest(self.settings.metrics.text);
         column![
             self.section("welcome-mode", row(modes).spacing(12)),
+            self.scale_setting(),
             self.section("welcome-accent", swatches.wrap()),
             self.section(
                 "welcome-tone",
@@ -930,23 +1008,57 @@ impl Welcome {
                 ]
                 .spacing(8),
             ),
-            self.section(
-                "welcome-text-size",
-                self.segments(
-                    "welcome-text",
-                    TextStep::ALL.map(|step| (step, step.description().to_owned())),
-                    Some(text),
-                    |step| Message::Change(Change::Metric(Metric::Text, step.px())),
-                    true,
-                ),
-            ),
-            self.section("welcome-scale", self.scale_setting()),
+            self.section("welcome-text-size", self.text_size_setting()),
         ]
         .spacing(24)
         .into()
     }
 
+    fn text_size_setting(&self) -> Element<'_, Message> {
+        let selected = TextStep::nearest(self.settings.metrics.text);
+        let index = TextStep::ALL
+            .iter()
+            .position(|step| *step == selected)
+            .expect("the nearest text size is one of the steps");
+        let thumb_width = 28.0;
+        let mut samples = row![].align_y(Alignment::End);
+        for (index, step) in TextStep::ALL.into_iter().enumerate() {
+            if index > 0 {
+                samples = samples.push(Space::new().width(Length::Fill));
+            }
+            samples = samples.push(
+                enz_text("A")
+                    .size_px(f32::from(step.px()))
+                    .width(thumb_width)
+                    .align(TextAlign::Center)
+                    .tone(if selected == step {
+                        TextTone::Default
+                    } else {
+                        TextTone::Muted
+                    }),
+            );
+        }
+        let slider = enz_slider(
+            0.0..=(TextStep::ALL.len() - 1) as f32,
+            index as f32,
+            |value| {
+                Message::Change(Change::Metric(
+                    Metric::Text,
+                    TextStep::ALL[value as usize].px(),
+                ))
+            },
+        )
+        .step(1.0)
+        .thumb_width(thumb_width)
+        .aria_label(tr("welcome-text-size"))
+        .value_format(|value| TextStep::ALL[value as usize].description().to_owned())
+        .id_prefix("welcome-text")
+        .enabled(self.live());
+        column![samples, slider].spacing(4).into()
+    }
+
     fn scale_setting(&self) -> Element<'_, Message> {
+        let row = enz_preferences_row(tr("welcome-scale")).icon("zoom-in");
         let primary = self
             .displays
             .as_ref()
@@ -954,24 +1066,25 @@ impl Welcome {
             .and_then(|displays| displays.outputs.iter().find(|output| output.enabled))
             .and_then(|output| Some((output.current_mode()?, output.scale)));
         let Some((mode, current)) = primary else {
-            return enz_text(tr("welcome-scale-unavailable"))
-                .tone(TextTone::Muted)
-                .wrap(true)
-                .into_element();
+            return row.subtitle(tr("welcome-scale-unavailable")).into_element();
         };
         let options = SCALES
             .into_iter()
             .filter(|&scale| {
                 (scale - current).abs() < 1e-6 || (scale >= 1.0 && supports_scale(mode, scale))
             })
-            .map(|scale| (ScaleChoice(scale), format!("{:.0}%", scale * 100.0)));
-        self.segments(
-            "welcome-scale",
-            options,
-            Some(ScaleChoice(current)),
-            |ScaleChoice(scale)| Message::Scale(scale),
-            self.scale.is_none(),
-        )
+            .map(|scale| (format!("{:.0}%", scale * 100.0), Message::Scale(scale)))
+            .collect();
+        row.id_prefix("welcome-scale")
+            .value_menu(
+                format!("{:.0}%", current * 100.0),
+                self.scale_menu_open,
+                Message::ScaleMenu(true),
+                Message::ScaleMenu(false),
+                options,
+            )
+            .enabled(self.live() && self.scale.is_none())
+            .into_element()
     }
 
     fn ai_page(&self) -> Element<'_, Message> {
@@ -1134,15 +1247,6 @@ impl Welcome {
         .spacing(12)
         .align_y(Alignment::Center)
         .into()
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct ScaleChoice(f64);
-
-impl PartialEq for ScaleChoice {
-    fn eq(&self, other: &Self) -> bool {
-        (self.0 - other.0).abs() < 1e-6
     }
 }
 

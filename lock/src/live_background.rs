@@ -263,7 +263,10 @@ impl Live {
         })
     }
     pub(crate) fn healthy(&mut self) -> bool {
-        self.child.try_wait().is_ok_and(|r| r.is_none())
+        // A finished reader closes its end of the wake socket, which then
+        // stays readable.
+        self.reader.as_ref().is_some_and(|r| !r.is_finished())
+            && self.child.try_wait().is_ok_and(|r| r.is_none())
             && ((self.received && self.last_frame.elapsed() < Duration::from_secs(8))
                 || (!self.received && self.started.elapsed() < Duration::from_secs(8)))
     }

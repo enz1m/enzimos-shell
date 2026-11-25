@@ -263,6 +263,18 @@ fn clock_minute() -> i64 {
         .div_euclid(60)
 }
 
+/// Empties a nonblocking wake pipe; false once its writer has closed it.
+fn drain_open(wake: &OwnedFd) -> bool {
+    let mut drained = [0_u8; 64];
+    loop {
+        match rustix::io::read(wake, &mut drained) {
+            Ok(0) => return false,
+            Ok(_) => {}
+            Err(_) => return true,
+        }
+    }
+}
+
 /// Dispatches compositor events, waiting up to `timeout` for them or for
 /// any of `also` to become readable.
 fn pump<'a>(
@@ -591,7 +603,7 @@ pub fn run(mode: Mode) -> Result<(), String> {
     // Fingerprint unlock beside the password, on the lock screen only:
     // after a restart the password is needed to unlock the keyring.
     let (finger_tx, finger_rx) = mpsc::channel::<Option<String>>();
-    let finger_wake = (mode == Mode::Lock && auth::fingerprint_offered())
+    let mut finger_wake = (mode == Mode::Lock && auth::fingerprint_offered())
         .then(|| {
             rustix::pipe::pipe_with(
                 rustix::pipe::PipeFlags::NONBLOCK | rustix::pipe::PipeFlags::CLOEXEC,
@@ -771,9 +783,9 @@ pub fn run(mode: Mode) -> Result<(), String> {
                 }
             }
         }
-        if let Some(wake) = &finger_wake {
-            let mut drained = [0_u8; 64];
-            while rustix::io::read(wake, &mut drained).is_ok_and(|n| n > 0) {}
+        // A finished fingerprint thread leaves its pipe readable for good.
+        if finger_wake.as_ref().is_some_and(|wake| !drain_open(wake)) {
+            finger_wake = None;
         }
         while let Ok(text) = finger_rx.try_recv() {
             ui.fingerprint = text;
@@ -1211,6 +1223,26 @@ fn hyprland_xray() -> bool {
         v.get("bool") == Some(&serde_json::Value::Bool(true))
             || v.get("int").and_then(serde_json::Value::as_i64) == Some(1)
     })
+}
+
+#[cfg(test)]
+mod wake_tests {
+    use super::drain_open;
+
+    #[test]
+    fn a_wake_pipe_is_dropped_once_its_writer_closes() {
+        let (read, write) =
+            rustix::pipe::pipe_with(rustix::pipe::PipeFlags::NONBLOCK).expect("a pipe");
+        assert!(drain_open(&read), "an empty pipe with a writer stays open");
+        rustix::io::write(&write, &[1, 1]).expect("a wake");
+        assert!(drain_open(&read), "pending wakes are drained");
+        rustix::io::write(&write, &[1]).expect("a last wake");
+        drop(write);
+        assert!(
+            !drain_open(&read),
+            "a closed pipe is reported after its last wake"
+        );
+    }
 }
 
 #[cfg(test)]

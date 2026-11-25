@@ -14,6 +14,16 @@ async fn inhibit(manager: &zbus::Proxy<'_>, what: &str, why: &str, mode: &str) -
         .ok()
 }
 
+async fn set_displays(compositor: Option<&crate::compositor::Compositor>, on: bool) {
+    let Some(compositor) = compositor else {
+        return;
+    };
+    let action = if on { "on" } else { "off" };
+    let _ = compositor
+        .request(&["dispatch", &format!("hl.dsp.dpms({{action='{action}'}})")])
+        .await;
+}
+
 /// Holds the policy for `lid`; changing it takes the inhibitors afresh.
 pub fn subscription(lid: LidAction) -> iced::Subscription<String> {
     iced::Subscription::run_with(lid, stream)
@@ -82,6 +92,7 @@ async fn run(lid: LidAction) -> Result<(), String> {
         None => None,
     };
 
+    let compositor = crate::compositor::Compositor::from_environment().ok();
     // logind sleeps once delay inhibitors close or this limit passes.
     let delay_limit = manager
         .get_property::<u64>("InhibitDelayMaxUSec")
@@ -114,9 +125,16 @@ async fn run(lid: LidAction) -> Result<(), String> {
                 let starting: bool = signal.body().deserialize().unwrap_or(false);
                 if starting {
                     let _ = crate::session_lock::lock_within(delay_limit).await;
+                    // The session freezes when the delay closes, but the kernel
+                    // can take seconds more before the panel goes dark; the
+                    // frozen lock screen and cursor would stay up until then.
+                    set_displays(compositor.as_ref(), false).await;
                     delay = None;
-                } else if delay.is_none() {
-                    delay = inhibit(&manager, "sleep", tr("shell-locking-the-screen-before-sleep"), "delay").await;
+                } else {
+                    set_displays(compositor.as_ref(), true).await;
+                    if delay.is_none() {
+                        delay = inhibit(&manager, "sleep", tr("shell-locking-the-screen-before-sleep"), "delay").await;
+                    }
                 }
             }
             request = async {

@@ -640,6 +640,8 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual(values["ENZUI_PORTAL_EXES"].split(":"), ["/usr/lib/xdg-desktop-portal-hyprland", remote])
         self.assertEqual(values["ENZUI_PORTAL_INPUT_EXES"], remote)
         self.assertNotIn(remote, values["ENZUI_PORTAL_HELPER_EXES"])
+        self.assertEqual(values["ENZUI_CONTROL_EXES"].split(":"), [str((self.root / name).resolve()) for name in ("enzui-settings", "enzui-welcome")])
+        self.assertEqual(values["ENZUI_IME_EXES"], "/usr/bin/fcitx5")
         self.assertEqual(platform.privileged_clients(self.root, "/usr/bin/env")["ENZUI_DEV_PRIVILEGED_EXES"], "/usr/bin/env")
         for bad in ["env", "/nonexistent/tool", "/usr/bin/env:relative", "/usr/bin/e nv"]:
             with self.assertRaises(argparse.ArgumentTypeError):

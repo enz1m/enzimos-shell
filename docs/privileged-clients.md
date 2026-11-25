@@ -1,8 +1,9 @@
-# Who may capture the screen or send input
+# Who may capture the screen, send input or control the compositor
 
-With `ENZUI_PRIVILEGED_CLIENTS=enforce`, the compositor filters screen-capture
-and virtual-input globals. The implementation lives in the
-[Hyprland fork](https://github.com/enz1m/enzim-hyprland).
+With `ENZUI_PRIVILEGED_CLIENTS=enforce`, the compositor filters screen-capture,
+virtual-input, input-method and input-capture globals, restricts compositor
+control requests and reserves `dev.enzui.*` application ids. The implementation
+lives in the [Hyprland fork](https://github.com/enz1m/enzim-hyprland).
 
 ## Threat model
 
@@ -19,17 +20,40 @@ and binary tree. Portal service-instance attestation is separate from executable
 |---|---|---|
 | Shell | Input | Exact live child of the verified supervisor; approved executable at registration, then retained process/image identity |
 | Shell-announced helper | Announced capture/input, once, within 100–10,000 ms | Original authenticated shell control peer; exact direct child and announced executable inode |
-| Portal executables | Capture | Startup-approved executable inode |
+| Portal executables | Capture and input capture | Startup-approved executable inode |
 | Remote-desktop portal | Input | Startup-approved executable inode; its own consent flow still governs sessions |
 | Portal helpers | Capture | Approved helper inode and an uninjected approved portal parent |
+| Input method | Input method | Startup-approved executable inode (`ENZUI_IME_EXES`, Fcitx5) |
 | Root grants | Named capture/input | Matching UID and exact/subtree `/system.slice/…` cgroup from a protected public grant |
-| Explicit preview dev tools | Capture and input | Startup-approved executable inode; QA only |
+| Explicit preview dev tools | Capture, input, input method, input capture and control | Startup-approved executable inode; QA only |
 
 The capture family includes `zwlr_screencopy_manager_v1`,
 `hyprland_toplevel_export_manager_v1`, `ext_image_copy_capture_manager_v1`,
 `ext_output_image_capture_source_manager_v1` and
 `ext_foreign_toplevel_image_capture_source_manager_v1`. Input includes
 `zwlr_virtual_pointer_manager_v1` and `zwp_virtual_keyboard_manager_v1`.
+Input method is `zwp_input_method_manager_v2`; input capture is
+`hyprland_input_capture_manager_v1`.
+
+## Compositor control
+
+Control requests change compositor code, configuration or outputs: `eval`,
+`repl`, `dispatch`, `plugin` (except `plugin list`), `reload`, `output`,
+`reloadshaders` and `seterror`, alone or inside a batch. They are answered for
+the registered shell; the supervisor and its descendants up to four levels
+down, outside the shell's and the compositor's process trees; uninjected
+executables named in `ENZUI_CONTROL_EXES` (Settings and Welcome); and preview
+dev tools. Anyone else receives an `error:` reply. Read-only queries stay open
+to every same-user client. In-process requests from plugins carry no socket
+peer and are not filtered.
+
+## Shell application ids
+
+Window rules, hit testing and first-configure placement single out
+`dev.enzui.*` application ids. The compositor keeps such an id only for the
+registered shell or an uninjected executable installed in the same directory
+as `ENZUI_SHELL_EXE`, and otherwise leaves the window without an application
+id. X11 windows never keep one.
 
 ## Supervisor contract
 
@@ -72,12 +96,15 @@ capture/input by rewriting an allowlist. On executable routes, nonempty
 `LD_PRELOAD`/`LD_AUDIT` and a differing nonempty `LD_LIBRARY_PATH` refuse
 admission. Root grants continue to trust root's unit environment.
 
-Locking disconnects admitted clients except the registered shell. New portal
-and ordinary helper clients are refused while locked; unlocking requires a
-fresh connection. Root grants stay in `/run/enzimos-compositor-grants`; the
-private `/run/enzimos` directory is unchanged. The grant directory is root-owned
-and not group/world writable. Each grant is a regular, root-owned, singly linked,
-non-group/world-writable file of at most 4 KiB.
+Locking disconnects admitted clients except the registered shell and input
+methods. New portal and ordinary helper clients are refused while locked;
+unlocking requires a fresh connection. While locked, the input method receives
+no keys and no lock-screen field state, and active input capture is released and
+cannot start again until unlock. Root grants stay in
+`/run/enzimos-compositor-grants`; the private `/run/enzimos` directory is
+unchanged. The grant directory is root-owned and not group/world writable. Each
+grant is a regular, root-owned, singly linked, non-group/world-writable file of
+at most 4 KiB.
 
 ## Acceptance boundaries
 

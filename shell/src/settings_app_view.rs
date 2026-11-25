@@ -71,7 +71,7 @@ impl SettingsApp {
                         .map(|event| Message::SharedTheme(Box::new(event)))
                 }),
             window::resize_events().map(|(id, size)| Message::Viewport(id, size)),
-            iced::event::listen_with(|event, _, _| {
+            iced::event::listen_with_interest(iced::event::Interest::KEYBOARD, |event, _, _| {
                 use iced::keyboard::{Event, Key};
                 let iced::Event::Keyboard(Event::KeyPressed { key, modifiers, .. }) = event else {
                     return None;

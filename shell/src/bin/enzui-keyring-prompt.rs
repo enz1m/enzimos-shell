@@ -257,7 +257,7 @@ impl App {
         Subscription::batch([
             Subscription::run(service).map(Message::Service),
             window::close_requests().map(Message::Closed),
-            iced::event::listen_with(|event, _, _| {
+            iced::event::listen_with_interest(iced::event::Interest::KEYBOARD, |event, _, _| {
                 matches!(
                     event,
                     iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {

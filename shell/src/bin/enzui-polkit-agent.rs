@@ -368,7 +368,10 @@ impl App {
             window::events().filter_map(|(id, event)| {
                 matches!(event, window::Event::Focused).then_some(Message::Focused(id))
             }),
-            iced::event::listen_with(|event, status, _| unhandled_key(&event, status)),
+            iced::event::listen_with_interest(
+                iced::event::Interest::KEYBOARD,
+                |event, status, _| unhandled_key(&event, status),
+            ),
         ])
     }
 }

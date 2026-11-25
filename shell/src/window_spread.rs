@@ -580,23 +580,26 @@ impl Shell {
         let Some(id) = self.spread.window else {
             return Subscription::none();
         };
-        let keys = iced::event::listen_with(|event, _, window| match event {
-            iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                key: iced::keyboard::Key::Named(key),
-                ..
-            }) if matches!(
-                key,
-                iced::keyboard::key::Named::ArrowLeft
-                    | iced::keyboard::key::Named::ArrowRight
-                    | iced::keyboard::key::Named::ArrowUp
-                    | iced::keyboard::key::Named::ArrowDown
-                    | iced::keyboard::key::Named::Enter
-            ) =>
-            {
-                Some((window, key))
-            }
-            _ => None,
-        })
+        let keys = iced::event::listen_with_interest(
+            iced::event::Interest::KEYBOARD,
+            |event, _, window| match event {
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Named(key),
+                    ..
+                }) if matches!(
+                    key,
+                    iced::keyboard::key::Named::ArrowLeft
+                        | iced::keyboard::key::Named::ArrowRight
+                        | iced::keyboard::key::Named::ArrowUp
+                        | iced::keyboard::key::Named::ArrowDown
+                        | iced::keyboard::key::Named::Enter
+                ) =>
+                {
+                    Some((window, key))
+                }
+                _ => None,
+            },
+        )
         .with(id)
         .filter_map(|(owner, (window, key))| {
             (owner == window).then_some(Message::Spread(SpreadMessage::Key(key)))

@@ -46,38 +46,41 @@ impl Shell {
             enzui_shell::backup_activity::subscription().map(|()| Message::BackupCheck),
             enzui_shell::desktop_glass::luminance_changes().map(|()| Message::GlassBackdrop(false)),
             window::events().map(|(id, event)| Message::Window(id, event)),
-            iced::event::listen_with(|event, status, id| match (event, status) {
-                (
-                    iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                        key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
-                        ..
-                    }),
-                    iced::event::Status::Ignored,
-                ) => Some(Message::Escape(id)),
-                (
-                    iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                        key:
-                            key @ iced::keyboard::Key::Named(
-                                iced::keyboard::key::Named::ArrowUp
-                                | iced::keyboard::key::Named::ArrowDown
-                                | iced::keyboard::key::Named::ArrowLeft
-                                | iced::keyboard::key::Named::ArrowRight,
-                            ),
-                        ..
-                    }),
-                    // Also when the search field moved its cursor: in the
-                    // emoji picker the arrows choose.
-                    _,
-                ) => Some(Message::EmojiKey(id, key)),
-                (
-                    iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                        key: key @ iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
-                        ..
-                    }),
-                    iced::event::Status::Ignored,
-                ) => Some(Message::EmojiKey(id, key)),
-                _ => None,
-            }),
+            iced::event::listen_with_interest(
+                iced::event::Interest::KEYBOARD,
+                |event, status, id| match (event, status) {
+                    (
+                        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                            key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                            ..
+                        }),
+                        iced::event::Status::Ignored,
+                    ) => Some(Message::Escape(id)),
+                    (
+                        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                            key:
+                                key @ iced::keyboard::Key::Named(
+                                    iced::keyboard::key::Named::ArrowUp
+                                    | iced::keyboard::key::Named::ArrowDown
+                                    | iced::keyboard::key::Named::ArrowLeft
+                                    | iced::keyboard::key::Named::ArrowRight,
+                                ),
+                            ..
+                        }),
+                        // Also when the search field moved its cursor: in the
+                        // emoji picker the arrows choose.
+                        _,
+                    ) => Some(Message::EmojiKey(id, key)),
+                    (
+                        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                            key: key @ iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+                            ..
+                        }),
+                        iced::event::Status::Ignored,
+                    ) => Some(Message::EmojiKey(id, key)),
+                    _ => None,
+                },
+            ),
             self.plugin_subscription(),
             self.notification_subscription(),
             self.assistant_subscription(),

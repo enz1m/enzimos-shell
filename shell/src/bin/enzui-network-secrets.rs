@@ -324,12 +324,14 @@ impl App {
             window::events().filter_map(|(id, event)| {
                 matches!(event, window::Event::Focused).then_some(Message::Focused(id))
             }),
-            iced::event::listen_with(|event, _, _| match event {
-                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                    key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
-                    ..
-                }) => Some(Message::Escape),
-                _ => None,
+            iced::event::listen_with_interest(iced::event::Interest::KEYBOARD, |event, _, _| {
+                match event {
+                    iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                        key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                        ..
+                    }) => Some(Message::Escape),
+                    _ => None,
+                }
             }),
         ])
     }

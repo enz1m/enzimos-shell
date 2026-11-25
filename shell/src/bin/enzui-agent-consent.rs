@@ -348,13 +348,16 @@ impl App {
             window::events().filter_map(|(id, event)| {
                 matches!(event, window::Event::Focused).then_some(Message::Focused(id))
             }),
-            iced::event::listen_with(|event, status, _| match (event, status) {
-                (
-                    iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. }),
-                    iced::event::Status::Ignored,
-                ) => Some(Message::Key(key)),
-                _ => None,
-            }),
+            iced::event::listen_with_interest(
+                iced::event::Interest::KEYBOARD,
+                |event, status, _| match (event, status) {
+                    (
+                        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. }),
+                        iced::event::Status::Ignored,
+                    ) => Some(Message::Key(key)),
+                    _ => None,
+                },
+            ),
         ])
     }
 }

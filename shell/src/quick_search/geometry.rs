@@ -267,16 +267,18 @@ impl Shell {
     }
     pub(crate) fn search_subscription(&self) -> Subscription<ShellMessage> {
         let keys = if self.search.showing {
-            iced::event::listen_with(|event, status, id| match (event, status) {
-                (
-                    iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                        key,
-                        modifiers,
-                        repeat,
-                        ..
-                    }),
-                    status,
-                ) if status == iced::event::Status::Ignored
+            iced::event::listen_with_interest(
+                iced::event::Interest::KEYBOARD,
+                |event, status, id| match (event, status) {
+                    (
+                        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                            key,
+                            modifiers,
+                            repeat,
+                            ..
+                        }),
+                        status,
+                    ) if status == iced::event::Status::Ignored
                     || source_chord(&key, modifiers).is_some()
                     // The empty field takes the side arrows for its caret; the
                     // top-apps row needs them too (the handler checks it is shown).
@@ -287,11 +289,12 @@ impl Shell {
                                 | iced::keyboard::key::Named::ArrowRight
                         )
                     ) =>
-                {
-                    Some((id, key, modifiers, repeat))
-                }
-                _ => None,
-            })
+                    {
+                        Some((id, key, modifiers, repeat))
+                    }
+                    _ => None,
+                },
+            )
             .with(self.search.model.generation)
             .map(|(generation, (id, key, modifiers, repeat))| {
                 message(Message::Key(id, generation, key, modifiers, repeat))

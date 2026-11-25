@@ -38,6 +38,10 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
             "wp_cursor_shape_manager_v1" => {
                 state.cursor_shape = Some(registry.bind(name, 1, qh, ()));
             }
+            "wp_fractional_scale_manager_v1" => {
+                state.fractional_scale = Some(registry.bind(name, 1, qh, ()));
+            }
+            "wp_viewporter" => state.viewporter = Some(registry.bind(name, 1, qh, ())),
             "wl_output" => {
                 let index = state.outputs.len();
                 let output = registry.bind(name, version.min(4), qh, index);
@@ -458,6 +462,28 @@ wayland_client::delegate_noop!(State: ignore wl_surface::WlSurface);
 wayland_client::delegate_noop!(State: ExtSessionLockManagerV1);
 wayland_client::delegate_noop!(State: ZwlrScreencopyManagerV1);
 wayland_client::delegate_noop!(State: WpCursorShapeManagerV1);
+wayland_client::delegate_noop!(State: WpFractionalScaleManagerV1);
+wayland_client::delegate_noop!(State: WpViewporter);
+wayland_client::delegate_noop!(State: WpViewport);
+impl Dispatch<WpFractionalScaleV1, usize> for State {
+    fn event(
+        state: &mut Self,
+        _: &WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        index: &usize,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event
+            && let Some(fractional) = state
+                .surfaces
+                .get_mut(*index)
+                .and_then(|s| s.fractional.as_mut())
+        {
+            fractional.preferred = Some(scale.clamp(1, 4 * SCALE_DENOMINATOR));
+        }
+    }
+}
 wayland_client::delegate_noop!(State: WpCursorShapeDeviceV1);
 impl Dispatch<wl_callback::WlCallback, usize> for State {
     fn event(

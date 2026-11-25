@@ -56,6 +56,13 @@ use wayland_protocols::wp::cursor_shape::v1::client::{
     wp_cursor_shape_device_v1::{self, WpCursorShapeDeviceV1},
     wp_cursor_shape_manager_v1::WpCursorShapeManagerV1,
 };
+use wayland_protocols::wp::fractional_scale::v1::client::{
+    wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
+    wp_fractional_scale_v1::{self, WpFractionalScaleV1},
+};
+use wayland_protocols::wp::viewporter::client::{
+    wp_viewport::WpViewport, wp_viewporter::WpViewporter,
+};
 use wayland_protocols_wlr::screencopy::v1::client::{
     zwlr_screencopy_frame_v1::{self, ZwlrScreencopyFrameV1},
     zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
@@ -97,6 +104,9 @@ struct Surface {
     /// The local minute the surface last showed; see [`clock_minute`].
     drawn: Option<i64>,
     buffer_scale: i32,
+    fractional: Option<Fractional>,
+    /// The physical size the surface's backdrop was last requested at.
+    backdrop: Option<(u32, u32)>,
     software_pending: usize,
     /// When the frame callback asked for with the last present was
     /// requested, until the compositor answers it.
@@ -105,6 +115,86 @@ struct Surface {
     stale: bool,
     /// A frame that hides the desktop completely was presented.
     opaque: bool,
+}
+
+// A buffer at the preferred scale, rounded as winit rounds it, shown at the
+// logical size through a viewport.
+struct Fractional {
+    _scale: WpFractionalScaleV1,
+    viewport: WpViewport,
+    preferred: Option<u32>,
+    destination: Option<(u32, u32)>,
+}
+
+/// The wp_fractional_scale_v1 denominator.
+const SCALE_DENOMINATOR: u32 = 120;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Scale {
+    /// A `wl_surface.set_buffer_scale` factor.
+    Integer(u32),
+    /// A preferred scale in 120ths, presented through a viewport.
+    Fractional(u32),
+}
+
+impl Scale {
+    fn factor(self) -> f32 {
+        match self {
+            Self::Integer(scale) => scale as f32,
+            Self::Fractional(scale) => scale as f32 / SCALE_DENOMINATOR as f32,
+        }
+    }
+
+    fn physical(self, (width, height): (u32, u32)) -> (u32, u32) {
+        let apply = |length: u32| match self {
+            Self::Integer(scale) => length.saturating_mul(scale),
+            Self::Fractional(scale) => {
+                let scaled = (u64::from(length) * u64::from(scale)
+                    + u64::from(SCALE_DENOMINATOR / 2))
+                    / u64::from(SCALE_DENOMINATOR);
+                u32::try_from(scaled).unwrap_or(u32::MAX)
+            }
+        };
+        (apply(width).max(1), apply(height).max(1))
+    }
+}
+
+impl Surface {
+    fn scale(&self, outputs: &[Output]) -> Scale {
+        match self.fractional.as_ref().and_then(|f| f.preferred) {
+            Some(preferred) => Scale::Fractional(preferred),
+            None => Scale::Integer(outputs[self.output].scale.max(1) as u32),
+        }
+    }
+
+    fn physical(&self, outputs: &[Output]) -> (u32, u32) {
+        self.scale(outputs).physical(self.size)
+    }
+
+    // Buffer scale and viewport are double-buffered: a change needs a new
+    // frame to take effect, even when the buffer size stays the same.
+    fn apply_scale(&mut self, scale: Scale) -> bool {
+        let mut changed = false;
+        let buffer_scale = match scale {
+            Scale::Integer(scale) => scale as i32,
+            Scale::Fractional(_) => 1,
+        };
+        if self.buffer_scale != buffer_scale {
+            self.buffer_scale = buffer_scale;
+            self.surface.set_buffer_scale(buffer_scale);
+            changed = true;
+        }
+        if let Some(fractional) = &mut self.fractional {
+            let destination = matches!(scale, Scale::Fractional(_)).then_some(self.size);
+            if fractional.destination != destination {
+                fractional.destination = destination;
+                let (width, height) = destination.map_or((-1, -1), |(w, h)| (w as i32, h as i32));
+                fractional.viewport.set_destination(width, height);
+                changed = true;
+            }
+        }
+        changed
+    }
 }
 
 struct SurfaceGpu {
@@ -128,6 +218,8 @@ struct State {
     lock_manager: Option<ExtSessionLockManagerV1>,
     screencopy: Option<ZwlrScreencopyManagerV1>,
     cursor_shape: Option<WpCursorShapeManagerV1>,
+    fractional_scale: Option<WpFractionalScaleManagerV1>,
+    viewporter: Option<WpViewporter>,
     outputs: Vec<Output>,
     lock: Option<ExtSessionLockV1>,
     /// When the compositor confirmed the lock.
@@ -344,6 +436,17 @@ fn add_lock_surface(
     let surface = compositor.create_surface(qh, ());
     let scale = state.outputs[index].scale;
     surface.set_buffer_scale(scale);
+    // Requested before the lock surface, so a compositor that knows the
+    // output's scale can send it with the first configure.
+    let fractional = match (&state.fractional_scale, &state.viewporter) {
+        (Some(manager), Some(viewporter)) => Some(Fractional {
+            _scale: manager.get_fractional_scale(&surface, qh, index),
+            viewport: viewporter.get_viewport(&surface, qh, ()),
+            preferred: None,
+            destination: None,
+        }),
+        _ => None,
+    };
     // A removed output's lock surface is never configured.
     if !state.outputs[index].removed {
         lock.get_lock_surface(&surface, &state.outputs[index].output, qh, index);
@@ -360,6 +463,8 @@ fn add_lock_surface(
         cache: user_interface::Cache::new(),
         drawn: None,
         buffer_scale: scale,
+        fractional,
+        backdrop: None,
         software_pending: 0,
         frame_pending: None,
         stale: false,
@@ -397,6 +502,8 @@ pub fn run(mode: Mode) -> Result<(), String> {
         lock_manager: None,
         screencopy: None,
         cursor_shape: None,
+        fractional_scale: None,
+        viewporter: None,
         outputs: Vec::new(),
         lock: None,
         locked: None,
@@ -556,37 +663,37 @@ pub fn run(mode: Mode) -> Result<(), String> {
     // Backdrops are prepared off the main thread while the captured
     // desktop is already on screen.
     let (backdrops_tx, backdrops) = mpsc::channel();
-    let sizes: Vec<(usize, u32, u32)> = state
-        .surfaces
-        .iter()
-        .enumerate()
-        .filter(|(_, s)| s.configured && !state.outputs[s.output].removed)
-        .map(|(i, s)| {
-            let scale = state.outputs[s.output].scale as u32;
-            (i, s.size.0 * scale, s.size.1 * scale)
-        })
-        .collect();
+    let mut sizes = Vec::new();
+    for (index, surface) in state.surfaces.iter_mut().enumerate() {
+        if surface.configured && !state.outputs[surface.output].removed {
+            let physical = surface.physical(&state.outputs);
+            surface.backdrop = Some(physical);
+            sizes.push((index, physical));
+        }
+    }
     let wallpaper = background::selected(&settings.wallpaper, &settings.session.lock_clock);
     let late_backdrops = (backdrops_tx.clone(), wallpaper.clone());
     std::thread::spawn(move || {
-        for (index, width, height) in sizes {
+        for (index, (width, height)) in sizes {
             let backdrop = background::load(&wallpaper, width, height);
-            if backdrops_tx.send((index, backdrop)).is_err() {
+            if backdrops_tx
+                .send((index, (width, height), backdrop))
+                .is_err()
+            {
                 break;
             }
         }
     });
 
     for surface in state.surfaces.iter_mut().filter(|s| s.configured) {
-        let scale = state.outputs[surface.output].scale.max(1) as u32;
+        let (width, height) = surface.physical(&state.outputs);
         let desktop = state.outputs[surface.output]
             .capture
             .as_mut()
             .and_then(|c| c.done.take())
             .flatten();
-        let placeholder = handle(desktop.unwrap_or_else(|| {
-            background::Picture::solid(surface.size.0 * scale, surface.size.1 * scale, [0, 0, 0])
-        }));
+        let placeholder =
+            handle(desktop.unwrap_or_else(|| background::Picture::solid(width, height, [0, 0, 0])));
         surface.images = Some(ui::Images {
             desktop: (mode == Mode::Lock && !xray).then(|| placeholder.clone()),
             wallpaper: placeholder.clone(),
@@ -658,8 +765,8 @@ pub fn run(mode: Mode) -> Result<(), String> {
             if surface.images.is_some() || !surface.configured {
                 continue;
             }
-            let scale = state.outputs[surface.output].scale.max(1) as u32;
-            let (width, height) = (surface.size.0 * scale, surface.size.1 * scale);
+            let (width, height) = surface.physical(&state.outputs);
+            surface.backdrop = Some((width, height));
             let black = handle(background::Picture::solid(width, height, [0, 0, 0]));
             surface.images = Some(ui::Images {
                 desktop: None,
@@ -671,7 +778,29 @@ pub fn run(mode: Mode) -> Result<(), String> {
             });
             let (sender, wallpaper) = (late_backdrops.0.clone(), late_backdrops.1.clone());
             std::thread::spawn(move || {
-                let _ = sender.send((index, background::load(&wallpaper, width, height)));
+                let _ = sender.send((
+                    index,
+                    (width, height),
+                    background::load(&wallpaper, width, height),
+                ));
+            });
+        }
+        // A backdrop requested before a scale or size change is loaded again
+        // at the surface's new size.
+        for (index, surface) in state.surfaces.iter_mut().enumerate() {
+            let physical = surface.physical(&state.outputs);
+            if surface
+                .backdrop
+                .is_none_or(|requested| requested == physical)
+                || state.outputs[surface.output].removed
+            {
+                continue;
+            }
+            surface.backdrop = Some(physical);
+            let (sender, wallpaper) = (late_backdrops.0.clone(), late_backdrops.1.clone());
+            std::thread::spawn(move || {
+                let (width, height) = physical;
+                let _ = sender.send((index, physical, background::load(&wallpaper, width, height)));
             });
         }
         if state.surfaces[initial..]
@@ -686,8 +815,12 @@ pub fn run(mode: Mode) -> Result<(), String> {
             .iter()
             .position(|s| !state.outputs[s.output].removed)
             .unwrap_or(0);
-        while let Ok((index, backdrop)) = backdrops.try_recv() {
-            if let Some(surface) = state.surfaces.get_mut(index) {
+        while let Ok((index, size, backdrop)) = backdrops.try_recv() {
+            if let Some(surface) = state
+                .surfaces
+                .get_mut(index)
+                .filter(|s| s.backdrop == Some(size))
+            {
                 let desktop = surface.images.as_ref().and_then(|i| i.desktop.clone());
                 let images = ui::Images {
                     desktop,
@@ -902,15 +1035,12 @@ pub fn run(mode: Mode) -> Result<(), String> {
             if pass == Pass::Wait {
                 continue;
             }
-            let Some(images) = surface.images.as_ref() else {
+            if surface.images.is_none() {
                 continue;
-            };
-            if surface.buffer_scale != state.outputs[surface.output].scale {
-                surface.buffer_scale = state.outputs[surface.output].scale;
-                surface.surface.set_buffer_scale(surface.buffer_scale);
             }
-            let scale = state.outputs[surface.output].scale.max(1) as u32;
-            let physical = (surface.size.0 * scale, surface.size.1 * scale);
+            let scale = surface.scale(&state.outputs);
+            let rescaled = surface.apply_scale(scale);
+            let physical = scale.physical(surface.size);
             if surface.gpu.is_none() {
                 let hardware = gpu.as_ref().and_then(|gpu| {
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -963,13 +1093,14 @@ pub fn run(mode: Mode) -> Result<(), String> {
                 .gpu
                 .as_mut()
                 .ok_or_else(|| tr("shell-lock-surface-renderer-was-not-prepared"))?;
-            if target.physical != physical {
+            let resized = target.physical != physical;
+            if resized {
                 if let (Some(gpu), Some(surface)) = (&gpu, &target.surface) {
                     target.format = configure(gpu, surface, physical, xray);
                 }
                 target.physical = physical;
             }
-            if pass == Pass::Skip {
+            if pass == Pass::Skip && !resized && !rescaled {
                 continue;
             }
             surface.drawn = Some(minute);
@@ -977,13 +1108,16 @@ pub fn run(mode: Mode) -> Result<(), String> {
             let viewport = Viewport::with_physical_size(
                 iced::Size::new(physical.0, physical.1),
                 iced_wgpu::core::renderer::Scale {
-                    window: scale as f32,
+                    window: scale.factor(),
                     application: 1.0,
                 },
             );
             let logical = viewport.logical_size();
             let events = std::mem::take(&mut surface.events);
             let mut messages = iced_wgpu::core::shell::Bus::new();
+            let Some(images) = surface.images.as_ref() else {
+                continue;
+            };
             let view = ui.view(images, index == primary, logical, now);
             let mut interface = UserInterface::build(
                 view,
@@ -1300,5 +1434,24 @@ mod frame_tests {
         assert_eq!(frame_pass(&mut stale, false, false, true), Pass::Skip);
         assert_eq!(frame_pass(&mut stale, true, false, true), Pass::Wait);
         assert_eq!(frame_pass(&mut stale, false, false, true), Pass::Skip);
+    }
+}
+
+#[cfg(test)]
+mod scale_tests {
+    use super::Scale;
+
+    #[test]
+    fn a_fractional_scale_sizes_the_buffer_like_winit() {
+        assert_eq!(Scale::Fractional(180).physical((1504, 1003)), (2256, 1505));
+        assert_eq!(Scale::Fractional(150).physical((1707, 1067)), (2134, 1334));
+        assert_eq!(Scale::Fractional(120).physical((1280, 800)), (1280, 800));
+        assert_eq!(Scale::Fractional(180).factor(), 1.5);
+    }
+
+    #[test]
+    fn an_integer_scale_multiplies_the_surface_size() {
+        assert_eq!(Scale::Integer(2).physical((1504, 1003)), (3008, 2006));
+        assert_eq!(Scale::Integer(1).physical((1504, 1003)), (1504, 1003));
     }
 }

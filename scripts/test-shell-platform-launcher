@@ -141,6 +141,34 @@ class PlatformTests(unittest.TestCase):
                         platform.OWNED_SHELL.wait(timeout=3)
             self.assertFalse(platform.live(pid, ticks))
 
+    def test_shell_and_compositor_share_one_loader_path(self):
+        prefix = self.root / "build/prefix"
+        lib = str(prefix / "lib")
+        self.assertEqual(platform.library_path(prefix / "lib", None), lib)
+        self.assertEqual(platform.library_path(prefix / "lib", "/other"), lib + ":/other")
+        self.assertEqual(platform.library_path(prefix / "lib", lib), lib)
+        self.assertEqual(platform.library_path(prefix / "lib", "/other:" + lib), "/other:" + lib)
+        build = self.root / "build"
+        (build / "hyprland-current-build/hyprctl").mkdir(parents=True)
+        report = self.root / "compositor-environment"
+        compositor = build / "hyprland-current-build/enz-hyprland"
+        compositor.write_text(f"#!/bin/sh\nprintf '%s' \"$LD_LIBRARY_PATH\" > {report}\n")
+        (build / "hyprland-current-build/hyprctl/enz-hyprctl").write_text("#!/bin/sh\n")
+        for item in (compositor, build / "hyprland-current-build/hyprctl/enz-hyprctl"):
+            item.chmod(0o700)
+        (build / "build-revisions").write_text("fixture\n")
+        config = self.root / "hyprland.lua"
+        config.touch()
+        runtime = self.root / "runtime"
+        runtime.mkdir(mode=0o700)
+        env = {"PATH": "/usr/bin:/bin", "XDG_RUNTIME_DIR": str(runtime), "ENZUI_HYPR_BUILDROOT": str(build),
+               "ENZUI_HYPR_RUNROOT": str(runtime / "desktop"), "ENZUI_HYPR_CONFIG": str(config)}
+        for inherited, expected in ((None, lib), (lib, lib), ("/other", lib + ":/other")):
+            launch = dict(env, LD_LIBRARY_PATH=inherited) if inherited else env
+            subprocess.run([str(SCRIPT.parent.parent / "enzui-hypr"), "config-check"], env=launch, check=True, capture_output=True, timeout=10)
+            self.assertEqual(report.read_text(), expected)
+            self.assertEqual(platform.library_path(prefix / "lib", inherited), expected)
+
     def test_compositor_receives_original_supervisor_pidfd_only_during_start(self):
         (self.root / "build-revisions").write_bytes(b"privileged-launcher-child-pidfd-v2 fixture\n")
         for fail in (False, True):
@@ -630,6 +658,17 @@ class PlatformTests(unittest.TestCase):
             self.assertIn("FileChooser", (data / "xdg-desktop-portal/portals/enzui.portal").read_text())
             self.assertIn("FileChooser=enzui", (data / "xdg-desktop-portal/enzui-portals.conf").read_text())
             self.assertEqual(oct(data.stat().st_mode & 0o777), "0o700")
+            self.assertFalse((data / "dbus-1/services/org.freedesktop.impl.portal.desktop.hyprland.service").exists())
+            hyprland = binaries / "xdg-desktop-portal-enzui-remote"
+            hyprland.write_text("#!/bin/sh\n")
+            hyprland.chmod(0o755)
+            shutil.rmtree(data)
+            data = platform.portal_registration(runtime, binaries)
+            service = (data / "dbus-1/services/org.freedesktop.impl.portal.desktop.hyprland.service").read_text()
+            self.assertIn("Name=org.freedesktop.impl.portal.desktop.hyprland\n", service)
+            self.assertIn(f"Exec={hyprland.resolve()}\n", service)
+            self.assertIn(str(hyprland.resolve()), platform.privileged_clients(binaries)["ENZUI_PORTAL_EXES"].split(":"))
+            self.assertIn("org.freedesktop.impl.portal.Screenshot", (data / "xdg-desktop-portal/portals/hyprland.portal").read_text())
 
     def test_privileged_clients_name_the_shell_and_only_explicit_dev_tools(self):
         values = platform.privileged_clients(self.root)

@@ -19,6 +19,12 @@ INSTANCE_FILE=$RUNROOT/instance
 DISPLAY_FILE=$RUNROOT/wayland-display
 HOST_DISPLAY_FILE=$RUNROOT/host-wayland-display
 SHELL_BIN=$ROOT/target/debug/enzui-shell
+# Admission compares a client's LD_LIBRARY_PATH with the compositor's verbatim,
+# so a path that already names the prefix is passed through unchanged.
+case ":${LD_LIBRARY_PATH:-}:" in
+    *":$BUILD_PREFIX/lib:"*) LIBRARY_PATH=$LD_LIBRARY_PATH;;
+    *) LIBRARY_PATH=$BUILD_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH};;
+esac
 install -d -m 700 "$RUNROOT"
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -65,7 +71,7 @@ fi
 nested_display() { [[ -s "$DISPLAY_FILE" ]] || die 'compositor is not running'; printf '%s\n' "$(<"$DISPLAY_FILE")"; }
 private_env() {
     env PATH="$BUILD_PREFIX/bin:$PATH" \
-        LD_LIBRARY_PATH="$BUILD_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+        LD_LIBRARY_PATH="$LIBRARY_PATH" \
         "$@"
 }
 hypr() { private_env "$HYPRCTL_BIN" --instance "$(instance)" "$@"; }
@@ -115,7 +121,7 @@ start() {
     [[ -n "$host_display" ]] && display_env=(WAYLAND_DISPLAY="$host_display")
     nohup setsid env -u HYPRLAND_INSTANCE_SIGNATURE "${display_env[@]}" \
         XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
-        PATH="$BUILD_PREFIX/bin:$PATH" LD_LIBRARY_PATH="$BUILD_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+        PATH="$BUILD_PREFIX/bin:$PATH" LD_LIBRARY_PATH="$LIBRARY_PATH" \
         XDG_CURRENT_DESKTOP="$DESKTOP_NAMES" XDG_SESSION_DESKTOP="$SESSION_DESKTOP" XDG_SESSION_TYPE=wayland \
         "$HYPR_BIN" --config "$CONFIG" > "$HYPR_LOG" 2>&1 </dev/null &
     pid=$!; record_pid "$HYPR_PID" "$pid"
@@ -181,7 +187,7 @@ launch_app() {
         XDG_CURRENT_DESKTOP="$DESKTOP_NAMES" XDG_SESSION_DESKTOP="$SESSION_DESKTOP" XDG_SESSION_TYPE=wayland \
         WAYLAND_DISPLAY="$(nested_display)" HYPRLAND_INSTANCE_SIGNATURE="$(instance)" \
         ENZUI_HYPR_CONTROL_BIN="$HYPRCTL_BIN" ENZUI_DESKTOP_ROOT="$ROOT" \
-        PATH="$BUILD_PREFIX/bin:$PATH" LD_LIBRARY_PATH="$BUILD_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+        PATH="$BUILD_PREFIX/bin:$PATH" LD_LIBRARY_PATH="$LIBRARY_PATH" \
         GDK_BACKEND=wayland QT_QPA_PLATFORM=wayland WINIT_UNIX_BACKEND=wayland \
         "$@" > "$RUNROOT/$name.log" 2>&1 </dev/null &
     record_pid "$pid_file" "$!"

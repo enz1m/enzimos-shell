@@ -213,6 +213,14 @@ def command(arguments, env=None, timeout=10, pass_fds=()):
     return result.stdout.decode()
 
 
+def library_path(prefix_lib, current):
+    """The loader path with the compositor prefix first unless already named;
+    admission refuses clients whose path differs from the compositor's."""
+    if current and str(prefix_lib) in current.split(":"):
+        return current
+    return str(prefix_lib) + (":" + current if current else "")
+
+
 def launch_shell(config, identity, restore_displays=True):
     global OWNED_SHELL
     if OWNED_SHELL is not None and OWNED_SHELL.poll() is None:
@@ -224,7 +232,7 @@ def launch_shell(config, identity, restore_displays=True):
                MALLOC_ARENA_MAX="2", QT_QPA_PLATFORM="wayland", WINIT_UNIX_BACKEND="wayland")
     prefix = Path(config["build"]) / "prefix"
     env["PATH"] = str(prefix / "bin") + ":" + env.get("PATH", "/usr/bin:/bin")
-    env["LD_LIBRARY_PATH"] = str(prefix / "lib") + (":" + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else "")
+    env["LD_LIBRARY_PATH"] = library_path(prefix / "lib", env.get("LD_LIBRARY_PATH"))
     if config.get("output") or config.get("installed"):
         try:
             size = logical_output_size(config, identity, desktop_output(config))
@@ -746,8 +754,11 @@ def portal_registration(runtime, binaries):
     """A preview's own registration of the enzUI portal backend (file
     chooser, Access, Settings, Background) for its private session bus: the
     portal file, the routing for XDG_CURRENT_DESKTOP=enzUI and a D-Bus
-    service that starts this preview's enzui-portal. Returns the data
-    directory to put first on XDG_DATA_DIRS, or None without the binary."""
+    service that starts this preview's enzui-portal. A prepared
+    xdg-desktop-portal-enzui-remote beside it, the pinned Hyprland portal
+    build, also serves the hyprland backend (Screenshot, ScreenCast), so the
+    preview needs no system xdg-desktop-portal-hyprland. Returns the data
+    directory to put first on XDG_DATA_DIRS, or None without enzui-portal."""
     portal = (binaries / "enzui-portal").resolve()
     if not portal.is_file() or not os.access(portal, os.X_OK):
         return None
@@ -758,6 +769,12 @@ def portal_registration(runtime, binaries):
     (data / "xdg-desktop-portal/enzui-portals.conf").write_bytes((ROOT / "config/portal/enzui-portals.conf").read_bytes())
     (data / "dbus-1/services/org.freedesktop.impl.portal.desktop.enzui.service").write_text(
         f"[D-BUS Service]\nName=org.freedesktop.impl.portal.desktop.enzui\nExec={portal}\n")
+    hyprland = (binaries / "xdg-desktop-portal-enzui-remote").resolve()
+    description = ROOT / "vendor/xdg-desktop-portal-hyprland/hyprland.portal"
+    if hyprland.is_file() and os.access(hyprland, os.X_OK) and description.is_file():
+        (data / "xdg-desktop-portal/portals/hyprland.portal").write_bytes(description.read_bytes())
+        (data / "dbus-1/services/org.freedesktop.impl.portal.desktop.hyprland.service").write_text(
+            f"[D-BUS Service]\nName=org.freedesktop.impl.portal.desktop.hyprland\nExec={hyprland}\n")
     return data
 
 def preview_data_dirs(portal_data):

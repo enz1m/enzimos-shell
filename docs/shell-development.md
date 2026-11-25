@@ -34,6 +34,10 @@ The portal builds from the `enzim` branch of the
 [portal fork](https://github.com/enz1m/enzim-xdg-desktop-portal-hyprland).
 `scripts/build-remote-desktop-portal` prints the output directory. It contains
 the binary, the receipt, and the upstream-to-fork diff used by the package builder.
+A preview whose `--shell-bin-dir` holds that binary as
+`xdg-desktop-portal-enzui-remote` beside `enzui-portal` registers it as its
+Hyprland portal backend, so screenshots and screen casts work on a host without
+`/usr/lib/xdg-desktop-portal-hyprland`.
 
 ## Iteration commands
 

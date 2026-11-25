@@ -18,8 +18,8 @@ scripts/setup-sources
 
 The repository selects Rust 1.99.1 and pins the client from the public
 [Phone Link repository](https://github.com/enz1m/enzimos-phone-link). Building
-the full desktop also requires a C++26 compiler, CMake, Meson, Ninja, Lua, systemd user
-services and the pinned components' native libraries. The Cargo lockfile pins the
+the full desktop also requires a C++26 compiler, CMake, Meson, Ninja, Lua, libsystemd,
+systemd user services and the pinned components' native libraries. The Cargo lockfile pins the
 Rust dependencies. The source lock and Git submodules pin the compositor, shader
 sources, wallpaper engine and other components used for staging. [Source pins](sources.lock.json)
 

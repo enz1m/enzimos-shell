@@ -719,20 +719,24 @@ def control_binary(config):
     return control_path(config["build"])
 
 
+PHONE_LINK_HOST = "/usr/libexec/enzimos-phone-link/enzremote-signaling"
+
+
 def privileged_clients(binaries, dev_tools=None):
     """The compositor's capture, virtual-input and control admission (a pinned
     root without it ignores these): the shell this launcher starts, the portals
     that ask before sharing (the system's for screenshots, with the grim and
     hyprpicker it starts itself; enzUI's for screen sharing and, after its
-    own dialog, remote control), Settings and Welcome for compositor control,
-    Fcitx5 as the input method, and for disposable dev previews only, tools
-    named explicitly."""
+    own dialog, remote control), Settings, Welcome and the Phone Link host for
+    compositor control, Fcitx5 as the input method, and for disposable dev
+    previews only, tools named explicitly."""
     remote = str((binaries / "xdg-desktop-portal-enzui-remote").resolve())
     values = {"ENZUI_PRIVILEGED_CLIENTS": "enforce", "ENZUI_SHELL_EXE": str((binaries / "enzui-shell").resolve()),
               "ENZUI_PORTAL_EXES": f"/usr/lib/xdg-desktop-portal-hyprland:{remote}",
               "ENZUI_PORTAL_INPUT_EXES": remote,
               "ENZUI_PORTAL_HELPER_EXES": "/usr/bin/grim:/usr/bin/hyprpicker",
-              "ENZUI_CONTROL_EXES": ":".join(str((binaries / name).resolve()) for name in ("enzui-settings", "enzui-welcome")),
+              "ENZUI_CONTROL_EXES": ":".join([*(str((binaries / name).resolve()) for name in ("enzui-settings", "enzui-welcome")),
+                                              PHONE_LINK_HOST]),
               "ENZUI_IME_EXES": "/usr/bin/fcitx5"}
     if dev_tools:
         values["ENZUI_DEV_PRIVILEGED_EXES"] = dev_tools

@@ -42,10 +42,12 @@ Control requests change compositor code, configuration or outputs: `eval`,
 `reloadshaders` and `seterror`, alone or inside a batch. They are answered for
 the registered shell; the supervisor and its descendants up to four levels
 down, outside the shell's and the compositor's process trees; uninjected
-executables named in `ENZUI_CONTROL_EXES` (Settings and Welcome); and preview
-dev tools. Anyone else receives an `error:` reply. Read-only queries stay open
-to every same-user client. In-process requests from plugins carry no socket
-peer and are not filtered.
+executables named in `ENZUI_CONTROL_EXES` (Settings, Welcome and the Phone Link
+host, which opens desktop apps for a paired phone); and preview dev tools.
+Anyone else receives an `error:` reply. An admitted executable sends its
+requests on the compositor socket itself; a `hyprctl` child it starts is
+identified as `hyprctl`. Read-only queries stay open to every same-user client.
+In-process requests from plugins carry no socket peer and are not filtered.
 
 ## Shell application ids
 

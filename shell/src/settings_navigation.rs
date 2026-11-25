@@ -434,6 +434,11 @@ const SECTIONS: &[Section] = &[
     },
     Section {
         category: Category::Apps,
+        label: "shell-screen-sharing",
+        route: "apps/screen_sharing",
+    },
+    Section {
+        category: Category::Apps,
         label: "shell-parental-controls",
         route: "apps/parental",
     },

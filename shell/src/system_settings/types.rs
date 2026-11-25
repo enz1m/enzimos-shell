@@ -29,6 +29,9 @@ pub struct Apps {
     /// This account's screen time, with app names for window classes.
     pub screen_time: crate::screen_time::History,
     pub app_names: std::collections::BTreeMap<String, String>,
+    /// Screen-sharing grants kept after a restart, with app names.
+    pub screen_sharing: crate::screencast_grants::Listing,
+    pub screen_sharing_names: std::collections::BTreeMap<String, String>,
 }
 
 /// A reading that only exists on enzimOS, through its system backend.

@@ -101,6 +101,7 @@ pub mod remote_access;
 pub mod reveal;
 pub mod sandbox_policy;
 pub mod screen_time;
+pub mod screencast_grants;
 pub mod search;
 pub mod session_activity;
 pub mod session_lock;

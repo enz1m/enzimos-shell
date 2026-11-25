@@ -313,6 +313,7 @@ impl SettingsApp {
                 "apps/background"
                     | "apps/permissions"
                     | "apps/location"
+                    | "apps/screen_sharing"
                     | "apps/parental"
                     | "apps/screen_time"
             ) || self.background_ready())

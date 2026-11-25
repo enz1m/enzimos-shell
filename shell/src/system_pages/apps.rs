@@ -27,6 +27,7 @@ impl SettingsApp {
                 )
                 .push(loading("apps/permissions", tr("shell-app-permissions")))
                 .push(loading("apps/location", tr("shell-location")))
+                .push(loading("apps/screen_sharing", tr("shell-screen-sharing")))
                 .push(loading("apps/parental", tr("shell-parental-controls")))
                 .push(loading("apps/screen_time", tr("shell-screen-time")));
         };
@@ -49,6 +50,7 @@ impl SettingsApp {
         self.push_background_card(body)
             .push(self.permissions_card(&apps.permissions))
             .push(self.location_card(&apps.permissions))
+            .push(self.screen_sharing_card(&apps.screen_sharing, &apps.screen_sharing_names))
             .push(self.parental_card(apps.supervised.as_deref()))
             .push(self.screen_time_card(&apps.screen_time, &apps.app_names))
     }
@@ -606,6 +608,82 @@ impl SettingsApp {
         self.section_card_for(route, rows)
             .title(tr("shell-location"))
             .description(tr("shell-location-description"))
+            .into_element()
+    }
+    fn screen_sharing_card<'a>(
+        &'a self,
+        listing: &enzui_shell::screencast_grants::Listing,
+        names: &std::collections::BTreeMap<String, String>,
+    ) -> Element<'a, Parent> {
+        use enzui_shell::screencast_grants::Source;
+        let route = "apps/screen_sharing";
+        let mut rows = column![].spacing(2);
+        if let Some(error) = &listing.error {
+            rows = rows.push(self.mark_setting(
+                route,
+                self.info_row(
+                    "triangle-alert",
+                    tr("shell-screen-sharing-grants-unavailable"),
+                    error.clone(),
+                ),
+            ));
+        } else if listing.grants.is_empty() {
+            rows = rows.push(self.mark_setting(
+                route,
+                self.info_row(
+                    "monitor-check",
+                    tr("shell-no-app-shares-your-screen-after-a-restart"),
+                    tr("shell-no-app-shares-your-screen-after-a-restart-detail"),
+                ),
+            ));
+        }
+        for (index, grant) in listing.grants.iter().enumerate() {
+            let app = names
+                .get(&grant.app_id)
+                .cloned()
+                .unwrap_or_else(|| grant.app_id.clone());
+            // The backend's marker for outputs that report no make, model or serial.
+            let monitor =
+                if grant.monitor.trim().is_empty() || grant.monitor == "unidentified output" {
+                    grant.output.clone()
+                } else {
+                    grant.monitor.clone()
+                };
+            let mut subtitle = match &grant.source {
+                Source::Screen => tr!("shell-whole-screen-of", "arg0" => monitor),
+                Source::Region { w, h, .. } => {
+                    tr!("shell-region-of", "arg0" => format!("{w}×{h}"), "arg1" => monitor)
+                }
+            };
+            if grant.keyboard() || grant.pointer() {
+                subtitle = format!("{subtitle} · {}", tr("shell-and-remote-control"));
+            }
+            let revoke = enz_button(
+                tr("shell-revoke"),
+                Self::request(Request::ScreenSharingRevoke(grant.id.clone())),
+            )
+            .kind(ButtonKind::Secondary)
+            .size(ButtonSize::Sm)
+            .enabled(self.controls_live())
+            .aria_label(tr!("shell-a11y-revoke-screen-sharing-for", "arg0" => app.clone()))
+            .id(format!("screen-sharing-revoke-{index}").into())
+            .into_element();
+            let row = crate::settings_app::settings_row(app)
+                .subtitle(subtitle)
+                .subtitle_wrap(true)
+                .icon("monitor-up")
+                .id_prefix(format!("screen-sharing-row-{index}"))
+                .control(revoke)
+                .into_element();
+            rows = rows.push(if index == 0 {
+                self.mark_setting(route, row)
+            } else {
+                row
+            });
+        }
+        self.section_card_for(route, rows)
+            .title(tr("shell-screen-sharing"))
+            .description(tr("shell-screen-sharing-description"))
             .into_element()
     }
     fn permission_app_row<'a>(

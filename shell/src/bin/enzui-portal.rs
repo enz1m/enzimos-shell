@@ -4,7 +4,9 @@ use enzui_core::file_browser::{FileBrowserModel, FileEntry, SortKey};
 use enzui_icons::file_type::FileTypeTable;
 use enzui_shell::arm_delay::ArmGate;
 use enzui_shell::chooser_places::{self as places, Place};
-use enzui_shell::desktop_portal::{self, AccessRequest, Event, Kind, Outcome, Request};
+use enzui_shell::desktop_portal::{
+    self, AccessAnswer, AccessRequest, Event, Kind, Outcome, Request,
+};
 use enzui_shell::i18n::{self, tr};
 use enzui_shell::tr;
 use enzui_theme::EnzTheme;
@@ -46,6 +48,7 @@ enum Message {
     Closed(window::Id),
     Key(window::Id, iced::keyboard::Key, iced::keyboard::Modifiers),
     Grant(window::Id, bool),
+    Choice(window::Id, usize, bool),
     Query(window::Id, String),
     PathEdit(window::Id, BreadcrumbEditEvent),
     Crumb(window::Id, usize),
@@ -90,8 +93,22 @@ struct Dialog {
 
 struct Consent {
     request: AccessRequest,
-    reply: Option<oneshot::Sender<bool>>,
+    reply: Option<oneshot::Sender<AccessAnswer>>,
     gate: ArmGate,
+}
+
+impl Consent {
+    fn answer(&self, granted: bool) -> AccessAnswer {
+        AccessAnswer {
+            granted,
+            choices: self
+                .request
+                .choices
+                .iter()
+                .map(|choice| (choice.id.clone(), choice.checked))
+                .collect(),
+        }
+    }
 }
 
 struct App {
@@ -471,8 +488,9 @@ impl App {
                             drop(reply);
                             return Task::none();
                         }
+                        let height = 280.0 + 36.0 * request.choices.len() as f32;
                         let (window, open) = window::open(window::Settings {
-                            size: iced::Size::new(460.0, 280.0),
+                            size: iced::Size::new(460.0, height),
                             resizable: false,
                             exit_on_close_request: false,
                             platform_specific: window::settings::PlatformSpecific {
@@ -516,10 +534,21 @@ impl App {
                 }
             }
             Message::Grant(window, grant) => {
-                if let Some(reply) = self.consents.get_mut(&window).and_then(|c| c.reply.take()) {
-                    let _ = reply.send(grant);
+                if let Some(consent) = self.consents.get_mut(&window)
+                    && let Some(reply) = consent.reply.take()
+                {
+                    let _ = reply.send(consent.answer(grant));
                 }
                 return self.finish(window, Outcome::Cancelled);
+            }
+            Message::Choice(window, index, checked) => {
+                if let Some(choice) = self
+                    .consents
+                    .get_mut(&window)
+                    .and_then(|c| c.request.choices.get_mut(index))
+                {
+                    choice.checked = checked;
+                }
             }
             // Cancelling the replace question returns to the chooser.
             Message::Cancel(window)
@@ -791,6 +820,17 @@ impl App {
                     .size(TextSize::Footnote)
                     .muted_on(palette.surface)
                     .into_element(),
+            );
+        }
+        for (index, choice) in request.choices.iter().enumerate() {
+            content = content.push(
+                enzui_widgets::checkbox::enz_checkbox(
+                    choice.checked,
+                    choice.label.clone(),
+                    move |checked| Message::Choice(window, index, checked),
+                )
+                .id(format!("access-choice-{}", choice.id).into())
+                .into_element(),
             );
         }
         content = content.push(
@@ -1275,6 +1315,7 @@ fn acting_window(message: &Message) -> Option<window::Id> {
         | Message::Replace(window)
         | Message::Key(window, ..)
         | Message::Grant(window, true)
+        | Message::Choice(window, ..)
         | Message::Query(window, _)
         | Message::PathEdit(window, _)
         | Message::Crumb(window, _)

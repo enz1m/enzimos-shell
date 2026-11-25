@@ -160,12 +160,39 @@ pub struct AccessRequest {
     pub body: String,
     pub grant_label: String,
     pub deny_label: String,
+    /// Checkboxes the caller offers beside the decision.
+    pub choices: Vec<AccessChoice>,
+}
+
+/// A yes/no option of an access request, such as remembering the decision.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccessChoice {
+    pub id: String,
+    pub label: String,
+    pub checked: bool,
+}
+
+/// The person's decision on an access request.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AccessAnswer {
+    pub granted: bool,
+    /// The final state of each offered choice.
+    pub choices: Vec<(String, bool)>,
+}
+
+impl From<bool> for AccessAnswer {
+    fn from(granted: bool) -> Self {
+        Self {
+            granted,
+            choices: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug)]
 pub enum Event {
     Begin(Request, oneshot::Sender<Outcome>),
-    Access(AccessRequest, oneshot::Sender<bool>),
+    Access(AccessRequest, oneshot::Sender<AccessAnswer>),
     Close(u64),
     Appearance { light: bool },
 }
@@ -483,6 +510,7 @@ impl Access {
                 || tr("shell-deny").into(),
                 |l| bounded(&l.replace('_', ""), 40),
             ),
+            choices: access_choices(&options),
         };
         let handle: OwnedObjectPath = handle.into();
         let _ = server
@@ -496,11 +524,26 @@ impl Access {
             )
             .await;
         let (reply, answer) = oneshot::channel();
-        let granted = chooser.events.send(Event::Access(request, reply)).is_ok()
-            && answer.await.unwrap_or(false);
+        let answer = if chooser.events.send(Event::Access(request, reply)).is_ok() {
+            answer.await.unwrap_or_default()
+        } else {
+            AccessAnswer::default()
+        };
         let _ = server.remove::<PortalRequest, _>(&handle).await;
         // Anything but an explicit grant is a refusal.
-        (if granted { 0 } else { 1 }, HashMap::new())
+        if !answer.granted {
+            return (1, HashMap::new());
+        }
+        let mut results = HashMap::new();
+        if !answer.choices.is_empty() {
+            let choices: Vec<(String, String)> = answer
+                .choices
+                .into_iter()
+                .map(|(id, checked)| (id, checked.to_string()))
+                .collect();
+            results.insert("choices".to_owned(), owned(Value::from(choices)));
+        }
+        (0, results)
     }
 }
 
@@ -650,12 +693,33 @@ struct Background {
     windows_changed: tokio::sync::watch::Receiver<u64>,
 }
 
-fn background_result<E>(choice: Result<bool, E>) -> u32 {
+fn background_result<E>(choice: Result<AccessAnswer, E>) -> u32 {
     match choice {
-        Ok(true) => 1,
-        Ok(false) => 0,
+        Ok(answer) if answer.granted => 1,
+        Ok(_) => 0,
         Err(_) => 2,
     }
+}
+
+/// The boolean choices of an AccessDialog call; choices with listed options are not offered.
+fn access_choices(options: &HashMap<String, OwnedValue>) -> Vec<AccessChoice> {
+    type Choice = (String, String, Vec<(String, String)>, String);
+    let Some(value) = options.get("choices").and_then(|v| v.try_clone().ok()) else {
+        return Vec::new();
+    };
+    let Ok(choices) = Vec::<Choice>::try_from(value) else {
+        return Vec::new();
+    };
+    choices
+        .into_iter()
+        .filter(|(id, label, listed, _)| listed.is_empty() && !id.is_empty() && !label.is_empty())
+        .take(4)
+        .map(|(id, label, _, initial)| AccessChoice {
+            id: id.chars().take(64).collect(),
+            label: label.chars().filter(|c| !c.is_control()).take(80).collect(),
+            checked: initial == "true",
+        })
+        .collect()
 }
 
 #[zbus::interface(name = "org.freedesktop.impl.portal.Background")]
@@ -703,6 +767,7 @@ impl Background {
                 .into(),
             grant_label: tr("shell-allow").into(),
             deny_label: tr("shell-close-it").into(),
+            choices: Vec::new(),
         };
         let handle: OwnedObjectPath = handle.into();
         let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -737,8 +802,8 @@ impl Background {
                         }
                         if app_has_mapped_window(connection, app_id).await {
                             break match answer.try_recv() {
-                                Ok(true) => 1u32,
-                                Ok(false) => 0,
+                                Ok(answer) if answer.granted => 1u32,
+                                Ok(_) => 0,
                                 Err(_) => {
                                     let _ = chooser.events.send(Event::Close(id));
                                     2
@@ -1018,6 +1083,114 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn access_dialog_returns_offered_choices_only_when_granted() {
+        use std::time::Duration;
+        type Choice = (String, String, Vec<(String, String)>, String);
+
+        let bus = PrivateBus::start();
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let portal_builder =
+            zbus::connection::Builder::address(bus.address.as_str()).expect("portal address");
+        let _portal_conn = serve_on(portal_builder, events_tx)
+            .await
+            .expect("serve portal");
+        let client = zbus::connection::Builder::address(bus.address.as_str())
+            .expect("client address")
+            .build()
+            .await
+            .expect("connect client");
+        let ask = |handle: &'static str| {
+            let client = client.clone();
+            tokio::spawn(async move {
+                let choices: Vec<Choice> = vec![
+                    (
+                        "persist".into(),
+                        "Allow after restart".into(),
+                        vec![],
+                        "false".into(),
+                    ),
+                    (
+                        "mode".into(),
+                        "Mode".into(),
+                        vec![("a".into(), "A".into())],
+                        "a".into(),
+                    ),
+                ];
+                let options = HashMap::from([("choices".to_owned(), owned(Value::from(choices)))]);
+                client
+                    .call_method(
+                        Some(BUS_NAME),
+                        PATH,
+                        Some("org.freedesktop.impl.portal.Access"),
+                        "AccessDialog",
+                        &(
+                            ObjectPath::try_from(handle).expect("handle"),
+                            "org.example.Remote",
+                            "",
+                            "Control?",
+                            "",
+                            "",
+                            options,
+                        ),
+                    )
+                    .await
+                    .expect("AccessDialog call")
+                    .body()
+                    .deserialize::<(u32, HashMap<String, OwnedValue>)>()
+                    .expect("AccessDialog reply")
+            })
+        };
+        let answer = |granted| AccessAnswer {
+            granted,
+            choices: vec![("persist".into(), true)],
+        };
+
+        let pending = ask("/org/freedesktop/portal/desktop/request/choices1");
+        match tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+            .await
+            .expect("event timeout")
+            .expect("event")
+        {
+            Event::Access(request, reply) => {
+                assert_eq!(
+                    request.choices,
+                    vec![AccessChoice {
+                        id: "persist".into(),
+                        label: "Allow after restart".into(),
+                        checked: false,
+                    }]
+                );
+                reply.send(answer(true)).expect("send");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        let (response, results) = pending.await.expect("join");
+        assert_eq!(response, 0);
+        let returned = Vec::<(String, String)>::try_from(
+            results
+                .get("choices")
+                .expect("choices")
+                .try_clone()
+                .expect("clone"),
+        )
+        .expect("a(ss)");
+        assert_eq!(returned, vec![("persist".to_owned(), "true".to_owned())]);
+
+        let pending = ask("/org/freedesktop/portal/desktop/request/choices2");
+        match tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+            .await
+            .expect("event timeout")
+            .expect("event")
+        {
+            Event::Access(_, reply) => reply.send(answer(false)).expect("send"),
+            other => panic!("unexpected event: {other:?}"),
+        }
+        let (response, results) = pending.await.expect("join");
+        assert_eq!(response, 1);
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
     async fn background_prompt_respects_live_windows_and_close_lifecycle() {
         use std::time::Duration;
 
@@ -1172,7 +1345,7 @@ mod tests {
             .expect("unknown inventory event timeout")
             .expect("unknown inventory event")
         {
-            Event::Access(_, reply) => reply.send(true).expect("send allow"),
+            Event::Access(_, reply) => reply.send(true.into()).expect("send allow"),
             other => panic!("unexpected event: {other:?}"),
         }
         let reply = tokio::time::timeout(Duration::from_secs(5), pending)
@@ -1197,7 +1370,7 @@ mod tests {
             .expect("deny event timeout")
             .expect("deny event")
         {
-            Event::Access(_, reply) => reply.send(false).expect("send deny"),
+            Event::Access(_, reply) => reply.send(false.into()).expect("send deny"),
             other => panic!("unexpected event: {other:?}"),
         }
         let reply = tokio::time::timeout(Duration::from_secs(5), pending)

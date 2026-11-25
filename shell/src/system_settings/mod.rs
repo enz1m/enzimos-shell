@@ -161,6 +161,8 @@ pub enum Request {
         kind: crate::app_permissions::Kind,
         allowed: bool,
     },
+    /// Forgets a screen-sharing grant kept after a restart, by its id.
+    ScreenSharingRevoke(String),
 }
 
 /// enzimOS changes that can run for minutes; they run beside the request
@@ -199,6 +201,7 @@ impl Request {
                 | Self::AgentClearActivity
                 | Self::DefaultApp { .. }
                 | Self::AppPermission { .. }
+                | Self::ScreenSharingRevoke(_)
         )
     }
     pub fn same_slot(&self, other: &Self) -> bool {
@@ -268,6 +271,9 @@ impl Reading {
                 });
             }
             (Self::Agents(a), Request::AgentClearActivity) => a.activity.clear(),
+            (Self::Apps(a), Request::ScreenSharingRevoke(id)) => {
+                a.screen_sharing.grants.retain(|grant| grant.id != *id);
+            }
             (Self::Apps(a), Request::DefaultApp { kind, id }) => {
                 a.defaults.current.insert(*kind, id.clone());
             }
@@ -776,37 +782,64 @@ impl SystemSettings {
                     .await
                     .unwrap_or_default(),
             ),
-            Panel::Apps => Reading::Apps(Apps {
-                screen_time: crate::screen_time::path()
-                    .map(|path| crate::screen_time::load(&path))
+            Panel::Apps => {
+                let screen_sharing = tokio::task::spawn_blocking(screen_sharing)
+                    .await
+                    .unwrap_or_default();
+                Reading::Apps(Apps {
+                    screen_time: crate::screen_time::path()
+                        .map(|path| crate::screen_time::load(&path))
+                        .unwrap_or_default(),
+                    app_names: tokio::task::spawn_blocking(|| {
+                        crate::default_apps::by_window_class()
+                            .into_values()
+                            .map(|(id, _, class)| {
+                                (class, crate::default_apps::name(&id).unwrap_or(id))
+                            })
+                            .collect()
+                    })
+                    .await
                     .unwrap_or_default(),
-                app_names: tokio::task::spawn_blocking(|| {
-                    crate::default_apps::by_window_class()
-                        .into_values()
-                        .map(|(id, _, class)| (class, crate::default_apps::name(&id).unwrap_or(id)))
-                        .collect()
+                    defaults: tokio::task::spawn_blocking(|| crate::default_apps::read(""))
+                        .await
+                        .unwrap_or_default(),
+                    startup: tokio::task::spawn_blocking(crate::startup_apps::read)
+                        .await
+                        .unwrap_or_default(),
+                    permissions: crate::app_permissions::read().await,
+                    screen_sharing: screen_sharing.0,
+                    screen_sharing_names: screen_sharing.1,
+                    supervised: if crate::parental::available().await {
+                        Some(
+                            crate::parental::standard_accounts()
+                                .await
+                                .unwrap_or_default(),
+                        )
+                    } else {
+                        None
+                    },
                 })
-                .await
-                .unwrap_or_default(),
-                defaults: tokio::task::spawn_blocking(|| crate::default_apps::read(""))
-                    .await
-                    .unwrap_or_default(),
-                startup: tokio::task::spawn_blocking(crate::startup_apps::read)
-                    .await
-                    .unwrap_or_default(),
-                permissions: crate::app_permissions::read().await,
-                supervised: if crate::parental::available().await {
-                    Some(
-                        crate::parental::standard_accounts()
-                            .await
-                            .unwrap_or_default(),
-                    )
-                } else {
-                    None
-                },
-            }),
+            }
         }
     }
+}
+
+// The kept screen-sharing grants and the names of their apps.
+fn screen_sharing() -> (
+    crate::screencast_grants::Listing,
+    std::collections::BTreeMap<String, String>,
+) {
+    let listing = crate::screencast_grants::path()
+        .map(|path| crate::screencast_grants::read(&path))
+        .unwrap_or_default();
+    let names = listing
+        .grants
+        .iter()
+        .filter_map(|grant| {
+            crate::default_apps::name(&grant.app_id).map(|name| (grant.app_id.clone(), name))
+        })
+        .collect();
+    (listing, names)
 }
 
 #[cfg(test)]

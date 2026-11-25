@@ -1739,6 +1739,13 @@ pub static ENTRIES: &[Entry] = &[
     ),
     entry!(
         Apps,
+        "apps/screen_sharing",
+        "shell-screen-sharing",
+        "shell-screen-sharing",
+        "shell-screen-sharing-keywords"
+    ),
+    entry!(
+        Apps,
         "apps/parental",
         "shell-parental-controls",
         "shell-parental-controls",

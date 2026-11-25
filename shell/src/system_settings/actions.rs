@@ -57,6 +57,16 @@ impl SystemSettings {
             Request::AppPermission { app, kind, allowed } => {
                 crate::app_permissions::set(app, *kind, *allowed).await
             }
+            Request::ScreenSharingRevoke(id) => {
+                let id = id.clone();
+                tokio::task::spawn_blocking(move || {
+                    let path = crate::screencast_grants::path()
+                        .ok_or_else(|| tr("shell-screen-sharing-grants-unavailable").to_owned())?;
+                    crate::screencast_grants::revoke(&path, &id)
+                })
+                .await
+                .map_err(|_| tr("shell-screen-sharing-grants-unavailable").to_owned())?
+            }
             Request::Display(layout) => {
                 let layout = layout.clone();
                 // A new scale lays the desktop's bar out again: the shell hides

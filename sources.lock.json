@@ -19,20 +19,20 @@
   },
   "framework": {
     "url": "https://github.com/enz1m/enzui.git",
-    "revision": "0ed41783775a9bf1b431a7f5b57f782e30210552"
+    "revision": "46f267ecf6642423a7d716488200a5ceb8726655"
   },
   "iced": {
     "url": "https://github.com/enz1m/enzim-iced.git",
-    "revision": "523c1755479c55ba4030dafb2be9c05bf8a1def4",
+    "revision": "838066d2e7373e87cfb42e62cca5a1dc9625b5f9",
     "destination": "vendor/iced"
   },
   "winit": {
     "url": "https://github.com/enz1m/enzim-winit.git",
-    "revision": "40eeb41f8637ef1620afa377ba006874224b6d65"
+    "revision": "405e1caca89357f6da20eafe7ed8abc686567092"
   },
   "enzwall": {
     "url": "https://github.com/enz1m/enzwall.git",
-    "revision": "0c0d6316ea85f749c67ab55c9492211c8a39cc2b",
+    "revision": "545a5203db36159f44dfe571c5ab7f53269a3afb",
     "destination": "enzwall"
   },
   "remote_desktop_portal": {

@@ -92,6 +92,7 @@ pub(in crate::settings_app) enum RemoteMessage {
     ReviewDraft,
     ReviewOff(Kind),
     ReviewDisconnect,
+    ReviewUnattended(bool),
     Reviewed(u64, Result<Review, String>),
     Apply(u64),
     Applied(u64, Result<(), String>),
@@ -103,7 +104,33 @@ pub(in crate::settings_app) enum RemoteMessage {
 fn kind_of(change: &Change) -> Kind {
     match change {
         Change::Ssh(_) | Change::DisconnectSsh => Kind::Ssh,
-        Change::Share(_) | Change::StopSharing => Kind::Sharing,
+        Change::Share(_) | Change::StopSharing | Change::Unattended(_) => Kind::Sharing,
+    }
+}
+
+// ENZUI_DEMO_REMOTE_SHARING=sharing shows sharing running; =unattended adds
+// unattended access; =unattended-waiting shows it waiting for sign-in or its network.
+fn demo_sharing() -> remote::Sharing {
+    let state = std::env::var("ENZUI_DEMO_REMOTE_SHARING").unwrap_or_default();
+    let endpoint = Endpoint {
+        address: "192.168.1.37".into(),
+        port: 5900,
+        networks: vec!["192.168.1.0/24".into()],
+    };
+    let running = matches!(state.as_str(), "sharing" | "unattended");
+    remote::Sharing {
+        setup: running.then(|| remote::SharingSetup {
+            endpoint: endpoint.clone(),
+            view_only: true,
+        }),
+        unattended: state.starts_with("unattended").then(|| remote::Unattended {
+            endpoint,
+            interface: "enp1s0".into(),
+        }),
+        listening: running,
+        state: if running { "active" } else { "inactive" }.into(),
+        cleanup_pending: false,
+        viewers: Some(0),
     }
 }
 
@@ -113,6 +140,7 @@ fn demo_overview() -> Overview {
             ssh: true,
             sftp: true,
             desktop_sharing: true,
+            desktop_unattended: true,
         },
         ssh: Ok(remote::Ssh {
             setup: None,
@@ -122,13 +150,7 @@ fn demo_overview() -> Overview {
             other_account: false,
             failure: None,
         }),
-        sharing: Ok(remote::Sharing {
-            setup: None,
-            listening: false,
-            state: "inactive".into(),
-            cleanup_pending: false,
-            viewers: Some(0),
-        }),
+        sharing: Ok(demo_sharing()),
         addresses: vec![remote::Address {
             address: "192.168.1.37".into(),
             interface: "enp1s0".into(),
@@ -629,6 +651,13 @@ impl SettingsApp {
                 state.draft = None;
                 self.remote_start_review(change)
             }
+            RemoteMessage::ReviewUnattended(on) => {
+                if !admitted || state.busy() {
+                    return Task::none();
+                }
+                state.draft = None;
+                self.remote_start_review(Change::Unattended(on))
+            }
             RemoteMessage::ReviewDisconnect => {
                 if !admitted || state.busy() {
                     return Task::none();
@@ -667,6 +696,19 @@ impl SettingsApp {
                 };
                 state.applying = Some((epoch, kind));
                 if self.system.backend.demo {
+                    if let (Change::Unattended(on), Some(Some(overview))) =
+                        (&review.change, state.overview.as_mut())
+                        && let Ok(sharing) = overview.sharing.as_mut()
+                    {
+                        sharing.unattended = if *on {
+                            sharing.setup.as_ref().map(|setup| remote::Unattended {
+                                endpoint: setup.endpoint.clone(),
+                                interface: "enp1s0".into(),
+                            })
+                        } else {
+                            None
+                        };
+                    }
                     return Task::perform(
                         tokio::time::sleep(Duration::from_millis(900)),
                         move |()| message(RemoteMessage::Applied(epoch, Ok(()))),
@@ -722,6 +764,27 @@ mod tests {
             plan_sha256: "a".repeat(64),
             consequences: vec![],
         }
+    }
+
+    #[test]
+    fn unattended_toggle_reviews_a_sharing_change_and_waits_while_busy() {
+        let (_directory, mut app) = fixture();
+        let _ = app.remote_message(RemoteMessage::Edit(Kind::Sharing));
+        let _ = app.remote_message(RemoteMessage::ReviewUnattended(true));
+        let (epoch, kind) = app.system.remote.reviewing.expect("unattended review");
+        assert_eq!(kind, Kind::Sharing);
+        assert!(
+            app.system.remote.draft.is_none(),
+            "the toggle replaces an open sharing form"
+        );
+        let _ = app.remote_message(RemoteMessage::ReviewUnattended(false));
+        assert_eq!(app.system.remote.reviewing, Some((epoch, Kind::Sharing)));
+        let _ = app.remote_message(RemoteMessage::Reviewed(
+            epoch,
+            Ok(review(Change::Unattended(true))),
+        ));
+        let _ = app.remote_message(RemoteMessage::Apply(epoch));
+        assert_eq!(app.system.remote.applying, Some((epoch, Kind::Sharing)));
     }
 
     #[test]

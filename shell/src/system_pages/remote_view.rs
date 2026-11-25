@@ -44,6 +44,8 @@ impl SettingsApp {
                     Change::DisconnectSsh => tr("shell-disconnect"),
                     Change::Share(_) => tr("shell-start-sharing"),
                     Change::StopSharing => tr("shell-stop-sharing"),
+                    Change::Unattended(true) => tr("shell-allow-unattended-access"),
+                    Change::Unattended(false) => tr("shell-turn-off-unattended-access"),
                 };
                 let id = match kind {
                     Kind::Ssh => "remote-ssh",
@@ -550,10 +552,15 @@ impl SettingsApp {
                         tr!("shell-sharing-port", "arg0" => setup.endpoint.address.clone(), "arg1" => format!("{:}", setup.endpoint.port), "arg2" => (if setup.view_only { tr("shell-view-only") } else { tr("shell-viewers-can-control") }).to_owned())
                     }
                     _ if active => tr("shell-starting").into(),
-                    _ => {
-                        tr("shell-off-sharing-lasts-until-you-stop-it-lock-the-screen-or-sign-out")
-                            .into()
-                    }
+                    _ => match &sharing.unattended {
+                        Some(unattended) => {
+                            tr!("shell-unattended-access-waiting", "arg0" => unattended.endpoint.address.clone(), "arg1" => unattended.interface.clone())
+                        }
+                        None => tr(
+                            "shell-off-sharing-lasts-until-you-stop-it-lock-the-screen-or-sign-out",
+                        )
+                        .into(),
+                    },
                 };
                 let mut controls = row![].spacing(8);
                 if active || sharing.cleanup_pending {
@@ -578,6 +585,24 @@ impl SettingsApp {
                     .control(Element::from(controls))
                     .into_element();
                 sharing_rows = sharing_rows.push(self.mark_setting(sharing_route, row));
+                let unattended = sharing.unattended.is_some();
+                if overview.capabilities.desktop_unattended && (sharing.listening || unattended) {
+                    sharing_rows = sharing_rows.push(
+                        crate::settings_app::settings_row(tr("shell-allow-unattended-access"))
+                            .subtitle(if unattended {
+                                tr("shell-unattended-access-on-detail")
+                            } else {
+                                tr("shell-unattended-access-off-detail")
+                            })
+                            .subtitle_wrap(true)
+                            .id_prefix("control-remote-sharing-unattended")
+                            .switch(unattended, |on| {
+                                message(RemoteMessage::ReviewUnattended(on))
+                            })
+                            .enabled(idle && draft_open(Kind::Sharing).is_none())
+                            .into_element(),
+                    );
+                }
                 if sharing.listening {
                     let viewers = sharing.viewers.map_or_else(
                         || tr("shell-viewer-count-unavailable").to_owned(),

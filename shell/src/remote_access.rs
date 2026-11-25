@@ -17,6 +17,8 @@ pub struct Capabilities {
     pub ssh: bool,
     pub sftp: bool,
     pub desktop_sharing: bool,
+    /// The OS can start approved sharing by itself after sign-in.
+    pub desktop_unattended: bool,
 }
 
 /// Where a server listens and whom it accepts.
@@ -68,9 +70,18 @@ pub struct SharingSetup {
     pub view_only: bool,
 }
 
+/// Approved sharing the OS starts by itself after sign-in or unlock.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unattended {
+    pub endpoint: Endpoint,
+    /// The reviewed network interface it runs on.
+    pub interface: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sharing {
     pub setup: Option<SharingSetup>,
+    pub unattended: Option<Unattended>,
     /// The OS verified the encrypted listener, not only a running unit.
     pub listening: bool,
     pub state: String,
@@ -101,6 +112,8 @@ pub enum Change {
     DisconnectSsh,
     Share(SharingRequest),
     StopSharing,
+    /// Turns unattended sharing on or off.
+    Unattended(bool),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -156,7 +169,7 @@ impl Change {
                 "max_fps": 15,
                 "output": null,
             })),
-            Self::DisconnectSsh | Self::StopSharing => None,
+            Self::DisconnectSsh | Self::StopSharing | Self::Unattended(_) => None,
         }
     }
     fn methods(&self) -> (&'static str, &'static str) {
@@ -165,18 +178,23 @@ impl Change {
             Self::DisconnectSsh => ("ReviewDisconnect", "Disconnect"),
             Self::Share(_) => ("ReviewDesktop", "ApplyDesktop"),
             Self::StopSharing => ("ReviewStopDesktop", "StopDesktop"),
+            Self::Unattended(_) => ("ReviewDesktopUnattended", "SetDesktopUnattended"),
         }
     }
     fn review_body(&self) -> Value {
-        match self.configuration() {
-            Some(configuration) => json!({"schema": 1, "configuration": configuration}),
-            None => json!({"schema": 1}),
+        match (self, self.configuration()) {
+            (Self::Unattended(on), _) => json!({"schema": 1, "unattended": on}),
+            (_, Some(configuration)) => json!({"schema": 1, "configuration": configuration}),
+            (_, None) => json!({"schema": 1}),
         }
     }
     fn apply_body(&self, plan_sha256: &str) -> Value {
         let mut body = json!({"schema": 1, "plan_sha256": plan_sha256, "allow_interaction": true, "valid_for_ms": APPROVAL_MS});
         if let Some(configuration) = self.configuration() {
             body["configuration"] = configuration;
+        }
+        if let Self::Unattended(on) = self {
+            body["unattended"] = json!(on);
         }
         body
     }
@@ -219,6 +237,18 @@ fn explain(code: &str) -> String {
         }
         "remote-provider-unavailable" | "desktop-provider-unavailable" => {
             tr("shell-remote-service-unavailable").into()
+        }
+        "desktop-unattended-requires-sharing" => {
+            tr("shell-unattended-access-needs-running-sharing").into()
+        }
+        "desktop-unattended-network-identity-unavailable" => {
+            tr("shell-unattended-access-needs-a-managed-network-connection").into()
+        }
+        "desktop-unattended-provider-unavailable" => {
+            tr("shell-unattended-access-is-not-available-for-this-kind-of-sharing").into()
+        }
+        "desktop-operation-in-progress" => {
+            tr("shell-another-sharing-change-is-in-progress-try-again").into()
         }
         code if code.starts_with("public-key") => {
             tr("shell-a-key-is-not-a-valid-openssh-public-key-one-line-starting-with-ssh-ed25519-e")
@@ -392,10 +422,21 @@ pub fn parse_ssh(value: &Value) -> Ssh {
 
 pub fn parse_sharing(value: &Value) -> Sharing {
     let configuration = &value["configuration"];
+    let unattended = &value["unattended"];
     Sharing {
         setup: endpoint(configuration).map(|endpoint| SharingSetup {
             endpoint,
             view_only: configuration["view_only"].as_bool().unwrap_or(true),
+        }),
+        unattended: endpoint(&unattended["configuration"]).map(|endpoint| Unattended {
+            endpoint,
+            interface: unattended["interface"]
+                .as_str()
+                .unwrap_or_default()
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(32)
+                .collect(),
         }),
         listening: value["listening"].as_bool().unwrap_or(false),
         state: value["state"]
@@ -566,6 +607,7 @@ pub async fn read() -> Option<Overview> {
             ssh: caps["ssh"].as_bool().unwrap_or(false),
             sftp: caps["sftp"].as_bool().unwrap_or(false),
             desktop_sharing: caps["desktop_sharing"].as_bool().unwrap_or(false),
+            desktop_unattended: caps["desktop_unattended"].as_bool().unwrap_or(false),
         },
         Err(error) => {
             return Some(Overview {
@@ -688,7 +730,7 @@ pub fn consequences(change: &Change, plan: &Value) -> Vec<String> {
         }
         Change::Share(request) => {
             let at = reviewed.unwrap_or_else(|| request.endpoint.clone());
-            vec![
+            let mut lines: Vec<String> = vec![
                 tr("shell-remote-firewall-review").into(),
                 format!("Shares this desktop on {} port {}", at.address, at.port),
                 format!("Accepts viewers only from {}", at.networks.join(", ")),
@@ -696,11 +738,40 @@ pub fn consequences(change: &Change, plan: &Value) -> Vec<String> {
                 tr("shell-encrypted-viewers-need-the-sharing-password-and-should-check-the-certificate").into(),
                 tr("shell-ends-when-you-lock-the-screen-sign-out-or-switch-away").into(),
                 tr("shell-viewers-connected-now-are-disconnected-ssh-is-not-affected").into(),
+            ];
+            if plan["autostart"] == true {
+                lines.push(tr("shell-unattended-access-stays-on-with-these-settings").into());
+            }
+            lines
+        }
+        Change::StopSharing => {
+            let mut lines = vec![
+                tr("shell-disconnects-every-viewer-and-stops-sharing").into(),
+                tr("shell-ssh-sessions-stay-connected").into(),
+            ];
+            if plan["unattended_turned_off"] == true {
+                lines.push(tr("shell-also-turns-off-unattended-access").into());
+            }
+            lines
+        }
+        Change::Unattended(true) => {
+            let network = match plan["network"][0]["interface"].as_str() {
+                Some(name) => {
+                    tr!("shell-unattended-review-network", "arg0" => name.chars().filter(|c| !c.is_control()).take(32).collect::<String>())
+                }
+                None => tr("shell-unattended-review-approved-network").into(),
+            };
+            vec![
+                tr("shell-unattended-review-starts-by-itself").into(),
+                tr("shell-unattended-review-never-before-sign-in").into(),
+                network,
+                tr("shell-unattended-review-same-access").into(),
+                tr("shell-unattended-review-indicator").into(),
             ]
         }
-        Change::StopSharing => vec![
-            tr("shell-disconnects-every-viewer-and-stops-sharing").into(),
-            tr("shell-ssh-sessions-stay-connected").into(),
+        Change::Unattended(false) => vec![
+            tr("shell-unattended-off-review-current-sharing-continues").into(),
+            tr("shell-unattended-off-review-final").into(),
         ],
     }
 }
@@ -898,6 +969,49 @@ mod sharing_grant_tests {
             ] {
                 assert_eq!(parse_sharing(&json!({"viewers":invalid})).viewers, None);
             }
+        }
+        // Unattended access is read from its own field and toggled by its own methods.
+        {
+            let configuration = json!({"listen_address":"192.168.1.37","port":5900,"allowed_networks":["192.168.1.0/24"],"view_only":true});
+            let on = parse_sharing(
+                &json!({"configuration":null,"unattended":{"configuration":configuration,"interface":"enp1s0\n"}}),
+            );
+            assert!(on.setup.is_none());
+            let unattended = on.unattended.unwrap();
+            assert_eq!(unattended.endpoint.address, "192.168.1.37");
+            assert_eq!(unattended.interface, "enp1s0");
+            for off in [
+                json!({}),
+                json!({"unattended":null}),
+                json!({"unattended":{}}),
+            ] {
+                assert_eq!(parse_sharing(&off).unattended, None);
+            }
+            let change = Change::Unattended(true);
+            assert_eq!(
+                change.methods(),
+                ("ReviewDesktopUnattended", "SetDesktopUnattended")
+            );
+            assert_eq!(change.review_body(), json!({"schema":1,"unattended":true}));
+            let digest = "a".repeat(64);
+            assert_eq!(
+                Change::Unattended(false).apply_body(&digest),
+                json!({"schema":1,"unattended":false,"plan_sha256":digest,"allow_interaction":true,"valid_for_ms":APPROVAL_MS})
+            );
+            let plan = json!({"network":[{"interface":"enp1s0"}]});
+            assert!(
+                consequences(&change, &plan)
+                    .iter()
+                    .any(|line| line.contains("enp1s0"))
+            );
+            let stop = |turned_off: bool| {
+                consequences(
+                    &Change::StopSharing,
+                    &json!({"unattended_turned_off":turned_off}),
+                )
+                .len()
+            };
+            assert_eq!(stop(true), stop(false) + 1);
         }
         // Sharing warning is bound to the account unit and capture permission.
         {

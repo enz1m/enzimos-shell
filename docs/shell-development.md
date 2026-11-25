@@ -37,7 +37,11 @@ the binary, the receipt, and the upstream-to-fork diff used by the package build
 A preview whose `--shell-bin-dir` holds that binary as
 `xdg-desktop-portal-enzui-remote` beside `enzui-portal` registers it as its
 Hyprland portal backend, so screenshots and screen casts work on a host without
-`/usr/lib/xdg-desktop-portal-hyprland`.
+`/usr/lib/xdg-desktop-portal-hyprland`. The portal asks with `enzui-share-picker`
+when that binary sits in the same directory as the portal's resolved executable,
+and with `hyprland-share-picker` otherwise; a `screencopy:custom_picker_binary`
+in `xdph.conf` overrides both. Copy or hard-link both binaries into the
+preview's binary directory rather than symlinking the portal.
 
 ## Iteration commands
 

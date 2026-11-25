@@ -94,6 +94,11 @@ hl.window_rule({
     decorate = false, stay_focused = true, dim_around = true,
 })
 hl.window_rule({
+    name = "desktop-share-picker", match = { class = "^dev[.]enzui[.]SharePicker$" },
+    float = true, center = true, pin = true, border_size = 0, rounding = 16,
+    decorate = false, dim_around = true,
+})
+hl.window_rule({
     -- The dialog sizes itself: taller when it shows a call's arguments.
     name = "desktop-agent-consent", match = { class = "^dev[.]enzui[.]AgentConsent$" },
     float = true, center = true, pin = true, border_size = 0, rounding = 16,

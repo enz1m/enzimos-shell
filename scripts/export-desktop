@@ -48,7 +48,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
 
 EXECUTABLES = ["enzui-shell", "enzui-settings", "enzui-welcome", "enzui-shell-command", "enzui-desktop-frame", "enzui-maximize-preview", "enzui-idle-inhibit",
-               "enzui-wallpaper", "enzui-polkit-agent", "enzui-location-agent", "enzui-keyring-prompt", "enzui-drive-unlock", "enzui-agent-consent", "enzui-assistant", "enzui-network-secrets", "enzui-portal", "enzui-lock", "enzui-greeter", "enzui-dev-tools", "enzwall",
+               "enzui-wallpaper", "enzui-polkit-agent", "enzui-location-agent", "enzui-keyring-prompt", "enzui-drive-unlock", "enzui-agent-consent", "enzui-share-picker", "enzui-assistant", "enzui-network-secrets", "enzui-portal", "enzui-lock", "enzui-greeter", "enzui-dev-tools", "enzwall",
                "enzui-plugin-worker", "enzui-password-hash", "window-snapshot", "xdg-desktop-portal-enzui-remote"]
 DESKTOP_SCRIPTS = ["start-shell-platform", "run-wallpaper", "launch-desktop-app"]
 RUNTIME_TOOLS = ["python3", "bwrap", "dbus-update-activation-environment", "systemd-run", "systemctl", "loginctl", "gio",

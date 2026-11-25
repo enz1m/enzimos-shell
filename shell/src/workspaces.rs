@@ -258,6 +258,11 @@ const SHELL_CLASSES: &[&[u8]] = &[
     b"dev.enzui.WorkspaceOverview",
 ];
 
+/// Whether a window class belongs to one of the Shell's own surfaces.
+pub fn is_shell_surface(class: &str) -> bool {
+    SHELL_CLASSES.contains(&class.as_bytes())
+}
+
 #[derive(Default)]
 struct ShellWindows(std::collections::HashSet<Vec<u8>>);
 

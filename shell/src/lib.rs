@@ -111,6 +111,7 @@ pub mod settings;
 pub mod settings_agent;
 pub mod settings_catalog;
 pub mod settings_layout;
+pub mod share_picker;
 pub mod shell_style;
 pub mod shortcut_map;
 pub mod shortcuts;

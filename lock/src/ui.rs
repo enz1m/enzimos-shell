@@ -5,7 +5,7 @@ use controls::*;
 use enzui_shell::i18n::{self, tr};
 use enzui_shell::session_preferences::{LockLayout, LockMaterial};
 use iced::{
-    Alignment, Background, Border, Color, Element, Gradient, Length, Shadow, Vector,
+    Alignment, Border, Color, Element, Length, Shadow, Vector,
     widget::{Space, button, column, container, image, row, stack, text},
 };
 use std::time::{Duration, Instant};
@@ -155,6 +155,22 @@ pub(crate) struct Images {
     pub has_clock: bool,
     pub has_date: bool,
     pub light: bool,
+}
+
+/// Black for the dim: opaque, and as an alpha ramp from top to bottom.
+fn shade() -> &'static (image::Handle, image::Handle) {
+    static SHADE: std::sync::OnceLock<(image::Handle, image::Handle)> = std::sync::OnceLock::new();
+    SHADE.get_or_init(|| {
+        const STEPS: u32 = 256;
+        // Each texel holds the ramp at its centre.
+        let ramp = (0..STEPS)
+            .flat_map(|row| [0, 0, 0, (((row * 2 + 1) * 255 + STEPS) / (STEPS * 2)) as u8])
+            .collect::<Vec<_>>();
+        (
+            image::Handle::from_rgba(1, 1, vec![0, 0, 0, 255]),
+            image::Handle::from_rgba(1, STEPS, ramp),
+        )
+    })
 }
 
 impl Ui {
@@ -459,19 +475,30 @@ impl Ui {
         // Legibility: a light overall dim, deepening towards the prompt.
         let dim = (0.12 * content + 0.18 * focus) * presence;
         let content = content * if self.xray { presence } else { 1.0 };
-        layers = layers.push(
-            container(Space::new().width(Length::Fill).height(Length::Fill))
-                .style(move |_| container::Style {
-                    background: Some(Background::Gradient(Gradient::Linear(
-                        iced::gradient::Linear::new(std::f32::consts::PI)
-                            .add_stop(0.0, Color::from_rgba(0.0, 0.0, 0.0, dim))
-                            .add_stop(1.0, Color::from_rgba(0.0, 0.0, 0.0, dim + 0.22 * content)),
-                    ))),
-                    ..Default::default()
-                })
-                .width(Length::Fill)
-                .height(Length::Fill),
-        );
+        // Stretched textures rather than a gradient quad, which costs several
+        // times as much on integrated GPUs and is redrawn on every frame of
+        // the rise.
+        let (solid, ramp) = shade();
+        let bottom = 0.22 * content;
+        if dim > 0.001 {
+            layers = layers.push(
+                image(solid.clone())
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .content_fit(iced::ContentFit::Fill)
+                    .opacity(dim),
+            );
+        }
+        if bottom > 0.001 {
+            // Over the uniform dim, the ramp composes to `dim + bottom * y`.
+            layers = layers.push(
+                image(ramp.clone())
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .content_fit(iced::ContentFit::Fill)
+                    .opacity((bottom / (1.0 - dim).max(0.01)).min(1.0)),
+            );
+        }
 
         let keyboard = ease_in_out(self.keyboard_reveal);
         let compact = primary && (self.keyboard_reveal > 0.001 || size.height < 420.0);

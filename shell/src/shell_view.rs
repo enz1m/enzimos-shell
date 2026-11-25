@@ -251,6 +251,32 @@ impl Shell {
             .map_or(self.light, enzui_shell::chrome_style::is_light)
     }
 
+    // The theme enzUI applications resolve: the shared theme file over the stock
+    // palette of their mode, with the chosen fonts.
+    pub(crate) fn app_theme(&self) -> EnzTheme {
+        use enzui_core::theme_file::ModePreference;
+        let light = match self.theme_document.mode_preference() {
+            ModePreference::Light => true,
+            ModePreference::Dark => false,
+            ModePreference::System => self.light,
+        };
+        let mode = if light {
+            enzui_theme::EnzThemeMode::Light
+        } else {
+            enzui_theme::EnzThemeMode::Dark
+        };
+        let mut theme = if light {
+            EnzTheme::light()
+        } else {
+            EnzTheme::dark()
+        };
+        self.theme_document.apply(&mut theme, mode);
+        self.desired_settings
+            .fonts
+            .apply_to_theme(&mut theme, &self.theme_document, mode);
+        theme
+    }
+
     pub(crate) fn base_tokens(&self) -> EnzTheme {
         self.theme_cache
             .base(&self.theme_inputs(), || self.resolve_base())

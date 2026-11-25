@@ -667,6 +667,7 @@ shell-maximize-preview-helper-is-unavailable = Maximizar que el ayudante de prev
 shell-missing-maximize-preview-output = Falta la salida de vista previa al máximo
 shell-drag-to-maximize-was-rejected = Se rechazó el arrastre para maximizar
 shell-drag-to-maximize-accent-was-rejected = Se rechazó el acento de arrastre para maximizar
+shell-title-bar-theme-was-rejected = Se rechazaron los colores de la barra de título
 shell-notification-center = centro de notificación
 shell-control-center = centro de control
 shell-plugin-panel = panel de complemento

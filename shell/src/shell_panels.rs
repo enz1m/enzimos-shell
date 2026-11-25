@@ -66,6 +66,23 @@ impl Shell {
         )
     }
 
+    // Compositor-drawn title bars take the theme enzUI applications draw theirs with.
+    pub(crate) fn titlebar_theme(&mut self) -> Task<Message> {
+        let theme = enzui_shell::titlebar_theme::TitleBarTheme::new(
+            &self.app_theme(),
+            enzui_shell::titlebar_theme::buttons(),
+        );
+        if self.titlebar_theme.as_ref() == Some(&theme) {
+            return Task::none();
+        }
+        self.titlebar_theme = Some(theme.clone());
+        let compositor = self.compositor.clone();
+        Task::perform(
+            async move { compositor.apply_titlebar_theme(&theme).await },
+            Message::TitleBarThemeApplied,
+        )
+    }
+
     pub(crate) fn refresh(&mut self, request: Option<Request>) -> Task<Message> {
         self.busy = true;
         let compositor = self.compositor.clone();

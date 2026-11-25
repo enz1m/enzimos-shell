@@ -901,7 +901,7 @@ function enzui_sidebar_configure(output,side,bar,owner,metrics,motion,behavior,p
         s.reveal=false;s.keyboard_reveal=nil;s.pending=nil;s.next_show=nil
         if s.shown and not enzui_sidebar_hide().ok then return {ok=false} end
     end
-    hl.window_rule({name="sidebar-app-chrome",match={tag="enzui-sidebar-app"},border_size=0,no_shadow=true,no_anim=true,no_xdg_drags=true})
+    hl.window_rule({name="sidebar-app-chrome",match={tag="enzui-sidebar-app"},border_size=0,no_shadow=true,no_anim=true,no_xdg_drags=true,decorate=false})
     for _,e in ipairs(s.entries)do
         if owned(e) and not e.restoring then
             local tagged=false

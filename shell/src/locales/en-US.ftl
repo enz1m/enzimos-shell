@@ -613,6 +613,7 @@ shell-maximize-preview-helper-is-unavailable = Maximize preview helper is unavai
 shell-missing-maximize-preview-output = Missing maximize preview output
 shell-drag-to-maximize-was-rejected = Drag-to-maximize was rejected
 shell-drag-to-maximize-accent-was-rejected = Drag-to-maximize accent was rejected
+shell-title-bar-theme-was-rejected = Title bar colours were rejected
 shell-notification-center = notification center
 shell-control-center = control center
 shell-plugin-panel = plugin panel

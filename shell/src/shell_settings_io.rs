@@ -155,7 +155,7 @@ impl Shell {
         } else {
             Task::none()
         };
-        let maximize = self.drag_maximize();
+        let maximize = Task::batch([self.drag_maximize(), self.titlebar_theme()]);
         let sidebar = if sidebar_enabled_changed
             || self.sidebar_configured != Some(self.sidebar_configuration())
         {

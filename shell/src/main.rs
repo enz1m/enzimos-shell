@@ -180,6 +180,7 @@ struct Shell {
     drag_maximize_ready: bool,
     drag_maximize_retry_at: Option<Instant>,
     drag_maximize_theme: Option<([u8; 3], u16)>,
+    titlebar_theme: Option<enzui_shell::titlebar_theme::TitleBarTheme>,
     panel_action: Option<(window::Id, u64, Box<Message>)>,
     panel_action_serial: u64,
     /// A compositor event arrived while the snapshot was being read.
@@ -443,6 +444,7 @@ impl Shell {
             drag_maximize_ready: false,
             drag_maximize_retry_at: None,
             drag_maximize_theme: None,
+            titlebar_theme: None,
             panel_action: None,
             panel_action_serial: 0,
             snapshot_dirty: false,
@@ -560,6 +562,7 @@ impl Shell {
             shell.read_settings(),
             shell.settings_shortcut(),
             shell.drag_maximize(),
+            shell.titlebar_theme(),
             open.map(Message::Opened),
         ]);
         (shell, task)
@@ -1048,6 +1051,7 @@ impl Shell {
             | Message::Launched(..)
             | Message::ToggleTheme
             | Message::DragMaximizeReady(..)
+            | Message::TitleBarThemeApplied(..)
             | Message::ControlsAnchor(..)
             | Message::ControlsPrepared(..)
             | Message::ControlsReflowed(..)

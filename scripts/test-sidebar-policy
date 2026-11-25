@@ -21,7 +21,7 @@ function hl.window_rule(rule)
         assert(rule.match.class=="^dev[.]enzui[.]Sidebar$" and rule.match.tag=="enzui-sidebar-chrome-888")
         rail_rule=rule;rail_updates=rail_updates+1
     else
-        assert(rule.name=="sidebar-app-chrome" and rule.border_size==0 and rule.no_anim==true and rule.no_xdg_drags==true and rule.match.tag=="enzui-sidebar-app")
+        assert(rule.name=="sidebar-app-chrome" and rule.border_size==0 and rule.no_anim==true and rule.no_xdg_drags==true and rule.decorate==false and rule.match.tag=="enzui-sidebar-app")
     end
 end
 function hl.get_monitors()return{output}end

@@ -128,6 +128,7 @@ pub mod theme_palette;
 pub mod theme_presets;
 pub mod theme_store;
 pub mod thunderbolt;
+pub mod titlebar_theme;
 pub mod user_accounts;
 pub mod user_switch;
 pub mod virtual_keyboard;

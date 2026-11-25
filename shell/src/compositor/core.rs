@@ -549,6 +549,15 @@ impl Compositor {
             radius.min(512)
         )
     }
+    pub async fn apply_titlebar_theme(
+        &self,
+        theme: &crate::titlebar_theme::TitleBarTheme,
+    ) -> Result<(), String> {
+        if self.request(&["eval", &theme.lua()]).await?.trim() != "ok" {
+            return Err(tr("shell-title-bar-theme-was-rejected").into());
+        }
+        Ok(())
+    }
     pub async fn update_drag_maximize_theme(
         &self,
         accent: [u8; 3],

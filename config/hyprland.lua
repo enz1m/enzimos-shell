@@ -23,6 +23,9 @@ hl.config({
         rounding = 12,
         blur = { enabled = false },
         shadow = { enabled = true, range = 18, render_power = 3, color = "rgba(00000034)", color_inactive = "rgba(00000016)" },
+        -- Applications that leave their frame to the compositor get a title bar; the Shell
+        -- gives it the enzUI theme.
+        titlebar = { enabled = true },
         -- Quick Search and the modal dialogs darken the rest of the screen slightly.
         dim_around = 0.22,
     },

@@ -139,6 +139,7 @@ pub(super) enum Message {
     SettingsShortcutReady(Result<(), String>),
     SettingsLaunched(u64, Result<(), String>),
     DragMaximizeReady(Result<(), String>),
+    TitleBarThemeApplied(Result<(), String>),
     ControlConnections(super::control_center::connections::Event),
     RefreshAudioDevices,
     AudioDevices(u64, Result<enzui_shell::audio_devices::Devices, String>),

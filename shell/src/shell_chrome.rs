@@ -768,6 +768,13 @@ impl Shell {
                 self.update_frame();
                 self.save_setting(SettingChange::Light(self.light))
             }
+            Message::TitleBarThemeApplied(result) => {
+                if let Err(error) = result {
+                    eprintln!("title bar theme: {error}");
+                    self.titlebar_theme = None;
+                }
+                Task::none()
+            }
             Message::DragMaximizeReady(result) => {
                 self.drag_maximize_busy = false;
                 match result {

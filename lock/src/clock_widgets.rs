@@ -47,7 +47,9 @@ pub(crate) fn view(
         .spacing(6.0 - 2.0 * wake)
         .width(width);
     if prefs.show_date {
-        let size = 24.0 - 8.0 * wake;
+        // Each new size reshapes and rasterizes the date again, so it moves
+        // in half-point steps rather than on every frame of the rise.
+        let size = ((24.0 - 8.0 * wake) * 2.0).round() / 2.0;
         let short = width < size * 12.5;
         face = face.push(
             text(i18n::clock_date(now.date_naive(), short))

@@ -5,7 +5,7 @@
     "destination": "vendor/Hyprland",
     "variants": {
       "scoped-eis": "173de69ebc7dc3fd3743257482bc416d0e2d8caf",
-      "desktop-unrenamed": "94d7da481b9444131ae4858d5c9ee32fd194c929",
+      "desktop-unrenamed": "7b0f05c66a52f0691710b4c63bb3505fee3e8736",
       "shared-desktop": "6e1fd309a3b9eae93f8f931fb2041e0c460331ad"
     }
   },

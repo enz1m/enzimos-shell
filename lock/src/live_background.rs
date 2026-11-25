@@ -17,6 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[derive(PartialEq, Eq)]
 struct Frame {
     width: u32,
     height: u32,
@@ -31,6 +32,7 @@ pub(crate) struct Live {
     received: bool,
     last_frame: Instant,
     light: Option<bool>,
+    shown: Option<(Frame, Images)>,
     /// Readable when a frame has arrived, so the loop need not poll for one.
     wake: std::os::unix::net::UnixStream,
 }
@@ -226,6 +228,7 @@ impl Live {
             received: false,
             last_frame: Instant::now(),
             light: None,
+            shown: None,
             wake,
         })
     }
@@ -240,7 +243,16 @@ impl Live {
         let frame = self.frames.try_iter().last()?;
         self.received = true;
         self.last_frame = Instant::now();
-        let sharp = raster::RgbaImage::from_raw(frame.width, frame.height, frame.rgba)?;
+        // A scene that is not moving streams the same picture at its full rate.
+        if self
+            .shown
+            .as_ref()
+            .is_some_and(|(shown, _)| *shown == frame)
+        {
+            return None;
+        }
+        let sharp = raster::RgbaImage::from_raw(frame.width, frame.height, frame.rgba.clone())?;
+        let (width, height, flags) = (frame.width, frame.height, frame.flags);
         let soft = background::soften(&sharp);
         let luma = background::luma(&sharp);
         let light = match self.light {
@@ -249,18 +261,24 @@ impl Live {
             Some(false) => luma > 0.75,
         };
         self.light = Some(light);
-        Some(Images {
+        let images = Images {
             desktop: None,
             wallpaper: handle(Picture {
-                width: frame.width,
-                height: frame.height,
+                width,
+                height,
                 rgba: sharp.into_raw(),
             }),
             soft: handle(soft),
-            has_clock: frame.flags & 1 != 0,
-            has_date: frame.flags & 2 != 0,
+            has_clock: flags & 1 != 0,
+            has_date: flags & 2 != 0,
             light,
-        })
+        };
+        self.shown = Some((frame, images.clone()));
+        Some(images)
+    }
+    /// The pictures of the last frame [`Self::frame`] returned.
+    pub(crate) fn shown(&self) -> Option<&Images> {
+        self.shown.as_ref().map(|(_, images)| images)
     }
     pub(crate) fn healthy(&mut self) -> bool {
         // A finished reader closes its end of the wake socket, which then

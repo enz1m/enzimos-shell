@@ -698,7 +698,15 @@ pub fn run(mode: Mode) -> Result<(), String> {
                     soft: handle(backdrop.soft),
                 };
                 fallback_images.insert(index, images.clone());
-                surface.images = Some(images);
+                // A live frame that came first stays: an unchanged scene
+                // does not send it again.
+                surface.images = Some(match live.as_ref().and_then(live_background::Live::shown) {
+                    Some(frame) => ui::Images {
+                        desktop: images.desktop,
+                        ..frame.clone()
+                    },
+                    None => images,
+                });
             }
         }
         if let Some(surface) = state.surfaces.get(primary)

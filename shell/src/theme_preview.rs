@@ -280,19 +280,22 @@ fn window(
     s
 }
 
-pub(super) fn card(choices: Choices, mode: EnzThemeMode, back_mode: EnzThemeMode) -> String {
-    let back = window(
-        &shown(choices.scheme, back_mode),
-        choices,
-        [258.0, 14.0, 318.0, 196.0],
-    );
-    let front = window(
-        &shown(choices.scheme, mode),
-        choices,
-        [24.0, 34.0, 330.0, 196.0],
-    );
+pub(super) fn card(choices: Choices, mode: EnzThemeMode, other_mode: EnzThemeMode) -> String {
+    let (current_bounds, other_bounds) = if mode == other_mode {
+        ([24.0, 34.0, 330.0, 196.0], [258.0, 14.0, 318.0, 196.0])
+    } else {
+        let (margin, gap, height) = (8.0, 12.0, 196.0);
+        let width = (WIDTH - 2.0 * margin - gap) / 2.0;
+        let y = (HEIGHT - height) / 2.0;
+        (
+            [margin, y, width, height],
+            [margin + width + gap, y, width, height],
+        )
+    };
+    let other = window(&shown(choices.scheme, other_mode), choices, other_bounds);
+    let current = window(&shown(choices.scheme, mode), choices, current_bounds);
     format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}" role="img"><defs><filter id="soft" x="-20%" y="-20%" width="140%" height="150%"><feGaussianBlur stdDeviation="7"/></filter></defs>{back}{front}</svg>"#
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}" role="img"><defs><filter id="soft" x="-20%" y="-20%" width="140%" height="150%"><feGaussianBlur stdDeviation="7"/></filter></defs>{other}{current}</svg>"#
     )
 }
 

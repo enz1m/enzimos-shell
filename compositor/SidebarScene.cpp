@@ -350,9 +350,11 @@ static bool railPoint(const Vector2D &point) {
         }
         return CBox{0, 0, output->m_size.x, output->m_size.y}.containsPoint(local) && Enzui::capsuleContains(shifted.w, shifted.h, local.x - shifted.x, local.y - shifted.y);
     }
+    // Only the visible part of the rail takes presses; a side dock can sit beside a retracted rail.
+    const double visible = rail.solid - Enzui::railOffset(rail.solid, rail.frame, rail.progress);
     if (rail.right)
-        box.x += box.w - rail.solid;
-    box.w = rail.solid;
+        box.x += box.w - visible;
+    box.w = visible;
     return box.translate(output->m_position).containsPoint(point);
 }
 static void sampleRail(Time::steady_tp now) {

@@ -56,13 +56,17 @@ impl SettingsApp {
             self.switch_setting("notifications/dnd", policy.dnd, |value| change(
                 Change::Dnd(value)
             )),
-            // Only Do Not Disturb holds alerts back, so this matters only then.
             self.dependent(policy.dnd, || self.switch_setting_noted(
                 "notifications/critical",
                 policy.allow_critical,
                 tr("shell-urgent-alerts-like-a-nearly-empty-battery-still-appear"),
                 |value| change(Change::Critical(value)),
             )),
+            self.switch_setting(
+                "notifications/hold_fullscreen",
+                policy.hold_fullscreen,
+                |value| change(Change::HoldFullscreen(value))
+            ),
         ]
         .spacing(2);
         let positions = [

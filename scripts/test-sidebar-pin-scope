@@ -19,7 +19,13 @@ function hl.dsp.cursor.move(args) args.kind="cursor";return args end
 for _,key in ipairs({"pin","float","move","resize","tag","alter_zorder"})do
     hl.dsp.window[key]=function(args) args.kind=key;return args end
 end
-function hl.window_rule(rule) assert(rule.name=="sidebar-app-chrome" and rule.no_xdg_drags) end
+function hl.window_rule(rule)
+    if rule.name=="sidebar-fullscreen-backing" then
+        assert(rule.enabled==false)
+    else
+        assert(rule.name=="sidebar-app-chrome" and rule.no_xdg_drags)
+    end
+end
 function hl.dispatch(args)
     local w=args.window
     if args.kind=="focus" then assert(no_warps and follow==3)

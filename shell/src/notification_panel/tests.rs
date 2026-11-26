@@ -137,7 +137,7 @@ fn notification_panel_behaviour() {
             .unwrap()
         };
         let first = model
-            .post(origin.clone(), draft("Listening"), now, 1)
+            .post(origin.clone(), draft("Listening"), now, 1, false)
             .unwrap();
         let mut snapshot = Snapshot::empty(1, Policy::default());
         snapshot.active = vec![first.notification.clone().unwrap()];
@@ -150,7 +150,7 @@ fn notification_panel_behaviour() {
             .insert((1, first.id), (now, false));
         let mut replacement = draft("Listening, louder");
         replacement.replaces = first.id;
-        let second = model.post(origin, replacement, now, 2).unwrap();
+        let second = model.post(origin, replacement, now, 2, false).unwrap();
         assert_eq!(second.id, first.id);
         snapshot.active = vec![second.notification.unwrap()];
         shell.notification.snapshot = Some(Arc::new(snapshot));

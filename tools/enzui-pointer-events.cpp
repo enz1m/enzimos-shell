@@ -1,10 +1,13 @@
 #include "src/plugins/PluginAPI.hpp"
+#include "src/managers/input/InputManager.hpp"
+#include <dlfcn.h>
 #include <lua.hpp>
 #include <stdexcept>
 
 static HANDLE owner = nullptr;
 static SP<Event::CEventBus::CCustomEvent> pointerEvent;
 static CHyprSignalListener pointerListener;
+static CHyprSignalListener workspaceListener;
 static CHyprSignalListener reloadListener;
 static bool ready = false;
 static unsigned long seen = 0;
@@ -42,11 +45,18 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
             if (!result) ++failed;
         }
     });
+    const auto input = static_cast<decltype(g_pInputManager)*>(dlsym(RTLD_DEFAULT, "g_pInputManager"));
+    workspaceListener = Event::bus()->m_events.workspace.active.listen([input](PHLWORKSPACE) {
+        // A desktop switch can leave keyboard focus assigned to a window on the old workspace.
+        if (input && *input)
+            (*input)->recheckIdleInhibitorStatus();
+    });
     return {"enzui-pointer-events", "Passive pointer-button events for the enzUI shell", "enzUI", "1"};
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
     pointerListener.reset();
+    workspaceListener.reset();
     reloadListener.reset();
     ready = false;
     HyprlandAPI::removeEvent(owner, "enzui.pointer_button");

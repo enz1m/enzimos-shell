@@ -63,7 +63,7 @@ sources = [root / name for name in ("tools/enzui-sidebar-events.cpp", "tools/enz
 identity = b"".join(path.read_bytes() for path in sources) + Path(__file__).read_bytes()
 test_flags = ["-DENZUI_MATERIAL_READBACK_TEST=1"] if os.environ.get("ENZUI_MATERIAL_READBACK_TEST") == "1" else []
 identity += entry["command"].encode() + subprocess.check_output([compiler, "--version"]) + " ".join(test_flags).encode()
-for header in ("src/version.h", "src/plugins/PluginAPI.hpp", "src/event/EventBus.hpp", "src/render/Renderer.hpp",
+for header in ("src/version.h", "src/plugins/PluginAPI.hpp", "src/event/EventBus.hpp", "src/render/Renderer.hpp", "src/managers/input/InputManager.hpp",
                "src/desktop/view/window/WindowBackend.hpp", "src/desktop/view/LayerSurface.hpp", "src/protocols/types/SurfaceState.hpp",
                "src/layout/LayoutManager.hpp", "src/layout/supplementary/DragController.hpp",
                "src/layout/space/Space.hpp", "src/layout/algorithm/Algorithm.hpp", "src/layout/algorithm/TiledAlgorithm.hpp", "src/layout/target/Target.hpp",

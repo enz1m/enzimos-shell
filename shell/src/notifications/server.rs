@@ -1,10 +1,11 @@
 use super::{
     capture::CaptureNotice,
-    model::{Action, Archived, Closed, Key, Model, Notification, Policy},
+    model::{Action, Archived, Closed, Key, Model, Notification, Policy, Posted},
     origin::Origin,
-    payload::{Arguments, Draft},
+    payload::{Arguments, Draft, Urgency},
     session::Target,
 };
+use crate::compositor::Compositor;
 use enzui_shell::i18n::tr;
 use iced::futures::StreamExt;
 use std::{
@@ -169,10 +170,28 @@ struct Service {
     connection: Connection,
     identity: Connection,
     model: Model,
+    compositor: Option<Compositor>,
     sender_gate: Gate,
     app_gate: Gate,
 }
 impl Service {
+    async fn post(&mut self, origin: Origin, draft: Draft) -> Result<Posted, String> {
+        let policy = self.model.policy();
+        let fullscreen = if policy.hold_fullscreen
+            && draft.urgency != Urgency::Critical
+            && policy.toast(&origin.principal, draft.urgency)
+            && let Some(compositor) = &self.compositor
+        {
+            tokio::time::timeout(Duration::from_millis(150), compositor.desktop_fullscreen())
+                .await
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        self.model
+            .post(origin, draft, Instant::now(), wall_ms(), fullscreen)
+    }
+
     async fn method(&mut self, message: Message) -> Result<(), String> {
         let header = message.header();
         let Some(sender) = header.sender().map(zbus::names::UniqueName::as_str) else {
@@ -300,7 +319,7 @@ impl Service {
                     )
                     .await;
                 }
-                let posted = match self.model.post(origin, draft, Instant::now(), wall_ms()) {
+                let posted = match self.post(origin, draft).await {
                     Ok(posted) => posted,
                     Err(error) => {
                         return failure(&self.connection, &message, "AccessDenied", &error).await;
@@ -365,10 +384,11 @@ impl Service {
     ) -> Result<(), String> {
         match command {
             Command::PostCapture(capture) => {
-                let result = match Origin::internal_capture(capture.icon()).and_then(|origin| {
-                    self.model
-                        .post(origin, capture.into_draft(), Instant::now(), wall_ms())
-                }) {
+                let posted = match Origin::internal_capture(capture.icon()) {
+                    Ok(origin) => self.post(origin, capture.into_draft()).await,
+                    Err(error) => Err(error),
+                };
+                let result = match posted {
                     Ok(posted) => close_signals(&self.connection, posted.closed).await,
                     Err(error) => Err(error),
                 };
@@ -565,6 +585,7 @@ pub async fn run_initialized(
         connection,
         identity,
         model,
+        compositor: Compositor::from_environment().ok(),
         sender_gate: Gate::default(),
         app_gate: Gate::default(),
     };

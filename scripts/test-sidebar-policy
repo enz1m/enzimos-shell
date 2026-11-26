@@ -16,10 +16,14 @@ for _,name in ipairs({"pin","float","move","resize","tag","alter_zorder"})do hl.
 function hl.dsp.focus(args)args.action_name="focus";return args end
 function hl.dsp.event(text)return{action_name="event"}end
 local rail_rule,rail_updates=nil,0
+local backing_rule
 function hl.window_rule(rule)
     if rule.name=="sidebar-rail-input" then
         assert(rule.match.class=="^dev[.]enzui[.]Sidebar$" and rule.match.tag=="enzui-sidebar-chrome-888")
         rail_rule=rule;rail_updates=rail_updates+1
+    elseif rule.name=="sidebar-fullscreen-backing" then
+        assert(rule.no_focus and rule.opacity=="0 override 0 override")
+        backing_rule=rule
     else
         assert(rule.name=="sidebar-app-chrome" and rule.border_size==0 and rule.no_anim==true and rule.no_xdg_drags==true and rule.decorate==false and rule.match.tag=="enzui-sidebar-app")
     end
@@ -583,11 +587,15 @@ subscriptions["window.fullscreen"]();assert(enzui_sidebar_timer.timeout==40)
 other.fullscreen=2;other.at={x=0,y=0};other.size={x=800,y=480};point={x=500,y=400}
 assert(enzui_sidebar_configure("TEST","left","top",888,floating,nil,{visibility="fullscreen",fullscreen_padding=8}).ok)
 assert(enzui_sidebar_snapshot():find('"autohidden":true',1,true) and not rail_source.visible)
+assert(backing_rule.enabled)
 assert(area.enabled and area.left==8 and area.right==8 and area.top==50 and area.bottom==8)
 point={x=1,y=260};clock.now=10.1;enzui_sidebar_snapshot();assert(not rail_source.visible)
 clock.now=10.3;enzui_sidebar_snapshot();assert(not rail_source.visible)
 point={x=32,y=260};clock.now=11;enzui_sidebar_snapshot();assert(not rail_source.visible)
-other.fullscreen=1;enzui_sidebar_snapshot();assert(rail_source.visible)
+enzui_sidebar.error="unavailable";assert(enzui_sidebar_snapshot():find('"error":""',1,true) and not rail_source.visible)
+other.fullscreen=1;assert(enzui_sidebar_snapshot():find('"error":"unavailable"',1,true) and rail_source.visible)
+assert(not backing_rule.enabled)
+enzui_sidebar.error=""
 other.fullscreen=2;enzui_sidebar_snapshot();assert(not rail_source.visible)
 other.workspace={id=2};enzui_sidebar_snapshot();assert(rail_source.visible)
 other.workspace=workspace;enzui_sidebar_snapshot();assert(not rail_source.visible)
@@ -612,6 +620,11 @@ other.fullscreen=2;enzui_sidebar_snapshot();assert(rail_source.visible)
 clock.keyboard=false;enzui_sidebar_snapshot();assert(not rail_source.visible)
 point={x=1,y=260};clock.now=13.8;enzui_sidebar_snapshot();assert(not rail_source.visible)
 keyboard_reveal();enzui_sidebar_tick();assert(rail_source.visible);enzui_sidebar_snapshot()
+assert(backing_rule.enabled)
+enzui_sidebar.shown=first_entry.id;enzui_sidebar_snapshot();assert(not backing_rule.enabled)
+enzui_sidebar.shown=nil;enzui_sidebar_snapshot();assert(backing_rule.enabled)
+enzui_sidebar.error="unavailable";assert(enzui_sidebar_snapshot():find('"error":""',1,true) and rail_source.visible)
+enzui_sidebar.error=""
 other.fullscreen=0;point={x=500,y=400}
 clock.keyboard=false;clock.now=14;enzui_sidebar_snapshot();clock.now=14.3;enzui_sidebar_snapshot();assert(not rail_source.visible)
 other.tags={"enzremote-test"};enzui_sidebar_snapshot();assert(rail_source.visible);other.tags={}

@@ -23,6 +23,7 @@ pub enum Rule {
 pub struct Policy {
     pub dnd: bool,
     pub allow_critical: bool,
+    pub hold_fullscreen: bool,
     pub toast_ms: u32,
     pub rules: BTreeMap<String, Rule>,
     pub history: bool,
@@ -35,6 +36,7 @@ impl Default for Policy {
         Self {
             dnd: false,
             allow_critical: false,
+            hold_fullscreen: true,
             toast_ms: 5000,
             rules: BTreeMap::new(),
             history: false,
@@ -252,6 +254,7 @@ impl Model {
         draft: Draft,
         now: Instant,
         wall_ms: u64,
+        fullscreen: bool,
     ) -> Result<Posted, String> {
         let previous = self.active.get(&draft.replaces);
         if previous.is_some_and(|old| !old.origin.same_sender(&origin)) {
@@ -322,7 +325,8 @@ impl Model {
             -1 => Some(24 * 60 * 60 * 1000),
             value => Some((value as u32).min(24 * 60 * 60 * 1000)),
         };
-        let toast = self.policy.toast(&origin.principal, draft.urgency);
+        let held = self.policy.hold_fullscreen && fullscreen && draft.urgency != Urgency::Critical;
+        let toast = !held && self.policy.toast(&origin.principal, draft.urgency);
         self.revision = revision;
         self.dirty = true;
         let expires = timeout_ms.map(|ms| now + Duration::from_millis(ms.into()));
@@ -555,16 +559,20 @@ mod tests {
             let now = Instant::now();
             let mut model = Model::new(1, Policy::default()).unwrap();
             let first = model
-                .post(origin(1), draft(), now, 1)
+                .post(origin(1), draft(), now, 1, false)
                 .unwrap()
                 .notification
                 .unwrap();
             let mut replacement = draft();
             replacement.replaces = first.key.id;
-            assert!(model.post(origin(2), replacement.clone(), now, 2).is_err());
+            assert!(
+                model
+                    .post(origin(2), replacement.clone(), now, 2, false)
+                    .is_err()
+            );
             assert!(model.close_from_app(&origin(2), first.key.id, 2).is_err());
             let second = model
-                .post(origin(1), replacement, now, 2)
+                .post(origin(1), replacement, now, 2, false)
                 .unwrap()
                 .notification
                 .unwrap();
@@ -600,14 +608,14 @@ mod tests {
                 ..Policy::default()
             };
             let mut model = Model::new(1, policy.clone()).unwrap();
-            let normal = model.post(origin(1), draft(), now, 1).unwrap();
+            let normal = model.post(origin(1), draft(), now, 1, false).unwrap();
             assert!(!normal.toast);
             assert!(normal.notification.is_some());
             let mut changed = policy;
             changed.rules.insert(origin(1).principal, Rule::Priority);
             model.set_policy(changed.clone(), 2).unwrap();
-            assert!(model.post(origin(1), draft(), now, 2).unwrap().toast);
-            assert!(!model.post(origin(2), draft(), now, 2).unwrap().toast);
+            assert!(model.post(origin(1), draft(), now, 2, false).unwrap().toast);
+            assert!(!model.post(origin(2), draft(), now, 2, false).unwrap().toast);
             changed.rules.insert(origin(1).principal, Rule::Block);
             changed.allow_critical = true;
             model.set_policy(changed, 3).unwrap();
@@ -615,19 +623,35 @@ mod tests {
             critical.urgency = Urgency::Critical;
             assert!(
                 model
-                    .post(origin(1), critical.clone(), now, 3)
+                    .post(origin(1), critical.clone(), now, 3, false)
                     .unwrap()
                     .notification
                     .is_none()
             );
-            assert!(model.post(origin(2), critical, now, 3).unwrap().toast);
+            assert!(
+                model
+                    .post(origin(2), critical.clone(), now, 3, true)
+                    .unwrap()
+                    .toast
+            );
+
+            let mut changed = Policy::default();
+            changed.rules.insert(origin(2).principal, Rule::Priority);
+            model.set_policy(changed.clone(), 4).unwrap();
+            let held = model.post(origin(2), draft(), now, 4, true).unwrap();
+            assert!(!held.toast);
+            assert!(held.notification.unwrap().unread);
+            assert!(model.post(origin(2), critical, now, 5, true).unwrap().toast);
+            changed.hold_fullscreen = false;
+            model.set_policy(changed, 6).unwrap();
+            assert!(model.post(origin(2), draft(), now, 6, true).unwrap().toast);
         }
         // History is opt in transient aware bounded and generation cleared.
         {
             let now = Instant::now();
             let mut model = Model::new(1, Policy::default()).unwrap();
             let key = model
-                .post(origin(1), draft(), now, 1)
+                .post(origin(1), draft(), now, 1, false)
                 .unwrap()
                 .notification
                 .unwrap()
@@ -643,7 +667,7 @@ mod tests {
             let mut transient = draft();
             transient.transient = true;
             let key = model
-                .post(origin(1), transient, now, 2)
+                .post(origin(1), transient, now, 2, false)
                 .unwrap()
                 .notification
                 .unwrap()
@@ -652,7 +676,7 @@ mod tests {
             assert!(model.history.is_empty());
             for _ in 0..300 {
                 let key = model
-                    .post(origin(1), draft(), now, 3)
+                    .post(origin(1), draft(), now, 3, false)
                     .unwrap()
                     .notification
                     .unwrap()
@@ -663,7 +687,7 @@ mod tests {
             model.expire(now, 60004);
             assert!(model.history.is_empty());
             let key = model
-                .post(origin(1), draft(), now, 60005)
+                .post(origin(1), draft(), now, 60005, false)
                 .unwrap()
                 .notification
                 .unwrap()

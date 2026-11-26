@@ -143,6 +143,7 @@ impl Default for Preferences {
 pub enum Change {
     Dnd(bool),
     SilenceGameMode(bool),
+    HoldFullscreen(bool),
     Critical(bool),
     Duration(u32),
     Position(Position),
@@ -219,6 +220,7 @@ impl Preferences {
         preferences.policy.dnd = boolean("dnd", false)?;
         preferences.silence_game_mode = boolean("silence_game_mode", false)?;
         preferences.policy.allow_critical = boolean("allow_critical", false)?;
+        preferences.policy.hold_fullscreen = boolean("hold_fullscreen", true)?;
         preferences.policy.toast_ms =
             u32::try_from(number("toast_ms", preferences.policy.toast_ms.into())?)
                 .map_err(|_| tr("shell-invalid-toast-duration"))?;
@@ -323,6 +325,7 @@ impl Preferences {
             Change::Dnd(value) => self.policy.dnd = *value,
             Change::SilenceGameMode(value) => self.silence_game_mode = *value,
             Change::Critical(value) => self.policy.allow_critical = *value,
+            Change::HoldFullscreen(value) => self.policy.hold_fullscreen = *value,
             Change::Duration(value) => self.policy.toast_ms = *value,
             Change::Position(value) => self.position = *value,
             Change::Style(value) => self.style = *value,
@@ -416,6 +419,7 @@ impl Preferences {
             Change::Dnd(value) => document["dnd"] = (*value).into(),
             Change::SilenceGameMode(value) => document["silence_game_mode"] = (*value).into(),
             Change::Critical(value) => document["allow_critical"] = (*value).into(),
+            Change::HoldFullscreen(value) => document["hold_fullscreen"] = (*value).into(),
             Change::Duration(value) => document["toast_ms"] = (*value).into(),
             Change::Position(value) => document["position"] = value.key().into(),
             Change::Style(value) => document["style"] = value.key().into(),

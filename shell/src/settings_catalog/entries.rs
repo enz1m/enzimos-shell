@@ -878,6 +878,13 @@ pub static ENTRIES: &[Entry] = &[
     ),
     entry!(
         Notifications,
+        "notifications/hold_fullscreen",
+        "shell-hold-notifications-while-an-app-is-fullscreen",
+        "shell-delivery",
+        "shell-fullscreen-notification-search-keywords"
+    ),
+    entry!(
+        Notifications,
         "notifications/position",
         "shell-notification-position",
         "shell-toast-appearance",

@@ -24,6 +24,7 @@ local shell_classes={
 }
 local function emit() hl.dispatch(hl.dsp.event("enzui-sidebar")) end
 local function floating() return s.metrics and s.metrics.islands~=nil end
+local function visible_error() return s.fullscreen and "" or s.error end
 local function adding()
     return floating() and s.reveal and #s.entries<16 and not (s.drag and s.drag.entry) and not (s.pending and s.pending.repin)
 end
@@ -70,7 +71,7 @@ local function geometry(entry,anchor)
     if w<320 or h<240 then return end
     local metrics=s.metrics or enzui_resolve_metrics()
     local entries=visible_entries()
-    local has_error=not entry and s.error~=""
+    local has_error=not entry and visible_error()~=""
     local desired={x=360,y=640}
     if not entry then
         anchor=s.anchor
@@ -126,15 +127,27 @@ local function geometry(entry,anchor)
         rail_w=metrics.rail,rail_h=rail_h,surface_x=s.side=="left" and m.x or m.x+w-metrics.rail-metrics.radius,surface_w=metrics.rail+metrics.radius,app_x=ax,app_y=ay,app_w=aw,app_h=ah,
         pane_x=s.side=="left" and m.x+metrics.rail or m.x+w-metrics.rail-12-aw,pane_y=ay-6,pane_w=aw+12,pane_h=ah+12,pane_inset=6,fits=fits}
 end
+local backing_hidden
+local function hide_backing_in_fullscreen(hidden)
+    if backing_hidden==hidden then return end
+    hl.window_rule({
+        name="sidebar-fullscreen-backing",
+        match={class="^dev[.]enzui[.]Sidebar(Backing|Pane)$"},
+        enabled=hidden,opacity="0 override 0 override",no_focus=true,
+    })
+    backing_hidden=hidden
+end
 local function update_visibility(g)
     if s.enabled==false then
-        s.autohidden=true;s.visibility_state=nil;s.keyboard_reveal=nil
+        s.autohidden=true;s.visibility_state=nil;s.keyboard_reveal=nil;s.fullscreen=false
+        hide_backing_in_fullscreen(false)
         return
     end
     local api=scene()
     if not api or not api.rail_context then
         if s.autohidden then s.autohidden=false;emit() end
-        s.visibility_state=nil;s.keyboard_reveal=nil
+        s.visibility_state=nil;s.keyboard_reveal=nil;s.fullscreen=false
+        hide_backing_in_fullscreen(false)
         return
     end
     local behavior=floating() and s.behavior or {visibility="reserved"}
@@ -155,15 +168,25 @@ local function update_visibility(g)
             end
         end
     end
+    local previous_error=visible_error()
+    s.fullscreen=fullscreen
     local in_output=point.x>=m.x and point.x<m.x+enzui_output_w(m) and point.y>=(g.canvas_y or m.y) and point.y<(g.canvas_y or m.y)+(g.canvas_h or enzui_output_h(m))
     local edge=in_output and (s.side=="left" and point.x<m.x+3 or s.side=="right" and point.x>=m.x+enzui_output_w(m)-3)
     local body=in_output and point.y>=g.rail_y-12 and point.y<g.rail_y+g.rail_h+12 and
         (s.side=="left" and point.x<g.rail_x+g.rail_w+8 or s.side=="right" and point.x>=g.rail_x-8)
-    local occupied=s.reveal or #visible_entries()>0 or s.error~=""
+    local entries=visible_entries()
+    local occupied=s.reveal or #entries>0 or s.error~=""
+    local shown
+    for _,e in ipairs(entries) do
+        if e.id==s.shown then shown=e;break end
+    end
+    local pane_open=shown~=nil and not (s.after_close and s.after_close.park)
+    local explicit=s.keyboard_reveal~=nil or pane_open
+    hide_backing_in_fullscreen(fullscreen and not pane_open)
     s.visibility_state=enzui_sidebar_visibility_step(s.visibility_state,{now=context.now,occupied=occupied,covered=covered,fullscreen=fullscreen,edge_hover=edge,body_hover=body,held=context.held,
-        force=s.reveal or s.shown~=nil or s.error~="" or s.keyboard_reveal~=nil})
+        force=explicit or (not fullscreen and (s.reveal or s.shown~=nil or s.error~=""))})
     local hidden=occupied and not s.visibility_state.visible
-    if s.autohidden~=hidden then s.autohidden=hidden;emit() end
+    if s.autohidden~=hidden or visible_error()~=previous_error then s.autohidden=hidden;emit() end
 end
 function enzui_sidebar_reservation_inputs()
     if s.enabled==false then return nil,false end
@@ -925,7 +948,7 @@ function enzui_sidebar_snapshot()
     local canvas=g.canvas_y and string.format(',"canvas":[%.0f,%.0f,%.0f,%.0f]',g.surface_x,g.canvas_y,g.surface_w,g.canvas_h) or ""
     canvas=canvas..',"enabled":'..tostring(s.enabled~=false)..',"icon_drag":'..tostring(s.enabled~=false and scene() and type(scene().icon_drop)=="function" or false)..',"autohidden":'..tostring(s.autohidden==true)..',"keyboard_reveal":'..tostring(s.keyboard_reveal~=nil)
     return string.format('{"output":"%s","side":"%s","bar":"%s","reveal":%s,"drop_hover":%s,"drop_add":%s%s,"shown":%d,"error":"%s","origin":[%.0f,%.0f],"rail":[%.0f,%.0f,%.0f,%.0f],"pane":[%.0f,%.0f,%.0f,%.0f],"inset":%.0f,"entries":[%s],"native":%s,"scene_version":%d}',
-        s.output,s.side,s.bar,tostring(s.reveal),tostring(s.drop_hover==true),tostring(adding()==true),canvas,(s.shown and find(s.shown) and in_scope(find(s.shown),active_desktop()) and s.shown or 0),s.error,g.monitor.x,g.monitor.y,g.surface_x,g.rail_y,g.surface_w,g.rail_h,g.pane_x,g.pane_y,g.pane_w,g.pane_h,g.pane_inset or 0,table.concat(rows,","),tostring(s.native==true),s.native_version or 0)
+        s.output,s.side,s.bar,tostring(s.reveal),tostring(s.drop_hover==true),tostring(adding()==true),canvas,(s.shown and find(s.shown) and in_scope(find(s.shown),active_desktop()) and s.shown or 0),visible_error(),g.monitor.x,g.monitor.y,g.surface_x,g.rail_y,g.surface_w,g.rail_h,g.pane_x,g.pane_y,g.pane_w,g.pane_h,g.pane_inset or 0,table.concat(rows,","),tostring(s.native==true),s.native_version or 0)
 end
 function enzui_sidebar_clear_error() s.error="";emit();return {ok=true} end
 function enzui_sidebar_keyboard_reveal()

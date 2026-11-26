@@ -3,7 +3,7 @@ hl.window_rule({
     no_xdg_drags = true, suppress_event = "maximize fullscreen",
 })
 
-if enzui_panel_policy_installed ~= 15 then
+if enzui_panel_policy_installed ~= 16 then
     local function panel(window)
         return window and window.mapped and not window.hidden
             and (window.class == "dev.enzui.Dock" or window.class == "dev.enzui.Desktop" or window.class == "dev.enzui.QuickSearch" or window.class == "dev.enzui.WorkspaceOverview" or window.class == "dev.enzui.ControlCenter" or window.class == "dev.enzui.PluginPanel"
@@ -16,7 +16,7 @@ if enzui_panel_policy_installed ~= 15 then
         for _, window in ipairs(hl.get_windows()) do
             if window.class=="dev.enzui.Dock" then
                 if enzui_dock_pointer_inside and enzui_dock_pointer_inside(window,point) then return true end
-            elseif panel(window) then
+            elseif panel(window) and not (enzui_fullscreen_chrome_hidden and enzui_fullscreen_chrome_hidden(window)) then
                 local api=hl.plugin and hl.plugin.enzui_sidebar_scene
                 local bar_state=window.class=="dev.enzui.Desktop" and api and api.bar_regions_state and api.bar_regions_state(window.pid)
                 local at, size = window.at, window.size
@@ -73,5 +73,5 @@ if enzui_panel_policy_installed ~= 15 then
     end
     bind("SUPER + mouse:272", mouse(hl.dsp.window.drag()), {mouse=true})
     bind("SUPER + mouse:273", mouse(hl.dsp.window.resize()), {mouse=true})
-    enzui_panel_policy_installed = 15
+    enzui_panel_policy_installed = 16
 end

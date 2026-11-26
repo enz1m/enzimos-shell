@@ -61,7 +61,7 @@ function hl.dispatch(action)
 end
 dofile(arg[0]:match("^(.*)/").."/../config/output-size.lua")
 dofile(path)
-assert(enzui_search_present(42,monitor.name,740,570,1).ok)
+assert(enzui_search_present(42,monitor.name,740,570,1).ok and enzui_search_presented==search)
 assert(active==search and search.size.x==740 and search.at.x==350 and search.at.y==132)
 assert(app.at.x==100 and app.size.x==400)
 assert(pointer.x==712.5 and pointer.y==540.25)
@@ -77,7 +77,7 @@ for _,action in ipairs(actions) do if action.name=="focus" then after_focus=afte
 assert(after_focus==focus_count and pointer_refreshes==0)
 local resize_before=#actions
 assert(not pcall(enzui_search_resize,42,monitor.name,740,320,0) and #actions==resize_before)
-assert(enzui_search_park(42,2).ok and active==app and search.workspace.name=="special:enzui-search")
+assert(enzui_search_park(42,2).ok and not enzui_search_presented and active==app and search.workspace.name=="special:enzui-search")
 assert(pointer_refreshes==1 and follow_mouse==2)
 assert(pointer.x==712.5 and pointer.y==540.25)
 local before=#actions

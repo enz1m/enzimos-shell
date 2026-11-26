@@ -1,5 +1,6 @@
 #!/usr/bin/env lua
-local path = arg[0]:match("^(.*)/") .. "/../config/panel-policy.lua"
+local config = arg[0]:match("^(.*)/") .. "/../config/"
+local path = config .. "panel-policy.lua"
 local panel = {class="dev.enzui.Desktop",mapped=true,at={x=0,y=0},size={x=1440,y=36}}
 local app = {class="app",mapped=true,at={x=200,y=80},size={x=800,y=600}}
 local active, point = panel, {x=400,y=18}
@@ -76,3 +77,50 @@ assert(observed[1]==start and observed[2]==start+2)
 local before=#dispatched;assert(call("SUPER + mouse:272").pass_event);assert(#dispatched==before)
 enzui_sidebar.reveal=false;call("SUPER + mouse:272");call("SUPER + mouse:272");assert(#dispatched==before+2)
 print("Panel policy: client drags, focused shortcuts, pointer targeting, release-over-panel, sidebar hooks and hidden-rail passthrough passed.")
+
+local primary, external = {name="WAYLAND-1"}, {name="EXTERNAL"}
+local desktop, other_desktop, empty = {monitor=primary}, {monitor=external}, {monitor=primary}
+local outputs = {[primary.name]=desktop, [external.name]=other_desktop}
+local trigger = {class="dev.enzui.AssistantTrigger",mapped=true,monitor=primary,tags={}}
+local external_panel = {class="dev.enzui.Desktop",mapped=true,monitor=external,tags={}}
+panel.class="dev.enzui.Desktop";panel.monitor=primary;panel.tags={}
+panel.pid=8
+app.class="dev.enzui.Settings";app.pid=9;app.fullscreen=1;app.workspace=desktop;app.tags={}
+local events={}
+function hl.on(event,callback) events[event]=callback end
+function hl.get_active_workspace(output) return outputs[output] end
+function hl.get_windows() return {panel,trigger,external_panel,app} end
+function hl.dsp.window.tag(args)
+    return function()
+        local marker=args.tag:sub(2)
+        local tags=args.window.tags
+        if args.tag:sub(1,1)=="+" then table.insert(tags,marker)
+        else
+            for i,tag in ipairs(tags) do if tag==marker then table.remove(tags,i);break end end
+        end
+        return {ok=true}
+    end
+end
+dofile(config .. "fullscreen-policy.lua")
+assert(not enzui_fullscreen_chrome_hidden(panel) and #app.tags==0)
+app.fullscreen=2;events["window.fullscreen"](app)
+assert(enzui_fullscreen_chrome_hidden(panel) and enzui_fullscreen_chrome_hidden(trigger))
+assert(enzui_desktop_fullscreen())
+assert(not enzui_fullscreen_chrome_hidden(external_panel) and #app.tags==1)
+outputs[primary.name]=empty;events["workspace.active"](empty)
+assert(not enzui_fullscreen_chrome_hidden(panel))
+assert(not enzui_desktop_fullscreen())
+outputs[primary.name]=desktop;events["workspace.active"](desktop)
+assert(enzui_fullscreen_chrome_hidden(panel))
+app.workspace=other_desktop;app.monitor=external;events["workspace.move_to_monitor"](other_desktop,external)
+assert(not enzui_fullscreen_chrome_hidden(panel) and enzui_fullscreen_chrome_hidden(external_panel))
+events["window.close"](app)
+assert(not enzui_fullscreen_chrome_hidden(external_panel) and #app.tags==0)
+assert(not enzui_desktop_fullscreen())
+app.pid=panel.pid;events["window.open"](app)
+assert(#app.tags==0 and not enzui_desktop_fullscreen())
+app.pid=9;app.tags={"enzui-sidebar-app"};events["window.open"](app)
+assert(#app.tags==1 and not enzui_desktop_fullscreen())
+app.tags={"enzremote-preview"};events["window.open"](app)
+assert(#app.tags==1 and not enzui_desktop_fullscreen())
+print("Fullscreen chrome follows the active desktop on each output.")

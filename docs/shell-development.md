@@ -140,14 +140,22 @@ and VNC port 5929 (override with `ENZUI_GREETER_PREVIEW_VNC`), preserving the or
 
 ## Fullscreen policy
 
-True native fullscreen fills the output and suppresses passive top-bar painting
-and input in both Frame and Islands appearances. Explicitly focused shell controls
-remain available. The passive display frame uses the top layer so native
-fullscreen occludes it. Custom input regions commit independently of pixel
-buffer changes, allowing explicit reveals when the renderer reuses a buffer.
+True native fullscreen fills the output and hides the top bar and Assistant
+trigger on the affected output, including their input regions. Keyboard shortcuts
+and explicitly opened shell controls remain available. The passive display frame
+uses the top layer so native fullscreen occludes it. Custom input regions commit
+independently of pixel buffer changes, allowing explicit reveals when the renderer
+reuses a buffer.
 Shell work-area spacing applies to maximized windows, including the preference serialized as `fullscreen_padding`.
 Passive sidebar and dock edge-hover reveal is suppressed while a mapped fullscreen
 window occupies the selected output and active workspace. Other outputs and
 workspaces keep their own behavior. The sidebar shortcut remains an explicit
-reveal; returning focus to the fullscreen app hides it again. Fullscreen and
-minimize events wake sidebar policy without waiting for its idle safety poll.
+reveal. Sidebar errors wait for fullscreen to end. Hiding the idle sidebar
+backing lets a fullscreen window qualify for scanout. Fullscreen and minimize
+events wake sidebar policy immediately.
+
+A fullscreen app on a visible desktop inhibits idle. Notifications holds new
+banners by default while a fullscreen app occupies the active desktop on the
+shell's output. Held alerts stay in the center, and critical alerts follow the
+normal delivery policy. Direct scanout auto mode admits fullscreen game content.
+The VRR content-type mode covers fullscreen game and video content.

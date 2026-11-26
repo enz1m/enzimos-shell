@@ -7,6 +7,7 @@ dofile(directory .. "/panel-policy.lua")
 dofile(directory .. "/display-frame.lua")
 dofile(directory .. "/desktop-scale.lua")
 dofile(directory .. "/wallpaper-layer.lua")
+dofile(directory .. "/fullscreen-policy.lua")
 
 hl.monitor({ output = "", mode = "1440x900@60", position = "0x0", scale = 1, reserved = { top = 36 } })
 hl.env("XCURSOR_SIZE", "24")
@@ -32,7 +33,9 @@ hl.config({
     animations = { enabled = true },
     binds = { drag_center_window = false },
     input = { follow_mouse = 2, float_switch_override_focus = 0 },
+    render = { direct_scanout = "auto" },
     misc = {
+        vrr = "fullscreen_game",
         -- Allow a replacement client to recover the prompt while compositor enforcement remains
         -- active.
         allow_session_lock_restore = true,
@@ -108,8 +111,10 @@ hl.window_rule({
     decorate = false, stay_focused = true, dim_around = true,
 })
 
--- Report presses without consuming them so Search can detect outside clicks.
-hl.bind("mouse:272", hl.dsp.event("enzui-command:pointer-press"), { non_consuming = true, ignore_mods = true })
+local search_press = hl.dsp.event("enzui-command:pointer-press")
+hl.bind("mouse:272", function()
+    if enzui_search_presented then hl.dispatch(search_press) end
+end, { non_consuming = true, ignore_mods = true })
 local open_terminal = hl.dsp.exec_cmd('exec "${ENZUI_TERMINAL:-foot}"')
 hl.bind(mod .. " + Return", open_terminal)
 enzui_bind_terminal_alias(open_terminal)

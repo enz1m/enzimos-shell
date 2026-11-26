@@ -172,7 +172,7 @@ pub fn icon(route: &str) -> Option<&'static str> {
         "windows/caps_lock" => "arrow-big-up",
         "windows/zoom" => "zoom-in",
         "windows/cursor_size" => "mouse-pointer-2",
-        "notifications/dnd" => "bell-off",
+        "notifications/dnd" | "notifications/hold_fullscreen" => "bell-off",
         "notifications/critical" => "triangle-alert",
         "notifications/position" => "layout-panel-top",
         "notifications/style" => "brush",

@@ -139,6 +139,7 @@ function enzui_search_present(owner,output,width,height,epoch,island,fade)
         search_dim(owner,w,epoch,dim,enzui_search_background_fade)
         dispatch(hl.dsp.focus({window=w}))
     end)
+    enzui_search_presented = w
     return {ok=true}
 end
 function enzui_search_resize(owner,output,width,height,epoch,island)
@@ -171,6 +172,7 @@ function enzui_search_park(owner,epoch)
     transition(owner,epoch)
     local w=search_surface(owner)
     assert(local_window(w),"Search surface changed ownership")
+    enzui_search_presented = nil
     local target
     if hl.get_active_window()==w then
         local saved=enzui_search_return

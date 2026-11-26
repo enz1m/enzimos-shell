@@ -248,6 +248,7 @@ mod tests {
                 draft,
                 Instant::now(),
                 1,
+                false,
             )
             .unwrap();
         assert!(!posted.toast);

@@ -84,6 +84,13 @@ impl Compositor {
         }
     }
 
+    pub(crate) async fn desktop_fullscreen(&self) -> bool {
+        let query = "repl return enzui_desktop_fullscreen and enzui_desktop_fullscreen()";
+        self.request(&["--batch", query])
+            .await
+            .is_ok_and(|response| response.trim() == "true")
+    }
+
     pub(crate) async fn request(&self, arguments: &[&str]) -> Result<String, String> {
         // A live compositor answers on its socket directly: no hyprctl
         // process per request (the shell's idle polls made several a second).

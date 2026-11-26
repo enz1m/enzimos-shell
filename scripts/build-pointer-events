@@ -20,7 +20,7 @@ while i<len(args):
     flags.append(arg);i+=1
 prepared_source=Path(entry['file']).parents[3]
 identity=source.read_bytes()+(root/'scripts/build-pointer-events').read_bytes()+entry['command'].encode()+subprocess.check_output([compiler,'--version'])
-for header in ['src/version.h','src/plugins/PluginAPI.hpp','src/event/EventBus.hpp']:
+for header in ['src/version.h','src/plugins/PluginAPI.hpp','src/event/EventBus.hpp','src/managers/input/InputManager.hpp']:
     identity+=(prepared_source/header).read_bytes()
 fingerprint=hashlib.sha256(identity).hexdigest()
 outdir=build/'shell-plugins';outdir.mkdir(exist_ok=True)

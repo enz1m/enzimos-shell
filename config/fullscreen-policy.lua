@@ -93,19 +93,6 @@ function enzui_fullscreen_covers(window)
     return window.fullscreen == 2 or has_tag(window, borderless_tag)
 end
 
--- The overview registers its release bindings after this policy loads.
-local bind = hl.bind
-hl.bind = function(key, action, options)
-    if options and options.release and (key == "SUPER + Super_L" or key == "SUPER + Super_R") then
-        local release = action
-        action = function(...)
-            if enzui_fullscreen_focused() then return { ok = true, pass_event = true } end
-            return release(...)
-        end
-    end
-    return bind(key, action, options)
-end
-
 local function refresh(closing)
     local windows, active, covered = hl.get_windows(), hl.get_active_window(), {}
     local shell_owners = shell_pids(windows)

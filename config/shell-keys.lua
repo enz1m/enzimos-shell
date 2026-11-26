@@ -90,11 +90,10 @@ for _, input in ipairs({ "mouse:272", "mouse:273", "mouse:274", "mouse_up", "mou
     hl.bind(input, function() tap.pointer = tap.pointer + 1 end, { non_consuming = true, ignore_mods = true })
 end
 local function super_released()
+    if enzui_fullscreen_focused() then return { ok = true, pass_event = true } end
     -- The key event precedes its binds: the released key is the one pressed last.
     if tap.released == nil or tap.released ~= tap.pressed or tap.pointer ~= tap.pointer_at_press then return end
     if tap.held then return end
-    -- Fullscreen apps, games especially, keep an accidental tap to themselves.
-    if enzui_desktop_fullscreen() then return end
     local desktop = hl.get_active_workspace and hl.get_active_workspace()
     local spread = not enzui_desktop_tiling_at(desktop and desktop.id)
     hl.dispatch(hl.dsp.event("enzui-command:" .. (spread and "activities" or "activities-search")))

@@ -144,12 +144,8 @@ active=app;events["window.active"](app);settle()
 app.borderless_fullscreen=false;events["window.borderless_fullscreen"](app);settle()
 assert(not enzui_fullscreen_focused() and not enzui_fullscreen_chrome_hidden(external_panel))
 
-local taps=0
-for _,key in ipairs({"SUPER + Super_L","SUPER + Super_R"}) do
-    hl.bind(key,function() taps=taps+1 end,{release=true})
-    app.fullscreen=2;assert(call(key).pass_event and taps==0)
-    app.fullscreen=0;app.borderless_fullscreen=true;assert(call(key).pass_event and taps==0)
-    active=panel;call(key);assert(taps==1)
-    active=app;taps=0
-end
-print("Fullscreen chrome follows the active desktop on each output and fullscreen focus suppresses lone Super.")
+app.fullscreen=2;active=panel;events["window.fullscreen"](app)
+assert(enzui_fullscreen_chrome_hidden(external_panel))
+assert(not enzui_fullscreen_focused())
+
+print("Fullscreen chrome follows the active desktop on each output.")

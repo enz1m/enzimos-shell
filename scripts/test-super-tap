@@ -34,7 +34,7 @@ function enzui_desktop_tiling_at(id)
     assert(id == 3)
     return tiling
 end
-function enzui_desktop_fullscreen() return fullscreen end
+function enzui_fullscreen_focused() return fullscreen end
 dofile(arg[0]:match("^(.*)/") .. "/../config/shell-keys.lua")
 
 local SUPER_L, SUPER_R, Q = 133, 134, 24
@@ -44,7 +44,7 @@ local function release(name, code, held)
     if held then hold_expires() end
     key(code, false)
     for _, bind in ipairs(bindings[name]) do
-        if bind.options.release then bind.action() end
+        if bind.options.release then return bind.action() end
     end
 end
 local function pointer(input)
@@ -89,10 +89,13 @@ key(SUPER_L, true); timers[1](); release("SUPER + Super_L", SUPER_L)
 assert(#events == 5 and last() == "enzui-command:activities-search", "an earlier press's timer must not cancel a new tap")
 
 tiling, fullscreen = false, true
-key(SUPER_L, true); release("SUPER + Super_L", SUPER_L)
+key(SUPER_L, true)
+assert(release("SUPER + Super_L", SUPER_L).pass_event)
 assert(#events == 5, "a tap over a fullscreen app must do nothing")
 
 for _, name in ipairs({ "SUPER + Super_L", "SUPER + Super_R" }) do
-    for _, bind in ipairs(bindings[name]) do assert(not bind.options.locked, "the overview stays shut while locked") end
+    for _, bind in ipairs(bindings[name]) do
+        assert(not bind.options.locked and not bind.options.dont_inhibit)
+    end
 end
 print("super tap policy ok")

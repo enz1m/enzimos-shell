@@ -157,18 +157,11 @@ pub fn choose(
 }
 
 pub fn save(path: &Path, apps: &[Saved]) -> std::io::Result<()> {
-    let parent = path.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
-    std::fs::create_dir_all(parent)?;
     let text = serde_json::to_vec(&Document {
         version: 1,
         apps: apps.iter().take(MAX).cloned().collect(),
     })?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-    std::io::Write::write_all(&mut temporary, &text)?;
-    temporary
-        .persist(path)
-        .map(drop)
-        .map_err(|error| error.error)
+    enzui_core::atomic_state::save_atomic_raw(path, &text)
 }
 
 #[must_use]

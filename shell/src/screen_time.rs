@@ -120,14 +120,8 @@ pub fn add(history: &mut History, date: &str, app: Option<&str>, seconds: u32) {
 }
 
 pub fn save(path: &Path, history: &History) -> std::io::Result<()> {
-    let parent = path.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
-    std::fs::create_dir_all(parent)?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-    serde_json::to_writer(&mut temporary, history)?;
-    temporary
-        .persist(path)
-        .map(drop)
-        .map_err(|error| error.error)
+    let bytes = serde_json::to_vec(history)?;
+    enzui_core::atomic_state::save_atomic_raw(path, &bytes)
 }
 
 /// The desktop's own surfaces (bar, launcher, dialogs) are not apps.

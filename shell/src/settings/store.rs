@@ -527,6 +527,8 @@ impl Store {
         temporary
             .persist(&self.path)
             .map_err(|_| tr("shell-cannot-replace-shell-settings"))?;
+        enzui_security::durable::sync_parent_dir(&self.path)
+            .map_err(|_| tr("shell-cannot-sync-shell-settings"))?;
         Ok(settings)
     }
 }

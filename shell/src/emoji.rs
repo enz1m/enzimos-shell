@@ -143,14 +143,7 @@ fn write_recent(path: &Path, text: &str) -> std::io::Result<()> {
     list.retain(|item| item != text);
     list.insert(0, text.to_owned());
     list.truncate(RECENT);
-    let parent = path.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
-    std::fs::create_dir_all(parent)?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-    std::io::Write::write_all(&mut temporary, (list.join("\n") + "\n").as_bytes())?;
-    temporary
-        .persist(path)
-        .map(drop)
-        .map_err(|error| error.error)
+    enzui_core::atomic_state::save_atomic_raw(path, (list.join("\n") + "\n").as_bytes())
 }
 
 #[cfg(test)]

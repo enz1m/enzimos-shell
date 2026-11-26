@@ -641,14 +641,20 @@ fn own_list() -> Option<std::path::PathBuf> {
 
 fn write_defaults(types: &[&str], id: &str) -> std::io::Result<()> {
     let path = own_list().ok_or_else(|| std::io::Error::other("no configuration folder"))?;
-    let current = std::fs::read_to_string(&path).unwrap_or_default();
+    update_defaults(&path, types, id)
+}
+
+fn update_defaults(path: &std::path::Path, types: &[&str], id: &str) -> std::io::Result<()> {
+    use enzui_core::atomic_state::{StateLock, save_atomic_raw};
+    use std::io::ErrorKind;
+
+    let _lock = StateLock::try_acquire(path)?.ok_or(ErrorKind::WouldBlock)?;
+    let current = match std::fs::read_to_string(path) {
+        Err(error) if error.kind() == ErrorKind::NotFound => String::new(),
+        result => result?,
+    };
     let updated = with_defaults(&current, types, id);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let staged = path.with_extension("list.new");
-    std::fs::write(&staged, updated)?;
-    std::fs::rename(&staged, &path)
+    save_atomic_raw(path, updated.as_bytes())
 }
 
 /// `text` with each of `types` defaulting to `id` in [Default Applications];
@@ -704,6 +710,34 @@ pub fn set(kind: Kind, id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_preserves_unreadable_defaults_and_serializes_writers() {
+        use enzui_core::atomic_state::StateLock;
+
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("enzui-mimeapps.list");
+        let types = &["text/plain"];
+        let app = "io.github.enzui.Text.desktop";
+
+        std::fs::write(&path, [0xff]).unwrap();
+        let error = update_defaults(&path, types, app).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(std::fs::read(&path).unwrap(), [0xff]);
+
+        std::fs::remove_file(&path).unwrap();
+        let lock = StateLock::acquire(&path).unwrap();
+        let error = update_defaults(&path, types, app).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+        assert!(!path.exists());
+        drop(lock);
+
+        update_defaults(&path, types, app).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            "[Default Applications]\ntext/plain=io.github.enzui.Text.desktop\n"
+        );
+    }
 
     #[test]
     fn default_apps_behaviour() {

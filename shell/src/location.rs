@@ -94,21 +94,9 @@ pub fn load() -> Mode {
 /// # Errors
 /// I/O failures.
 pub fn save(mode: Mode) -> std::io::Result<()> {
-    use std::io::Write;
     let path = path().ok_or_else(|| std::io::Error::other("no configuration directory"))?;
-    let dir = path
-        .parent()
-        .ok_or_else(|| std::io::Error::other("no configuration directory"))?;
-    std::fs::create_dir_all(dir)?;
-    let temporary = dir.join(".location.json.tmp");
-    let mut file = std::fs::File::create(&temporary)?;
-    file.write_all(
-        serde_json::json!({ "mode": mode.key() })
-            .to_string()
-            .as_bytes(),
-    )?;
-    file.sync_all()?;
-    std::fs::rename(temporary, path)
+    let value = serde_json::json!({ "mode": mode.key() });
+    enzui_core::atomic_state::save_atomic_raw(&path, value.to_string().as_bytes())
 }
 
 /// Settings: change the choice, through the running agent when there is one

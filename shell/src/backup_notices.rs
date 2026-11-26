@@ -145,10 +145,8 @@ pub async fn check() -> Result<(), String> {
     let now = chrono::Utc::now().timestamp();
     let notice = decide(&status, &mut said, now);
     if said != before {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        std::fs::write(&path, said.to_json().to_string()).map_err(|e| e.to_string())?;
+        enzui_core::atomic_state::save_atomic_raw(&path, said.to_json().to_string().as_bytes())
+            .map_err(|error| error.to_string())?;
     }
     if let Some(notice) = notice {
         notify(&notice).await?;

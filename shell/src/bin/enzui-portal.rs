@@ -88,6 +88,7 @@ struct Dialog {
     pinned: Vec<Place>,
     devices: Vec<Place>,
     sensitive: bool,
+    clock_24h: bool,
     gate: ArmGate,
 }
 
@@ -159,6 +160,11 @@ impl Dialog {
             .or_else(|| (!request.filters.is_empty()).then_some(0));
         let standard = places::user_folders();
         let pinned = places::pinned(&standard);
+        let clock_24h = enzui_shell::settings::Store::from_environment()
+            .and_then(|store| store.load().ok())
+            .unwrap_or_default()
+            .session
+            .clock_24h;
         let mut dialog = Self {
             request,
             reply: Some(reply),
@@ -178,6 +184,7 @@ impl Dialog {
             pinned,
             devices: places::devices(),
             sensitive: false,
+            clock_24h,
             gate: ArmGate::default(),
         };
         dialog.read();
@@ -1091,7 +1098,11 @@ impl App {
             facts.push(size_text(entry.size));
         }
         if let Some(modified) = entry.modified {
-            facts.push(tr!("shell-modified", "arg0" => format!("{:}", chrono::DateTime::<chrono::Local>::from(modified).format("%-d %b %Y, %H:%M"))));
+            let when = enzui_shell::i18n::local_timestamp(
+                chrono::DateTime::<chrono::Utc>::from(modified),
+                dialog.clock_24h,
+            );
+            facts.push(tr!("shell-modified", "arg0" => when));
         }
         if dialog.recent
             && let Some(parent) = path.parent()

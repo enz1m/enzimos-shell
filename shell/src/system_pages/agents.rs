@@ -8,15 +8,11 @@ use enzui_widgets::{
 };
 use iced::{Element, widget::column};
 
-fn when(unix_ms: u64) -> String {
+fn when(unix_ms: u64, clock_24h: bool) -> String {
     i64::try_from(unix_ms)
         .ok()
         .and_then(chrono::DateTime::from_timestamp_millis)
-        .map(|t| {
-            t.with_timezone(&chrono::Local)
-                .format("%-d %b, %H:%M")
-                .to_string()
-        })
+        .map(|t| enzui_shell::i18n::local_timestamp(t, clock_24h))
         .unwrap_or_default()
 }
 
@@ -114,7 +110,7 @@ impl SettingsApp {
                 .spacing(8)
                 .align_y(iced::Alignment::Center);
                 let row = crate::settings_app::settings_row(format!("{} · {}", named(&permission.app_name, &permission.app_id), function_label(&permission.function_id)))
-                    .subtitle(tr!("shell-since", "arg0" => named(&permission.agent_name, &permission.agent_id).clone(), "arg1" => when(permission.updated_unix_ms).clone()))
+                    .subtitle(tr!("shell-since", "arg0" => named(&permission.agent_name, &permission.agent_id).clone(), "arg1" => when(permission.updated_unix_ms, self.settings.session.clock_24h).clone()))
                     .icon("shield")
                     .control(control)
                     .into_element();
@@ -178,7 +174,7 @@ impl SettingsApp {
                     tr("shell-agent")
                 };
                 let row = crate::settings_app::settings_row(if identity.display_name.is_empty() { identity.id.clone() } else { identity.display_name.clone() })
-                    .subtitle(tr!("shell-enrolled", "arg0" => kind.to_owned(), "arg1" => identity.id.clone(), "arg2" => when(identity.created_unix_ms).clone()))
+                    .subtitle(tr!("shell-enrolled", "arg0" => kind.to_owned(), "arg1" => identity.id.clone(), "arg2" => when(identity.created_unix_ms, self.settings.session.clock_24h).clone()))
                     .icon(if identity.kind == "app" { "app-window" } else { "bot" })
                     .control(control)
                     .into_element();
@@ -226,7 +222,7 @@ impl SettingsApp {
                 .subtitle(format!(
                     "{} · {}",
                     named(&event.agent_name, &event.agent_id),
-                    when(event.created_unix_ms)
+                    when(event.created_unix_ms, self.settings.session.clock_24h)
                 ))
                 .icon("activity")
                 .control(self.status_badge(label, tone))

@@ -169,6 +169,14 @@ pub fn time(time: &impl chrono::Timelike, clock_24h: bool) -> String {
         .unwrap_or_default()
 }
 
+pub fn local_timestamp<Tz: chrono::TimeZone>(
+    timestamp: chrono::DateTime<Tz>,
+    clock_24h: bool,
+) -> String {
+    let local = timestamp.with_timezone(&chrono::Local);
+    format!("{} · {}", date(local.date_naive(), false), time(&local, clock_24h))
+}
+
 #[macro_export]
 macro_rules! tr {
     ($key:expr $(, $name:literal => $value:expr)* $(,)?) => {{
@@ -284,6 +292,21 @@ pub fn argument(value: &impl std::fmt::Display) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn timestamp_uses_the_requested_hour_cycle() {
+        let locale = Localizer::new(catalog(), vec!["en-US".parse().unwrap()], Locale::default());
+        locale.scope(|| {
+            let local = chrono::Local::now()
+                .with_time(chrono::NaiveTime::from_hms_opt(17, 34, 0).unwrap())
+                .earliest()
+                .unwrap();
+            let stamp_24 = local_timestamp(local, true);
+            let stamp_12 = local_timestamp(local, false);
+            assert!(stamp_24.ends_with("17:34"), "{stamp_24}");
+            assert!(stamp_12.contains("5:34") && stamp_12.ends_with("PM"), "{stamp_12}");
+        });
+    }
 
     #[test]
     fn i18n_behaviour() {

@@ -1128,11 +1128,7 @@ impl SettingsApp {
                 for report in reports.iter().rev().take(10) {
                     let when = chrono::DateTime::parse_from_rfc3339(&report.timestamp).map_or_else(
                         |_| report.timestamp.clone(),
-                        |t| {
-                            t.with_timezone(&chrono::Local)
-                                .format("%-d %b, %H:%M")
-                                .to_string()
-                        },
+                        |t| i18n::local_timestamp(t, self.settings.session.clock_24h),
                     );
                     let what = if report.signal.is_empty() {
                         when

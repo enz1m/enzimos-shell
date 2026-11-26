@@ -870,6 +870,7 @@ impl Shell {
                     tr("shell-start-notification-service"),
                     message(Message::Retry),
                 )
+                .id("notification-retry".into())
                 .into_element(),
             ));
         }
@@ -921,6 +922,7 @@ impl Shell {
                         tr("shell-previous"),
                         message(Message::Page(page.saturating_sub(1))),
                     )
+                    .id("notification-previous-page".into())
                     .enabled(page > 0)
                     .kind(ButtonKind::Quiet)
                     .into_element(),
@@ -928,6 +930,7 @@ impl Shell {
                 .push(enz_text(format!("{} / {}", page + 1, total.div_ceil(12))).into_element())
                 .push(
                     enz_button(tr("shell-next"), message(Message::Page(page + 1)))
+                        .id("notification-next-page".into())
                         .enabled((page + 1) * 12 < total)
                         .kind(ButtonKind::Quiet)
                         .into_element(),

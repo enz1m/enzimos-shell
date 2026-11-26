@@ -347,6 +347,7 @@ impl Shell {
                     )
                     .kind(ButtonKind::Secondary)
                     .size(ButtonSize::Sm)
+                    .id("clock-open-calendar".into())
                     .into_element(),
                 ]
                 .spacing(6),

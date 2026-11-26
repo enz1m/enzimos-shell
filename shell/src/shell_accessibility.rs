@@ -154,6 +154,7 @@ impl Shell {
                 tr("shell-accessibility-settings"),
                 Message::SettingsPage("accessibility"),
             )
+            .id("accessibility-settings".into())
             .kind(ButtonKind::Quiet)
             .icon("settings")
             .into_element(),

@@ -151,6 +151,7 @@ impl Shell {
             )
             .style(PressableStyle::Plain)
             .tokens(quiet)
+            .id("assistant-open".into())
             .aria_label(tr("shell-open-the-assistant"))
             .width(Length::Fixed(enzui_shell::compositor::FRAME_TAB.width))
             .into_element();
@@ -207,6 +208,7 @@ impl Shell {
             )
             .style(PressableStyle::Plain)
             .tokens(quiet)
+            .id("assistant-open".into())
             .aria_label(tr("shell-open-the-assistant"))
             .width(Length::Fixed(size))
             .min_height(size)
@@ -393,11 +395,13 @@ impl Shell {
         let leading = if state.history {
             enz_toolbar_icon("arrow-left", message(Message::History(false)))
                 .tokens(self.icon_tokens())
+                .id("assistant-back".into())
                 .aria_label(tr("shell-back-to-the-chat"))
                 .into_element()
         } else {
             enz_toolbar_icon("history", message(Message::History(true)))
                 .tokens(self.icon_tokens())
+                .id("assistant-history".into())
                 .aria_label(tr("shell-chat-history"))
                 .tooltip(tr("shell-chat-history"))
                 .into_element()
@@ -421,12 +425,14 @@ impl Shell {
             },
             enz_toolbar_icon("square-pen", message(Message::NewChat))
                 .tokens(self.icon_tokens())
+                .id("assistant-new".into())
                 .aria_label(tr("shell-new-chat"))
                 .tooltip(tr("shell-new-chat"))
                 .enabled(state.running.is_none() && !state.approval_busy)
                 .into_element(),
             enz_toolbar_icon("x", message(Message::Close))
                 .tokens(self.icon_tokens())
+                .id("assistant-close".into())
                 .aria_label(tr("shell-close-the-assistant"))
                 .into_element(),
         ]
@@ -448,6 +454,7 @@ impl Shell {
                 .into(),
                 message(Message::Suggest(prompt)),
             )
+            .id(format!("assistant-suggest-{icon}").into())
             .style(PressableStyle::Chip)
             .into_element()
         };
@@ -569,6 +576,8 @@ impl Shell {
                         .into(),
                     message(Message::Open(session.id.clone())),
                 )
+                .id(format!("assistant-session-{}", session.id).into())
+                .aria_label(session.title.clone())
                 .style(PressableStyle::Row)
                 .selected(active)
                 .width(Length::Fill)
@@ -623,6 +632,7 @@ impl Shell {
                 message(Message::Latest),
             )
             .style(PressableStyle::Chip)
+            .id("assistant-latest".into())
             .aria_label(tr("shell-jump-to-the-latest-message"))
             .width(Length::Shrink)
             .into_element();
@@ -663,6 +673,7 @@ impl Shell {
                     .into_element(),
                 row![
                     enz_button(tr("shell-cancel"), message(Message::ShowApprovals(false)))
+                        .id("assistant-approval-cancel".into())
                         .kind(ButtonKind::Secondary)
                         .size(ButtonSize::Sm)
                         .into_element(),
@@ -670,6 +681,7 @@ impl Shell {
                         tr("shell-agent-confirm-full-send"),
                         message(Message::ConfirmFullSend)
                     )
+                    .id("assistant-confirm-full-send".into())
                     .kind(ButtonKind::Accent)
                     .size(ButtonSize::Sm)
                     .into_element(),
@@ -683,6 +695,7 @@ impl Shell {
         for mode in ApprovalMode::ALL {
             options = options.push(
                 enz_button(mode.label(), message(Message::ChooseApproval(mode)))
+                    .id(format!("assistant-approval-{}", mode.wire()).into())
                     .kind(if mode == state.approval_mode {
                         ButtonKind::Secondary
                     } else {
@@ -704,6 +717,7 @@ impl Shell {
         for access in Screenshots::ALL {
             screenshots = screenshots.push(
                 enz_button(access.label(), message(Message::ChooseScreenshots(access)))
+                    .id(format!("assistant-screenshot-policy-{}", access.wire()).into())
                     .kind(if state.screenshots == access {
                         ButtonKind::Secondary
                     } else {
@@ -718,6 +732,7 @@ impl Shell {
         if state.session.is_some() && enzui_shell::desktop_session::mode().managed() {
             permissions = permissions.push(
                 enz_button(tr("shell-assistant-control-allow"), message(Message::AllowDesktopControl))
+                    .id("assistant-desktop-control".into())
                     .kind(ButtonKind::Secondary)
                     .size(ButtonSize::Sm)
                     .enabled(!state.desktop_control_pending)
@@ -747,6 +762,7 @@ impl Shell {
             trailing.push(
                 enz_toolbar_icon("square", message(Message::Stop))
                     .tokens(self.icon_tokens())
+                    .id("assistant-stop".into())
                     .aria_label(tr("shell-stop"))
                     .tooltip(tr("shell-stop"))
                     .into_element(),
@@ -757,6 +773,7 @@ impl Shell {
                 state.approval_mode.label(),
                 message(Message::ShowApprovals(!state.choosing_approval)),
             )
+            .id("assistant-approval-policy".into())
             .kind(if state.approval_mode == ApprovalMode::FullSend {
                 ButtonKind::Secondary
             } else {
@@ -970,8 +987,9 @@ fn assistant_row<'a>(
                 .spacing(6)
                 .align_y(Alignment::Center)
                 .into(),
-                message(Message::Toggled(key)),
+                message(Message::Toggled(key.clone())),
             )
+            .id(format!("assistant-expand-{key}").into())
             .style(PressableStyle::Plain)
             .into_element();
             let mut column = column![container(heading).align_left(Length::Fill)].spacing(4);
@@ -1063,8 +1081,9 @@ fn assistant_row<'a>(
                         left: 2.0,
                     })
                     .into(),
-                message(Message::Toggled(key)),
+                message(Message::Toggled(key.clone())),
             )
+            .id(format!("assistant-expand-{key}").into())
             .style(PressableStyle::Plain)
             .aria_label(format!(
                 "{title}, {}",
@@ -1191,6 +1210,7 @@ fn assistant_row<'a>(
                             tr("shell-deny"),
                             message(Message::Decide(key.clone(), false, false))
                         )
+                        .id(format!("assistant-deny-{key}").into())
                         .kind(ButtonKind::Quiet)
                         .size(ButtonSize::Sm)
                         .enabled(idle)
@@ -1202,6 +1222,7 @@ fn assistant_row<'a>(
                                 tr("shell-agent-allow-for-session"),
                                 message(Message::Decide(key.clone(), true, true)),
                             )
+                            .id(format!("assistant-allow-session-{key}").into())
                             .kind(ButtonKind::Secondary)
                             .size(ButtonSize::Sm)
                             .enabled(idle)
@@ -1213,8 +1234,9 @@ fn assistant_row<'a>(
                             } else {
                                 "shell-allow-once"
                             }),
-                            message(Message::Decide(key, true, false))
+                            message(Message::Decide(key.clone(), true, false))
                         )
+                        .id(format!("assistant-allow-once-{key}").into())
                         .kind(ButtonKind::Accent)
                         .size(ButtonSize::Sm)
                         .enabled(idle)
@@ -1291,6 +1313,7 @@ fn assistant_row<'a>(
                 column = column.push(
                     container(
                         enz_button(tr("shell-try-again"), message(Message::Retry))
+                            .id("assistant-retry".into())
                             .kind(ButtonKind::Secondary)
                             .size(ButtonSize::Sm)
                             .icon("rotate-ccw")
@@ -1337,4 +1360,51 @@ fn assistant_row<'a>(
         }
     };
     container(element).width(Length::Fill).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use enzui_core::collect::SemanticsCollector;
+    use iced_runtime::user_interface::{Cache, UserInterface};
+
+    #[test]
+    fn same_title_sessions_expose_distinct_click_targets() {
+        let compositor =
+            enzui_shell::compositor::Compositor::new("/usr/bin/true".into(), "assistant-fixture".into())
+                .unwrap();
+        let mut shell = Shell::new(compositor, "/".into()).0;
+        shell.assistant.sessions = ["session-a", "session-b"]
+            .map(|id| super::super::SessionRow {
+                id: id.into(),
+                title: "Same title".into(),
+                preview: String::new(),
+                updated: 0,
+            })
+            .into();
+        let mut renderer = iced::futures::executor::block_on(
+            <iced::Renderer as iced::advanced::renderer::Headless>::new(
+                iced::advanced::renderer::Settings::default(),
+                Some("tiny-skia"),
+            ),
+        )
+        .expect("a headless renderer");
+        let mut ui = UserInterface::build(
+            shell.assistant_history(&shell.tokens().palette),
+            iced::Size::new(420.0, 480.0),
+            Cache::default(),
+            &mut renderer,
+        );
+        let mut collector = SemanticsCollector::new();
+        ui.operate(&renderer, &mut collector);
+        let targets: Vec<_> = collector
+            .collected()
+            .iter()
+            .filter(|node| node.semantics.role == enzui_core::semantics::Role::Button)
+            .filter(|node| node.semantics.label.as_deref() == Some("Same title"))
+            .map(|node| node.id.as_ref().expect("a routable widget id"))
+            .collect();
+        assert_eq!(targets.len(), 2);
+        assert_ne!(targets[0], targets[1]);
+    }
 }

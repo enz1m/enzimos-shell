@@ -885,6 +885,7 @@ impl Shell {
                 .and_then(|id| self.dock.badges.get(&id))
                 .copied()
                 .unwrap_or_default();
+            let urgent = badge.urgent || group.windows.iter().any(|window| window.urgent);
             let icon = match &group.image {
                 Some(image) => enzui_shell::icon_theme::source(image).into_element(size),
                 None => {
@@ -911,7 +912,7 @@ impl Shell {
                 .center_y(size + 6.0)
                 .style(move |_| container::Style {
                     border: iced::Border {
-                        width: if badge.urgent { 1.5 } else { 0.0 },
+                        width: if urgent { 1.5 } else { 0.0 },
                         color: palette.warning,
                         radius: f32::from(p.highlight_radius).into(),
                     },
@@ -949,7 +950,7 @@ impl Shell {
             .padding(0)
             .radius(f32::from(p.highlight_radius))
             .selected(active)
-            .aria_label(tr!("shell-windows-2", "arg0" => group.title.clone(), "arg1" => format!("{:}", group.windows.len()), "arg2" => (if group.pinned { tr("shell-kept-in-dock") } else { "" }).to_owned(), "arg3" => (if badge.count_visible && badge.count > 0 {format!(" · {} unread",badge.count)} else {String::new()}).clone(), "arg4" => (if badge.urgent {tr("shell-needs-attention")} else {""}).to_owned()))
+            .aria_label(tr!("shell-windows-2", "arg0" => group.title.clone(), "arg1" => format!("{:}", group.windows.len()), "arg2" => (if group.pinned { tr("shell-kept-in-dock") } else { "" }).to_owned(), "arg3" => (if badge.count_visible && badge.count > 0 {format!(" · {} unread",badge.count)} else {String::new()}).clone(), "arg4" => (if urgent {tr("shell-needs-attention")} else {""}).to_owned()))
             .id(format!("dock-app-{id}").into())
             .enabled(group.app.is_some() || running)
             .into_element();

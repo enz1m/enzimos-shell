@@ -786,24 +786,40 @@ impl Compositor {
             Err(tr("shell-quick-search-shortcut-was-rejected").into())
         }
     }
-    async fn focus_existing_app(&self, identities: &[String]) -> Result<bool, String> {
+    async fn focus_existing_app(
+        &self,
+        apps: &[crate::dock::App],
+        app_target: &AppTarget,
+    ) -> Result<bool, String> {
+        let wanted = Target::App(app_target.clone());
         let mut windows = self.windows().await?;
         windows.sort_by_key(|w| w["focusHistoryID"].as_i64().unwrap_or(i64::MAX));
         for window in windows {
             if !local_client(&window) || window["mapped"] != true || window["hidden"] == true {
                 continue;
             }
-            let matches = ["class", "initialClass"].iter().any(|key| {
-                window[*key]
-                    .as_str()
-                    .is_some_and(|class| identities.iter().any(|id| class.eq_ignore_ascii_case(id)))
-            });
-            if matches && let Some(target) = target(&window) {
+            if let Some(target) = target(&window)
+                && crate::dock::match_app(apps, &window, &target)
+                    .is_some_and(|app| app.item.target.as_ref() == Some(&wanted))
+            {
                 self.focus_search_result(target).await?;
                 return Ok(true);
             }
         }
         Ok(false)
+    }
+
+    async fn focus_catalogue_app(&self, root: &Path, app: &AppTarget) -> Result<bool, String> {
+        let root = root.to_owned();
+        let apps = tokio::task::spawn_blocking(move || {
+            super::catalogue::scan(&root, &super::catalogue::directories())
+                .into_iter()
+                .filter_map(crate::dock::App::from_item)
+                .collect::<Vec<_>>()
+        })
+        .await
+        .map_err(|_| tr("shell-application-could-not-be-started"))?;
+        self.focus_existing_app(&apps, app).await
     }
 
     pub async fn execute_search_target(&self, root: &Path, target: Target) -> Result<(), String> {
@@ -820,16 +836,10 @@ impl Compositor {
                 if !crate::parental::program_allowed(&crate::catalog::executable(root, &id)) {
                     return Err(tr("shell-this-app-is-not-allowed-on-this-account").into());
                 }
-                let identities = vec![
-                    crate::catalog::desktop_id(&id)
-                        .unwrap_or(match id.as_str() {
-                            "enzui-settings" => "dev.enzui.Settings",
-                            "enzui-assistant" => "dev.enzui.Assistant",
-                            _ => &id,
-                        })
-                        .to_owned(),
-                ];
-                if self.focus_existing_app(&identities).await? {
+                if self
+                    .focus_catalogue_app(root, &AppTarget::Prepared(id.clone()))
+                    .await?
+                {
                     return Ok(());
                 }
                 if id == "enzui-settings" {
@@ -850,11 +860,19 @@ impl Compositor {
                 if !crate::parental::entry_allowed(&path) {
                     return Err(tr("shell-this-app-is-not-allowed-on-this-account").into());
                 }
-                let identities = super::catalogue::application_ids(&path);
-                identity.verify(&path)?;
-                if self.focus_existing_app(&identities).await? {
+                if self
+                    .focus_catalogue_app(
+                        root,
+                        &AppTarget::Desktop {
+                            path: path.clone(),
+                            identity: identity.clone(),
+                        },
+                    )
+                    .await?
+                {
                     return Ok(());
                 }
+                identity.verify(&path)?;
                 if let Some(name) = super::catalogue::dbus_activatable(&path) {
                     return activate_application(&name).await;
                 }

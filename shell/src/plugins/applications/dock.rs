@@ -2,7 +2,7 @@ use crate::search::{AppTarget, Item, Target, WindowTarget};
 use enzui_shell::i18n::tr;
 use iced::{Rectangle, Size};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, io::Read};
+use std::collections::BTreeSet;
 
 macro_rules! choice {
     ($name:ident, $default:ident, [$($variant:ident => ($key:literal, $label:expr)),+]) => {
@@ -211,38 +211,18 @@ impl App {
         let mut classes: Vec<String> = Vec::new();
         match target {
             AppTarget::Prepared(id) => {
-                if id == "enzui-settings" {
-                    classes.push("dev.enzui.Settings".into());
-                }
-                if let Some(class) = crate::catalog::desktop_id(id) {
-                    classes.push(class.into());
-                }
+                classes.push(
+                    crate::catalog::desktop_id(id)
+                        .unwrap_or(match id.as_str() {
+                            "enzui-settings" => "dev.enzui.Settings",
+                            "enzui-assistant" => "dev.enzui.Assistant",
+                            _ => id,
+                        })
+                        .into(),
+                );
             }
             AppTarget::Desktop { path, .. } => {
-                let mut text = String::new();
-                if std::fs::File::open(path)
-                    .and_then(|file| file.take(65537).read_to_string(&mut text))
-                    .is_err()
-                    || text.len() > 65536
-                {
-                    text.clear();
-                }
-                let mut active = false;
-                for line in text.lines() {
-                    let line = line.trim();
-                    if line.starts_with('[') {
-                        active = line == "[Desktop Entry]";
-                    } else if active
-                        && let Some(class) = line.strip_prefix("StartupWMClass=")
-                        && !class.is_empty()
-                        && class.len() <= 255
-                    {
-                        classes.push(class.into());
-                    }
-                }
-                if let Some(name) = path.file_stem().and_then(|v| v.to_str()) {
-                    classes.push(name.into());
-                }
+                classes = crate::search::catalogue::application_ids(path);
             }
         }
         if let AppTarget::Prepared(id) = target {
@@ -272,6 +252,70 @@ impl App {
         Some(Self { item, classes })
     }
 }
+fn same_class(left: &str, right: &str) -> bool {
+    let left = left.strip_suffix(".desktop").unwrap_or(left);
+    let right = right.strip_suffix(".desktop").unwrap_or(right);
+    !left.is_empty() && left.eq_ignore_ascii_case(right)
+}
+
+fn generic_class(class: &str) -> bool {
+    ["", "electron", "java", "sun-awt-X11-XFramePeer", "wine"]
+        .iter()
+        .any(|value| class.eq_ignore_ascii_case(value))
+}
+
+pub(crate) fn match_app<'a>(
+    apps: &'a [App],
+    client: &serde_json::Value,
+    target: &WindowTarget,
+) -> Option<&'a App> {
+    if apps.is_empty() {
+        return None;
+    }
+    let current = client["class"].as_str().unwrap_or_default();
+    let initial = client["initialClass"].as_str().unwrap_or_default();
+    let mut best = None;
+    let mut best_score = 0;
+    for app in apps {
+        let score = app
+            .classes
+            .iter()
+            .enumerate()
+            .map(|(i, known)| {
+                match (
+                    i == 0,
+                    same_class(current, known),
+                    same_class(initial, known),
+                ) {
+                    (true, true, _) => 4,
+                    (true, _, true) => 2,
+                    (false, true, _) if !generic_class(current) => 3,
+                    (false, _, true) if !generic_class(initial) => 1,
+                    _ => 0,
+                }
+            })
+            .max()
+            .unwrap_or_default();
+        if score > best_score {
+            best = Some(app);
+            best_score = score;
+        } else if score == best_score {
+            best = None;
+        }
+    }
+    best.or_else(|| {
+        let cgroup = std::fs::read_to_string(format!("/proc/{}/cgroup", target.pid)).ok()?;
+        let (_, id) = crate::window_feed::unit_of(&cgroup)?;
+        let mut matches = apps.iter().filter(|app| {
+            app.classes
+                .first()
+                .is_some_and(|known| same_class(known, &id))
+        });
+        let app = matches.next()?;
+        matches.next().is_none().then_some(app)
+    })
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Window {
     pub target: WindowTarget,
@@ -283,8 +327,21 @@ pub struct Window {
     pub bounds: Rectangle,
     pub fullscreen: bool,
     pub active: bool,
+    pub urgent: bool,
     pub minimized: bool,
 }
+impl Window {
+    fn group_id(&self) -> String {
+        if let Some(id) = &self.app_id {
+            return id.clone();
+        }
+        if generic_class(&self.class) {
+            return format!("process:{}:{}", self.target.pid, self.target.start);
+        }
+        format!("window:{}", self.class.to_ascii_lowercase())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Group {
     pub id: String,
@@ -311,20 +368,16 @@ pub fn groups(
 ) -> Vec<Group> {
     // Client enumeration follows compositor z-order; focus must not reorder
     // dock slots, hover cards or the next window in a cycling sequence.
-    let mut ordered: Vec<&Window> = windows.iter().collect();
-    ordered.sort_by(|left, right| stable_window_order(left, right));
+    let mut ordered: Vec<_> = windows.iter().map(|w| (w.group_id(), w)).collect();
+    ordered.sort_by(|(_, left), (_, right)| stable_window_order(left, right));
     let ids = preferences.pins.iter().cloned().chain(
         ordered
-            .into_iter()
-            .filter(|w| {
+            .iter()
+            .filter(|(_, w)| {
                 preferences.show_running
                     && (!preferences.current_desktop || w.workspace == desktop || w.minimized)
             })
-            .map(|w| {
-                w.app_id
-                    .clone()
-                    .unwrap_or_else(|| format!("window:{}", w.class))
-            }),
+            .map(|(id, _)| id.clone()),
     );
     let mut result = Vec::new();
     let mut seen = BTreeSet::new();
@@ -333,16 +386,14 @@ pub fn groups(
             continue;
         }
         let app = apps.iter().find(|app| app.item.id == id);
-        let mut own: Vec<Window> = windows
+        let own: Vec<Window> = ordered
             .iter()
-            .filter(|w| {
-                w.app_id.as_ref() == Some(&id)
-                    || w.app_id.is_none() && id == format!("window:{}", w.class)
+            .filter(|(known, w)| {
+                known == &id
+                    && (!preferences.current_desktop || w.workspace == desktop || w.minimized)
             })
-            .filter(|w| !preferences.current_desktop || w.workspace == desktop || w.minimized)
-            .cloned()
+            .map(|(_, window)| (*window).clone())
             .collect();
-        own.sort_by(stable_window_order);
         let target = app.and_then(|app| match &app.item.target {
             Some(Target::App(target)) => Some(target.clone()),
             _ => None,
@@ -351,7 +402,15 @@ pub fn groups(
             id: id.clone(),
             title: app
                 .map(|a| a.item.title.clone())
-                .or_else(|| own.first().map(|w| w.class.clone()))
+                .or_else(|| {
+                    own.first().map(|w| {
+                        if generic_class(&w.class) && !w.title.is_empty() {
+                            w.title.clone()
+                        } else {
+                            w.class.clone()
+                        }
+                    })
+                })
                 .unwrap_or_else(|| {
                     id.trim_start_matches("app:")
                         .trim_end_matches(".desktop")
@@ -583,12 +642,7 @@ impl crate::compositor::Compositor {
                 continue;
             };
             let class = value["class"].as_str().unwrap_or("");
-            let app = apps.iter().find(|app| {
-                app.classes.iter().any(|known| {
-                    known.eq_ignore_ascii_case(class)
-                        || Some(known.as_str()) == value["initialClass"].as_str()
-                })
-            });
+            let app = match_app(apps, value, &target);
             let workspace = value["workspace"]["id"].as_i64().unwrap_or(0);
             let pair = |key: &str| -> Option<[f32; 2]> {
                 Some([
@@ -606,6 +660,7 @@ impl crate::compositor::Compositor {
             }
             windows.push(Window {
                 active: active["stableId"].as_str() == Some(&target.stable_id),
+                urgent: value["urgent"] == true,
                 target,
                 app_id: app.map(|a| a.item.id.clone()),
                 title: crate::search::catalogue::display_text(
@@ -857,8 +912,75 @@ mod tests {
             },
             fullscreen: false,
             active: false,
+            urgent: false,
             minimized: workspace < 0,
         }
+    }
+
+    #[test]
+    fn desktop_identity_selects_the_pin_independently_of_catalogue_order() {
+        let root = tempfile::tempdir().unwrap();
+        let desktop = |id: &str, fields: &str| {
+            let filename = format!("{id}.desktop");
+            let path = root.path().join(&filename);
+            std::fs::write(&path, format!("[Desktop Entry]\n{fields}")).unwrap();
+            let identity = crate::search::catalogue::FileIdentity::capture(&path).unwrap();
+            App::from_item(Item::new(
+                format!("app:desktop/{filename}"),
+                Category::Apps,
+                id,
+                "",
+                "Open",
+                "app-window",
+                Some(Target::App(AppTarget::Desktop { path, identity })),
+            ))
+            .unwrap()
+        };
+        let browser = desktop("chromium", "StartupWMClass=org.example.App\n");
+        let pwa = desktop("chromium-app-Default", "StartupWMClass=crx_demo\n");
+        let flatpak = desktop("org.example.App", "X-Flatpak=org.example.Variant\n");
+        let duplicate = desktop("other-app", "StartupWMClass=crx_demo\n");
+        let apps = [browser, pwa, flatpak, duplicate];
+        let mut running = window("unidentified", 1, 1);
+        let identify = |client, catalogue| {
+            match_app(catalogue, &client, &window("unidentified", 1, 1).target)
+                .map(|app| app.item.id.clone())
+        };
+        let app_id = identify(
+            serde_json::json!({"class": "org.example.APP.desktop", "initialClass": "chromium"}),
+            &apps,
+        );
+        assert_eq!(app_id.as_deref(), Some(apps[2].item.id.as_str()));
+        running.app_id = app_id;
+        let prefs = Preferences {
+            pins: vec![apps[2].item.id.clone()],
+            ..Default::default()
+        };
+        let groups = groups(&prefs, &apps, &[running], 1);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].windows.len(), 1);
+        assert_eq!(
+            identify(
+                serde_json::json!({"class": "Electron", "initialClass": "CRX_demo"}),
+                &apps[..3]
+            ),
+            Some(apps[1].item.id.clone())
+        );
+        assert_eq!(
+            identify(
+                serde_json::json!({"class": "crx_demo", "initialClass": "chromium"}),
+                &apps[..3]
+            ),
+            Some(apps[1].item.id.clone())
+        );
+        assert_eq!(
+            identify(serde_json::json!({"class": "crx_demo"}), &apps),
+            None
+        );
+        assert_eq!(
+            identify(serde_json::json!({"class": "org.example.Variant"}), &apps),
+            Some(apps[2].item.id.clone())
+        );
     }
 
     #[tokio::test]

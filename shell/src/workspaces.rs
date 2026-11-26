@@ -223,6 +223,8 @@ fn dock_event(line: &[u8]) -> bool {
         || [
             b"fullscreen>>".as_slice(),
             b"windowtitlev2>>",
+            b"windowclass>>",
+            b"urgent>>",
             b"custom>>enzui-dock-changed",
         ]
         .iter()

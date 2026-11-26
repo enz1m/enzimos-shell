@@ -102,6 +102,7 @@ fn plugin_applications_behaviour() {
             bounds: iced::Rectangle::with_size(iced::Size::new(1280.0, 800.0)),
             fullscreen: false,
             active: true,
+            urgent: false,
             minimized: false,
         };
         shell.dock.snapshot = Some(dock::Snapshot {

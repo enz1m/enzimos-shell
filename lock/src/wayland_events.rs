@@ -50,6 +50,12 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                         }
                         surface.surface.destroy();
                     }
+                    if state
+                        .contact
+                        .is_some_and(|contact| contact.surface == index)
+                    {
+                        state.contact = None;
+                    }
                     if state.pointer_surface == Some(index) {
                         state.pointer_surface = None;
                         state.pointer_origin = None;
@@ -346,9 +352,122 @@ impl Dispatch<wl_seat::WlSeat, ()> for State {
                 state.pointer_surface = None;
                 state.pointer_origin = None;
             }
+            if caps.contains(wl_seat::Capability::Touch) {
+                if state.touch.is_none() {
+                    state.touch = Some(seat.get_touch(qh, ()));
+                }
+            } else if let Some(touch) = state.touch.take() {
+                if touch.version() >= 3 {
+                    touch.release();
+                }
+                state.cancel_touch();
+            }
         }
     }
 }
+
+#[derive(Clone, Copy)]
+pub(super) struct Contact {
+    surface: usize,
+    id: i32,
+    position: iced::Point,
+}
+
+impl Contact {
+    fn finger(self) -> iced::touch::Finger {
+        iced::touch::Finger(u64::from(self.id.cast_unsigned()))
+    }
+}
+
+impl Dispatch<wl_touch::WlTouch, ()> for State {
+    fn event(
+        state: &mut Self,
+        touch: &wl_touch::WlTouch,
+        event: wl_touch::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        use iced::touch::Event;
+        if state.touch.as_ref() != Some(touch) {
+            return;
+        }
+        match event {
+            wl_touch::Event::Down {
+                surface, id, x, y, ..
+            } if state.contact.is_none() => {
+                let Some(surface) = state.surfaces.iter().position(|s| s.surface == surface) else {
+                    return;
+                };
+                let position = iced::Point::new(x as f32, y as f32);
+                let contact = Contact {
+                    surface,
+                    id,
+                    position,
+                };
+                state.contact = Some(contact);
+                state.input = true;
+                state.touch_event(
+                    contact,
+                    Event::FingerPressed {
+                        id: contact.finger(),
+                        position,
+                    },
+                );
+            }
+            wl_touch::Event::Motion { id, x, y, .. } => {
+                if let Some(contact) = state.contact.as_mut().filter(|contact| contact.id == id) {
+                    contact.position = iced::Point::new(x as f32, y as f32);
+                    let contact = *contact;
+                    state.touch_event(
+                        contact,
+                        Event::FingerMoved {
+                            id: contact.finger(),
+                            position: contact.position,
+                        },
+                    );
+                }
+            }
+            wl_touch::Event::Up { id, .. }
+                if state.contact.is_some_and(|contact| contact.id == id) =>
+            {
+                if let Some(contact) = state.contact.take() {
+                    state.input = true;
+                    state.touch_event(
+                        contact,
+                        Event::FingerLifted {
+                            id: contact.finger(),
+                            position: contact.position,
+                        },
+                    );
+                }
+            }
+            wl_touch::Event::Cancel => state.cancel_touch(),
+            _ => {}
+        }
+    }
+}
+
+impl State {
+    fn touch_event(&mut self, contact: Contact, event: iced::touch::Event) {
+        if let Some(surface) = self.surfaces.get_mut(contact.surface) {
+            surface.events.push(iced::Event::Touch(event));
+        }
+    }
+
+    fn cancel_touch(&mut self) {
+        if let Some(contact) = self.contact.take() {
+            self.touch_event(
+                contact,
+                iced::touch::Event::FingerLost {
+                    id: contact.finger(),
+                    position: contact.position,
+                },
+            );
+        }
+    }
+}
+
 impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
     fn event(
         state: &mut Self,

@@ -45,7 +45,7 @@ use wayland_client::{
     Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum,
     protocol::{
         wl_buffer, wl_callback, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_registry,
-        wl_seat, wl_shm, wl_shm_pool, wl_surface,
+        wl_seat, wl_shm, wl_shm_pool, wl_surface, wl_touch,
     },
 };
 use wayland_protocols::ext::session_lock::v1::client::{
@@ -243,6 +243,8 @@ struct State {
     keyboard: Option<keys::Keyboard>,
     wl_keyboard: Option<wl_keyboard::WlKeyboard>,
     pointer: Option<wl_pointer::WlPointer>,
+    touch: Option<wl_touch::WlTouch>,
+    contact: Option<wayland_events::Contact>,
     pointer_shape: Option<WpCursorShapeDeviceV1>,
     pointer_surface: Option<usize>,
     pointer_serial: Option<u32>,
@@ -254,6 +256,34 @@ struct State {
     held: Option<(u32, Instant)>,
     keys: Vec<keys::Key>,
     input: bool,
+}
+
+fn update_surface_input(
+    interface: &mut UserInterface<'_, ui::Message, iced::Theme, IcedRenderer>,
+    events: &[iced::Event],
+    pointer: iced::mouse::Cursor,
+    renderer: &mut IcedRenderer,
+    messages: &mut iced_wgpu::core::shell::Bus<ui::Message>,
+) {
+    for event in events {
+        let cursor = match event {
+            iced::Event::Touch(
+                iced::touch::Event::FingerPressed { position, .. }
+                | iced::touch::Event::FingerMoved { position, .. }
+                | iced::touch::Event::FingerLifted { position, .. }
+                | iced::touch::Event::FingerLost { position, .. },
+            ) => iced::mouse::Cursor::Available(*position),
+            _ => pointer,
+        };
+        let _ = interface.update(
+            &iced::window::Headless,
+            &iced_wgpu::core::shell::Waker::noop(),
+            std::slice::from_ref(event),
+            cursor,
+            renderer,
+            messages,
+        );
+    }
 }
 
 fn say(line: &str) {
@@ -543,6 +573,8 @@ pub fn run(mode: Mode) -> Result<(), String> {
         keyboard: None,
         wl_keyboard: None,
         pointer: None,
+        touch: None,
+        contact: None,
         pointer_shape: None,
         pointer_surface: None,
         pointer_serial: None,
@@ -1162,9 +1194,8 @@ pub fn run(mode: Mode) -> Result<(), String> {
                 std::mem::take(&mut surface.cache),
                 &mut target.renderer,
             );
-            let _ = interface.update(
-                &iced::window::Headless,
-                &iced_wgpu::core::shell::Waker::noop(),
+            update_surface_input(
+                &mut interface,
                 &events,
                 surface.cursor,
                 &mut target.renderer,
@@ -1531,5 +1562,61 @@ mod scale_tests {
     fn an_integer_scale_multiplies_the_surface_size() {
         assert_eq!(Scale::Integer(2).physical((1504, 1003)), (3008, 2006));
         assert_eq!(Scale::Integer(1).physical((1504, 1003)), (1504, 1003));
+    }
+}
+
+#[cfg(test)]
+mod touch_tests {
+    use super::*;
+
+    #[test]
+    fn touch_activates_a_lock_control_only_on_a_tap() {
+        use iced::touch::{Event, Finger};
+        let mut renderer = iced::futures::executor::block_on(
+            <IcedRenderer as iced::advanced::renderer::Headless>::new(
+                renderer_settings(),
+                Some("tiny-skia"),
+            ),
+        )
+        .unwrap();
+        let control = iced::widget::button::<ui::Message, iced::Theme, IcedRenderer>("Keyboard")
+            .width(80)
+            .height(32)
+            .on_press(ui::Message::ToggleKeyboard);
+        let mut interface = UserInterface::build(
+            control,
+            iced::Size::new(320.0, 200.0),
+            user_interface::Cache::new(),
+            &mut renderer,
+        );
+        let mut messages = iced_wgpu::core::shell::Bus::new();
+        let id = Finger(7);
+        let position = iced::Point::new(40.0, 16.0);
+        let press = Event::FingerPressed { id, position };
+        let release = Event::FingerLifted { id, position };
+        for finish in [
+            Event::FingerLost { id, position },
+            Event::FingerLifted { id, position: iced::Point::new(100.0, 40.0) },
+        ] {
+            update_surface_input(
+                &mut interface,
+                &[iced::Event::Touch(press), iced::Event::Touch(finish)],
+                iced::mouse::Cursor::Unavailable,
+                &mut renderer,
+                &mut messages,
+            );
+            assert_eq!(messages.drain_messages().count(), 0);
+        }
+        update_surface_input(
+            &mut interface,
+            &[iced::Event::Touch(press), iced::Event::Touch(release)],
+            iced::mouse::Cursor::Unavailable,
+            &mut renderer,
+            &mut messages,
+        );
+        assert!(matches!(
+            messages.drain_messages().collect::<Vec<_>>().as_slice(),
+            [ui::Message::ToggleKeyboard]
+        ));
     }
 }

@@ -2,14 +2,27 @@
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 app=${1:-}
-case "$app" in files-app|text-app|terminal-emulator|task-manager-app) ;; *) echo 'Unknown app' >&2; exit 2;; esac
+case "$app" in files-app|text-app|terminal-emulator|task-manager-app|enzui-assistant) ;; *) echo 'Unknown app' >&2; exit 2;; esac
 shift
 : "${XDG_RUNTIME_DIR:?}"
-: "${WAYLAND_DISPLAY:?Launch from the nested desktop}"
-: "${HYPRLAND_INSTANCE_SIGNATURE:?Launch from the nested desktop}"
+: "${WAYLAND_DISPLAY:?Launch from the managed desktop}"
+: "${HYPRLAND_INSTANCE_SIGNATURE:?Launch from the managed desktop}"
 runtime=${ENZUI_HYPR_RUNROOT:-$XDG_RUNTIME_DIR/enzui-desktop}
 [[ -s "$runtime/instance" && "$(<"$runtime/instance")" == "$HYPRLAND_INSTANCE_SIGNATURE" ]] || { echo 'Wrong desktop instance' >&2; exit 2; }
 [[ -s "$runtime/wayland-display" && "$(<"$runtime/wayland-display")" == "$WAYLAND_DISPLAY" ]] || { echo 'Wrong desktop display' >&2; exit 2; }
+if [[ $app == enzui-assistant ]]; then
+  if [[ -f "$ROOT/installed.json" ]]; then
+    bin=$(python3 -c 'import json,sys; p=json.load(open(sys.argv[1]))["bin"]; assert p.startswith("/"); print(p)' "$ROOT/installed.json")
+  else
+    bin=${ENZUI_SHELL_BIN_DIR:-$ROOT/target/debug}
+  fi
+  [[ -x "$bin/$app" ]] || { echo "$app is not installed in $bin" >&2; exit 1; }
+  [[ ${XDG_STATE_HOME:-} == /* ]] || unset XDG_STATE_HOME
+  state=${XDG_STATE_HOME:-${HOME:?}/.local/state}/enzui/apps
+  install -d -m 700 "$state"
+  unset DISPLAY ENZUI_TEST_FRAME
+  exec "$bin/$app" "$@" >> "$state/$app.log" 2>&1
+fi
 apps=$ROOT/.build/apps/bin
 if [[ -f "$ROOT/installed.json" ]]; then apps=$(python3 -c 'import json,sys; a=json.load(open(sys.argv[1]))["apps"]; assert a.startswith("/"); print(a)' "$ROOT/installed.json"); fi
 [[ -x "$apps/$app" ]] || { echo "$app is not installed in $apps" >&2; exit 1; }

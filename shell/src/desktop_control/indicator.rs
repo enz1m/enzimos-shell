@@ -72,10 +72,8 @@ impl Indicator {
         let (placed, ready) = oneshot::channel();
         let label = tr("shell-assistant-control-indicator").to_owned();
         std::thread::spawn(move || {
-            let result = run(cancel.clone(), stopping, placed, label);
-            cancel.revoke();
-            if let Err(error) = result {
-                eprintln!("enzui-shell: Assistant indicator: {error}");
+            if run(cancel.clone(), stopping, placed, label).is_err() {
+                cancel.indicator_failed();
             }
         });
         (Self(stop), ready)

@@ -1,10 +1,10 @@
 use super::{
-    Compositor, Peer, Result,
+    Compositor, Failure, Peer, Result,
     eis::Eis,
-    generation,
+    executable, generation,
     indicator::Indicator,
     portal::{BACKEND, Portal},
-    read_frame, socket_path, unavailable, valid_id, write_frame,
+    read_frame, report, socket_path, unavailable, valid_id, write_frame,
 };
 use iced::futures::StreamExt;
 use serde_json::json;
@@ -23,28 +23,48 @@ use tokio::{
     sync::{Semaphore, watch},
 };
 
+type Attempt<T> = std::result::Result<T, Failure>;
+
 const CHECK: Duration = Duration::from_millis(250);
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone)]
-pub(super) struct Cancel(watch::Sender<bool>);
+pub(super) struct Cancel(watch::Sender<Option<Attempt<()>>>);
 
 impl Cancel {
     fn new() -> Self {
-        Self(watch::channel(false).0)
+        Self(watch::channel(None).0)
     }
 
     fn allowed(&self) -> bool {
-        !*self.0.borrow()
+        self.0.borrow().is_none()
     }
 
     pub(super) fn revoke(&self) {
-        self.0.send_replace(true);
+        self.stop(Ok(()));
     }
 
-    async fn revoked(&self) {
+    pub(super) fn indicator_failed(&self) {
+        self.stop(Err(("indicator mapping", "Wayland indicator failed")));
+    }
+
+    fn stop(&self, result: Attempt<()>) {
+        self.0.send_if_modified(|current| {
+            if current.is_some() {
+                return false;
+            }
+            *current = Some(result);
+            true
+        });
+    }
+
+    async fn revoked(&self) -> Attempt<()> {
         let mut state = self.0.subscribe();
-        let _ = state.wait_for(|revoked| *revoked).await;
+        (*state
+            .wait_for(Option::is_some)
+            .await
+            .expect("cancel sender is live"))
+        .expect("wait_for observes revocation")
     }
 }
 
@@ -84,17 +104,24 @@ async fn serve(compositor: Compositor) -> Result<()> {
     }
     let listener = UnixListener::bind(&path).map_err(|e| e.to_string())?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
-    let shell = std::env::current_exe().map_err(|e| e.to_string())?;
-    let assistant = shell.with_file_name("enzui-assistant");
+    let shell = executable("enzui-shell").map_err(|e| e.to_string())?;
+    let assistant = executable("enzui-assistant").map_err(|e| e.to_string())?;
     let slot = Slot::default();
     let limit = Arc::new(Semaphore::new(8));
     loop {
         let (stream, _) = listener.accept().await.map_err(|e| e.to_string())?;
         let Ok(permit) = Arc::clone(&limit).try_acquire_owned() else {
+            report(("request slot", "too many clients"));
+            let _ = stream.try_write(b"{\"ok\":false}\n");
             continue;
         };
-        let Some(peer) = Peer::new(&stream, &[&shell, &assistant]) else {
-            continue;
+        let peer = match Peer::new(&stream, &[&shell, &assistant]) {
+            Ok(peer) => peer,
+            Err(reason) => {
+                report(("client peer check", reason));
+                let _ = stream.try_write(b"{\"ok\":false}\n");
+                continue;
+            }
         };
         let (slot, compositor) = (Rc::clone(&slot), compositor.clone());
         tokio::task::spawn_local(async move {
@@ -109,13 +136,14 @@ async fn client(stream: UnixStream, peer: Peer, slot: Slot, compositor: Composit
     let reply = async {
         let request = tokio::time::timeout(IO_TIMEOUT, read_frame(&mut socket))
             .await
-            .map_err(|_| unavailable())??;
+            .map_err(|_| ("request frame", "request timed out"))?
+            .map_err(|_| ("request frame", "invalid or incomplete request"))?;
         let session = request["session_id"]
             .as_str()
             .filter(|id| valid_id(id))
-            .ok_or_else(unavailable)?;
+            .ok_or(("session ID", "missing or invalid conversation ID"))?;
         if !peer.alive() {
-            return Err(unavailable());
+            return Err(("client peer check", "peer exited before request"));
         }
         match request["method"].as_str() {
             Some("revoke") => {
@@ -126,10 +154,11 @@ async fn client(stream: UnixStream, peer: Peer, slot: Slot, compositor: Composit
                 {
                     grant.cancel.revoke();
                 }
-                Ok(())
+                Ok(true)
             }
             Some("allow") if slot.borrow().is_none() => {
-                let generation = generation()?;
+                let generation =
+                    generation().map_err(|_| ("request slot", "could not allocate a lease ID"))?;
                 let cancel = Cancel::new();
                 *slot.borrow_mut() = Some(Grant {
                     session: session.to_owned(),
@@ -143,9 +172,8 @@ async fn client(stream: UnixStream, peer: Peer, slot: Slot, compositor: Composit
                 tokio::task::spawn_local(async move {
                     if let Err(error) =
                         lifetime(&compositor, &generation, &session, worker.clone(), status).await
-                        && worker.allowed()
                     {
-                        eprintln!("enzui-shell: desktop control: {error}");
+                        report(error);
                     }
                     worker.revoke();
                     if owner
@@ -160,39 +188,77 @@ async fn client(stream: UnixStream, peer: Peer, slot: Slot, compositor: Composit
                     biased;
                     _ = socket.read_u8() => {
                         cancel.revoke();
-                        Err(unavailable())
+                        Err(("client exchange", "client disconnected before consent completed"))
                     }
-                    result = ready => result.map_err(|_| unavailable()),
+                    result = ready => Ok(result.is_ok()),
                 }
             }
-            _ => Err(unavailable()),
+            Some("allow") => Err((
+                "request slot",
+                "another control request is pending or active",
+            )),
+            _ => Err(("request frame", "unknown request method")),
         }
     }
     .await;
-    let _ = tokio::time::timeout(
-        IO_TIMEOUT,
-        write_frame(socket.get_mut(), &json!({"ok": reply.is_ok()})),
-    )
-    .await;
-}
-
-async fn compositor_check(compositor: &Compositor, state: &str, generation: &str) -> Result<()> {
-    let command = format!("enzuiassistant {state} {generation}");
-    compositor_command(compositor, &command).await
-}
-
-async fn compositor_command(compositor: &Compositor, command: &str) -> Result<()> {
-    let response = tokio::time::timeout(IO_TIMEOUT, compositor.request(&[command]))
-        .await
-        .map_err(|_| unavailable())??;
-    if response.trim() == "ok" {
-        Ok(())
-    } else {
-        Err(unavailable())
+    let ok = reply.unwrap_or_else(|failure| {
+        report(failure);
+        false
+    });
+    if !matches!(
+        tokio::time::timeout(
+            IO_TIMEOUT,
+            write_frame(socket.get_mut(), &json!({"ok": ok}))
+        )
+        .await,
+        Ok(Ok(()))
+    ) && ok
+    {
+        report(("client exchange", "could not send broker response"));
     }
 }
 
-async fn watch_compositor(compositor: &Compositor, generation: &str, state: &str) -> Result<()> {
+async fn compositor_check(compositor: &Compositor, state: &str, generation: &str) -> Attempt<()> {
+    let command = format!("enzuiassistant {state} {generation}");
+    let stage = match state {
+        "visible" => "indicator mapping",
+        "scoped" => "compositor input route",
+        "pending" => "compositor pending lease",
+        _ => "compositor cleanup",
+    };
+    compositor_command(compositor, &command, stage).await
+}
+
+async fn compositor_command(
+    compositor: &Compositor,
+    command: &str,
+    stage: &'static str,
+) -> Attempt<()> {
+    let response = tokio::time::timeout(IO_TIMEOUT, compositor.request(&[command]))
+        .await
+        .map_err(|_| (stage, "compositor timed out"))?
+        .map_err(|error| {
+            let reason = if error.contains("not the registered shell") {
+                "Shell is not registered with the compositor"
+            } else if error.contains("session locked") {
+                "desktop session is locked"
+            } else if error.contains("assistant control revoked") {
+                "lease has been revoked"
+            } else if error.contains("assistant indicator or input route unavailable") {
+                "compositor could not verify indicator or input route"
+            } else {
+                "compositor request failed"
+            };
+            (stage, reason)
+        })?;
+    if response.trim() == "ok" {
+        Ok(())
+    } else {
+        Err((stage, "unexpected response from compositor"))
+    }
+}
+
+async fn watch_compositor(compositor: &Compositor, generation: &str, state: &str) -> Attempt<()> {
     let mut interval = tokio::time::interval(CHECK);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -201,10 +267,14 @@ async fn watch_compositor(compositor: &Compositor, generation: &str, state: &str
     }
 }
 
-async fn compositor_events(compositor: &Compositor, generation: &str) -> Result<()> {
-    let socket = UnixStream::connect(compositor.event_socket().ok_or_else(unavailable)?)
+async fn compositor_events(compositor: &Compositor, generation: &str) -> Attempt<()> {
+    let stage = "compositor events";
+    let path = compositor
+        .event_socket()
+        .ok_or((stage, "event socket is missing"))?;
+    let socket = UnixStream::connect(path)
         .await
-        .map_err(|_| unavailable())?;
+        .map_err(|_| (stage, "cannot connect to event socket"))?;
     let mut socket = BufReader::new(socket);
     let expected = format!("enzuiassistantrevoked>>{generation}\n");
     loop {
@@ -214,14 +284,15 @@ async fn compositor_events(compositor: &Compositor, generation: &str) -> Result<
             .take(65537)
             .read_until(b'\n', &mut line)
             .await
-            .map_err(|_| unavailable())?;
-        if !line.ends_with(b"\n")
-            || line.len() > 65536
-            || line == expected.as_bytes()
-            || line.starts_with(b"monitoradded>>")
-            || line.starts_with(b"monitorremoved>>")
-        {
-            return Err(unavailable());
+            .map_err(|_| (stage, "cannot read event socket"))?;
+        if !line.ends_with(b"\n") || line.len() > 65536 {
+            return Err((stage, "event socket closed or sent an invalid frame"));
+        }
+        if line == expected.as_bytes() {
+            return Err((stage, "compositor revoked desktop control"));
+        }
+        if line.starts_with(b"monitoradded>>") || line.starts_with(b"monitorremoved>>") {
+            return Err((stage, "display configuration changed"));
         }
     }
 }
@@ -232,18 +303,18 @@ async fn lifetime(
     session_id: &str,
     cancel: Cancel,
     status: tokio::sync::oneshot::Sender<()>,
-) -> Result<()> {
+) -> Attempt<()> {
     let portal = tokio::time::timeout(IO_TIMEOUT, Portal::new(generation))
         .await
-        .map_err(|_| unavailable())??;
+        .map_err(|_| ("portal session bus", "connection timed out"))??;
     let arm = format!("enzuiassistant arm {generation} {}", portal.handle());
-    if let Err(error) = compositor_command(compositor, &arm).await {
+    if let Err(error) = compositor_command(compositor, &arm, "compositor registration").await {
         let _ = compositor_check(compositor, "disarm", generation).await;
         return Err(error);
     }
     let result = tokio::select! {
         biased;
-        () = cancel.revoked() => Ok(()),
+        result = cancel.revoked() => result,
         result = compositor_events(compositor, generation) => result,
         result = control(compositor, generation, session_id, &cancel, &portal, status) => result,
     };
@@ -260,88 +331,121 @@ async fn control(
     cancel: &Cancel,
     portal: &Portal,
     status: tokio::sync::oneshot::Sender<()>,
-) -> Result<()> {
+) -> Attempt<()> {
     let (mut harness, peer) =
         tokio::time::timeout(IO_TIMEOUT, attach_harness(session_id, generation))
             .await
-            .map_err(|_| unavailable())??;
+            .map_err(|_| ("harness attachment", "connection or handshake timed out"))??;
     let bus = zbus::fdo::DBusProxy::new(&portal.connection)
         .await
-        .map_err(|_| unavailable())?;
+        .map_err(|_| ("portal backend", "could not create bus proxy"))?;
     let mut owners = bus
         .receive_name_owner_changed_with_args(&[(0, BACKEND)])
         .await
-        .map_err(|_| unavailable())?;
+        .map_err(|_| ("portal backend", "could not watch backend owner"))?;
     let session = portal.session().await?;
     let mut closed = session
         .receive_signal("Closed")
         .await
-        .map_err(|_| unavailable())?;
+        .map_err(|_| ("portal session", "could not subscribe to Closed"))?;
+    tokio::select! {
+        biased;
+        _ = harness.read_u8() => return Err(("harness attachment", "harness closed during consent")),
+        result = watch_compositor(compositor, generation, "pending") => return result,
+        result = portal.start() => result?,
+    }
     let pending = async {
-        portal.start().await?;
-        let backend = zbus::names::BusName::try_from(BACKEND).map_err(|_| unavailable())?;
+        let stage = "portal backend";
+        let backend = zbus::names::BusName::try_from(BACKEND)
+            .map_err(|_| (stage, "invalid backend bus name"))?;
         if !bus
             .name_has_owner(backend)
             .await
-            .map_err(|_| unavailable())?
+            .map_err(|_| (stage, "could not query backend owner"))?
         {
-            return Err(unavailable());
+            return Err((stage, "enzUI RemoteDesktop backend has no owner"));
         }
         let (indicator, shown) = Indicator::start(cancel.clone());
         tokio::time::timeout(IO_TIMEOUT, shown)
             .await
-            .map_err(|_| unavailable())?
-            .map_err(|_| unavailable())?;
+            .map_err(|_| {
+                (
+                    "indicator mapping",
+                    "timed out waiting for a frame on every output",
+                )
+            })?
+            .map_err(|_| {
+                (
+                    "indicator mapping",
+                    "indicator stopped before its first frame",
+                )
+            })?;
         compositor_check(compositor, "visible", generation).await?;
-        let mut eis = Eis::new(portal.connect_eis().await?.into())?;
+        let fd = portal.connect_eis().await?;
+        let mut eis =
+            Eis::new(fd.into()).map_err(|_| ("ConnectToEIS", "could not initialize libei"))?;
         tokio::time::timeout(IO_TIMEOUT, async {
             while !eis.ready() {
-                eis.dispatch().await?;
+                eis.dispatch()
+                    .await
+                    .map_err(|_| ("ConnectToEIS", "device setup failed"))?;
             }
-            Ok::<(), String>(())
+            Ok::<(), Failure>(())
         })
         .await
-        .map_err(|_| unavailable())??;
+        .map_err(|_| ("ConnectToEIS", "pointer or keyboard did not become ready"))??;
         compositor_check(compositor, "scoped", generation).await?;
-        Ok::<_, String>((indicator, eis))
+        Ok((indicator, eis))
     };
     let (_indicator, mut eis) = tokio::select! {
         biased;
-        _ = closed.next() => return Err(unavailable()),
-        _ = harness.read_u8() => return Err(unavailable()),
+        _ = closed.next() => return Err(("portal session", "closed during setup")),
+        _ = harness.read_u8() => return Err(("harness attachment", "harness closed during setup")),
         result = watch_compositor(compositor, generation, "pending") => return result,
-        result = tokio::time::timeout(Duration::from_secs(65), pending) => result.map_err(|_| unavailable())??,
+        result = pending => result?,
     };
+    let activation = "harness activation";
     tokio::time::timeout(IO_TIMEOUT, async {
         write_frame(
             harness.get_mut(),
             &json!({"generation":generation,"activate":true}),
         )
-        .await?;
-        let reply = read_frame(&mut harness).await?;
+        .await
+        .map_err(|_| (activation, "cannot send activation"))?;
+        let reply = read_frame(&mut harness)
+            .await
+            .map_err(|_| (activation, "invalid or incomplete acknowledgement"))?;
         if reply["ok"] != true || reply["generation"] != generation || !peer.alive() {
-            return Err(unavailable());
+            return Err((activation, "harness refused the lease"));
         }
         Ok(())
     })
     .await
-    .map_err(|_| unavailable())??;
+    .map_err(|_| (activation, "acknowledgement timed out"))??;
     let backend_lost = async {
         while let Some(change) = owners.next().await {
-            let change = change.args().map_err(|_| unavailable())?;
+            let change = change
+                .args()
+                .map_err(|_| ("portal backend", "invalid owner change"))?;
             if change.old_owner().as_ref().is_some() {
                 break;
             }
         }
-        Err(unavailable())
+        Err((
+            "portal backend",
+            "backend owner disconnected or was replaced",
+        ))
     };
-    status.send(()).map_err(|()| unavailable())?;
+    status
+        .send(())
+        .map_err(|()| ("client exchange", "client stopped waiting for activation"))?;
     tokio::select! {
         biased;
-        _ = closed.next() => Err(unavailable()),
+        _ = closed.next() => Err(("portal session", "closed while control was active")),
         result = backend_lost => result,
         result = watch_compositor(compositor, generation, "scoped") => result,
         result = async {
+            let stage = "active input";
             loop {
                 let mut request = {
                     let frame = read_frame(&mut harness);
@@ -349,46 +453,48 @@ async fn control(
                     loop {
                         tokio::select! {
                             biased;
-                            result = eis.dispatch() => result?,
-                            result = &mut frame => break result?,
+                            result = eis.dispatch() => result.map_err(|_| (stage, "EIS connection or device lost"))?,
+                            result = &mut frame => break result.map_err(|_| (stage, "harness disconnected or sent an invalid frame"))?,
                         }
                     }
                 };
                 if request["generation"] != generation || !peer.alive() || !cancel.allowed() {
-                    return Err(unavailable());
+                    return Err((stage, "lease or harness is no longer valid"));
                 }
                 compositor_check(compositor, "visible", generation).await?;
                 let arguments = request["arguments"].take();
-                let name = request["tool"].as_str().ok_or_else(unavailable)?;
-                let ok = eis.perform(name, arguments, || cancel.allowed())?;
+                let name = request["tool"].as_str().ok_or((stage, "missing input action"))?;
+                let ok = eis.perform(name, arguments, || cancel.allowed())
+                    .map_err(|_| (stage, "EIS rejected an input action"))?;
                 tokio::time::timeout(IO_TIMEOUT,
                     write_frame(harness.get_mut(), &json!({"generation":generation,"ok":ok})))
-                    .await.map_err(|_| unavailable())??;
+                    .await.map_err(|_| (stage, "action reply timed out"))?
+                    .map_err(|_| (stage, "cannot send action reply"))?;
             }
         } => result,
     }
 }
 
-async fn attach_harness(session: &str, generation: &str) -> Result<(BufReader<UnixStream>, Peer)> {
+async fn attach_harness(session: &str, generation: &str) -> Attempt<(BufReader<UnixStream>, Peer)> {
+    let stage = "harness attachment";
     let path = std::env::var_os("ENZUI_AGENT_SOCKET")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
         .or_else(crate::agent_harness::socket_path)
-        .ok_or_else(unavailable)?;
+        .ok_or((stage, "missing runtime directory"))?;
     let socket = UnixStream::connect(&path)
         .await
-        .map_err(|_| unavailable())?;
+        .map_err(|_| (stage, "cannot connect to the agent harness socket"))?;
     let installed = Path::new("/usr/bin/enzimos-agent-harness");
-    let preview = crate::desktop_session::mode()
-        .nested()
-        .then(|| std::env::current_exe().map(|path| path.with_file_name("enzimos-agent-harness")))
-        .transpose()
-        .map_err(|e| e.to_string())?;
-    let peer = Peer::new(
-        &socket,
-        &[installed, preview.as_deref().unwrap_or(installed)],
-    )
-    .ok_or_else(unavailable)?;
+    let preview = executable("enzimos-agent-harness")
+        .map_err(|_| (stage, "cannot locate expected harness executable"))?;
+    let expected = if crate::desktop_session::mode().nested() {
+        preview.as_path()
+    } else {
+        installed
+    };
+    let peer = Peer::new(&socket, &[installed, expected])
+        .map_err(|reason| ("harness peer check", reason))?;
     let mut socket = BufReader::new(socket);
     write_frame(
         socket.get_mut(),
@@ -397,12 +503,13 @@ async fn attach_harness(session: &str, generation: &str) -> Result<(BufReader<Un
             "session_id": session, "generation": generation,
         }),
     )
-    .await?;
-    let reply = tokio::time::timeout(IO_TIMEOUT, read_frame(&mut socket))
+    .await
+    .map_err(|_| (stage, "cannot send attachment request"))?;
+    let reply = read_frame(&mut socket)
         .await
-        .map_err(|_| unavailable())??;
+        .map_err(|_| (stage, "invalid or incomplete reply"))?;
     if reply["ok"] != true || reply["generation"] != generation || !peer.alive() {
-        return Err(unavailable());
+        return Err((stage, "harness refused the conversation or lease"));
     }
     Ok((socket, peer))
 }
@@ -416,7 +523,7 @@ mod tests {
         let revoked = Cancel::new();
         let next = Cancel::new();
         revoked.revoke();
-        revoked.revoked().await;
+        assert_eq!(revoked.revoked().await, Ok(()));
         assert!(!revoked.allowed());
         assert!(next.allowed());
     }

@@ -253,11 +253,20 @@ impl Compositor {
         let command = if id == "enzui-assistant" {
             let store = crate::settings::Store::from_environment()
                 .ok_or_else(|| tr("shell-settings-store-is-unavailable"))?;
-            format!(
-                "env ENZUI_SHELL_SETTINGS={} {}",
-                quote(store.path()),
-                quote(&crate::catalog::executable(root, id))
-            )
+            if crate::desktop_session::mode() != crate::desktop_session::Mode::Installed {
+                format!(
+                    "env ENZUI_SHELL_SETTINGS={} {}",
+                    quote(store.path()),
+                    quote(&crate::catalog::executable(root, id))
+                )
+            } else {
+                let scope = crate::app_scope::shell_prefix("dev.enzui.Assistant");
+                format!(
+                    "{scope}env ENZUI_SHELL_SETTINGS={} {} {id}",
+                    quote(store.path()),
+                    quote(&root.join("scripts/launch-desktop-app")),
+                )
+            }
         } else {
             let scope =
                 crate::app_scope::shell_prefix(crate::catalog::desktop_id(id).unwrap_or(id));

@@ -100,6 +100,32 @@ class LauncherTests(unittest.TestCase):
         self.assertFalse((self.runtime/'apps/data').exists())
         self.assertEqual(log.parent.stat().st_mode & 0o777, 0o700)
 
+    def test_assistant_uses_the_installed_shell_bin_and_keeps_the_harness_config(self):
+        root = self.root / 'assistant'
+        scripts = root / 'scripts'
+        scripts.mkdir(parents=True)
+        binaries = root / 'bin'
+        binaries.mkdir()
+        (root / 'installed.json').write_text('{"bin":"' + str(binaries) + '"}')
+        launcher = scripts / 'launch-desktop-app'
+        launcher.write_bytes((LAUNCHER.parent / 'scripts/launch-desktop-app').read_bytes())
+        launcher.chmod(0o700)
+        self.script(binaries / 'enzui-assistant', 'printf "%s\\n" "$XDG_CONFIG_HOME" "$ENZUI_SHELL_SETTINGS"')
+        (self.runtime / 'instance').write_text('owned-instance')
+        (self.runtime / 'wayland-display').write_text('wayland-owned')
+        config = self.root / 'account-config'
+        state = self.root / 'account-state'
+        settings = config / 'enzui-shell/settings.json'
+        env = {**self.env, 'HYPRLAND_INSTANCE_SIGNATURE': 'owned-instance',
+               'WAYLAND_DISPLAY': 'wayland-owned', 'ENZUI_DESKTOP_SESSION': 'installed',
+               'ENZUI_SHELL_SETTINGS': str(settings), 'XDG_CONFIG_HOME': str(config),
+               'XDG_STATE_HOME': str(state), 'ENZUI_SHELL_BIN_DIR': '/not-the-installed-binaries'}
+        result = subprocess.run([str(launcher), 'enzui-assistant'], env=env,
+                                capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((state / 'enzui/apps/enzui-assistant.log').read_text().splitlines(),
+                         [str(config), str(settings)])
+
     def test_app_launch_keeps_config_private_but_still_finds_the_shared_theme(self):
         # Use a throwaway launcher root so fixture binaries cannot resolve to checkout builds.
         fake_root = self.root/'checkout'

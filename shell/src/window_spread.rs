@@ -1,10 +1,11 @@
 use super::{Message, Shell, window_settings};
+use enzui_shell::dock::{Geometry as DockGeometry, Position as DockPosition};
 use enzui_shell::i18n::tr;
 use enzui_shell::search::compositor::SpreadWindow;
 use enzui_shell::spread_layout::{self, Rect};
 use enzui_widgets::{icon::enz_icon, text::enz_text};
 use iced::widget::{column, container, image, mouse_area, pin, stack};
-use iced::{Element, Length, Subscription, Task, window};
+use iced::{Element, Length, Padding, Subscription, Task, window};
 use std::time::{Duration, Instant};
 
 // Floating-desktop window overview using captures while the compositor hides the original
@@ -165,38 +166,43 @@ impl Spread {
 // sits beside Search on the bar's side.
 fn overview_bands(
     area: [f32; 4],
-    bands: (f32, f32),
+    insets: Padding,
     band: OverviewBand,
     bottom: bool,
-) -> (Rect, (f32, f32)) {
+) -> (Rect, Padding) {
     // A tenth of the output, between a readable preview and the windows' room.
     let height = (area[3] * 0.1).clamp(56.0, 104.0);
     let y = if bottom {
-        area[3] - bands.1 - band.search - STRIP_GAP - height
+        area[3] - insets.bottom - band.search - STRIP_GAP - height
     } else {
-        bands.0 + band.search + STRIP_GAP
+        insets.top + band.search + STRIP_GAP
     };
-    let strip = Rect::new(MARGIN, y, (area[2] - 2.0 * MARGIN).max(1.0), height);
+    let strip = Rect::new(
+        insets.left + MARGIN,
+        y,
+        (area[2] - insets.x() - 2.0 * MARGIN).max(1.0),
+        height,
+    );
     let clear = height + band.search + STRIP_GAP;
-    let bands = if bottom {
-        (bands.0, bands.1 + clear)
+    let insets = if bottom {
+        insets.bottom(insets.bottom + clear)
     } else {
-        (bands.0 + clear, bands.1)
+        insets.top(insets.top + clear)
     };
-    (strip, bands)
+    (strip, insets)
 }
 
-fn arrange(windows: &[SpreadWindow], area: [f32; 4], bands: (f32, f32)) -> Vec<(Rect, Rect)> {
+fn arrange(windows: &[SpreadWindow], area: [f32; 4], insets: Padding) -> Vec<(Rect, Rect)> {
     let from: Vec<Rect> = windows
         .iter()
         .map(|w| Rect::new(w.at[0] - area[0], w.at[1] - area[1], w.size[0], w.size[1]))
         .collect();
     // Room under each window for its title.
     let room = Rect::new(
-        MARGIN,
-        bands.0 + MARGIN,
-        (area[2] - 2.0 * MARGIN).max(1.0),
-        (area[3] - bands.0 - bands.1 - 2.0 * MARGIN).max(1.0),
+        insets.left + MARGIN,
+        insets.top + MARGIN,
+        (area[2] - insets.x() - 2.0 * MARGIN).max(1.0),
+        (area[3] - insets.y() - 2.0 * MARGIN).max(1.0),
     );
     let padded: Vec<Rect> = from
         .iter()
@@ -233,6 +239,7 @@ async fn load(
     metrics: enzui_shell::settings::Metrics,
     bar: enzui_shell::settings::BarEdge,
     overview: Option<OverviewBand>,
+    dock: Option<(DockPosition, DockGeometry)>,
 ) -> Result<Loaded, String> {
     let desktop = compositor.spread_windows().await?;
     // The overview opens on an empty desktop too, for Search and the desktops.
@@ -243,19 +250,30 @@ async fn load(
         .prepare_spread(metrics, bar, overview.is_none())
         .await?;
     let (rounding, _) = compositor.window_rounding().await;
-    let (strip, bands) = match overview {
+    let mut insets = Padding::ZERO.top(top).bottom(bottom);
+    if let Some((position, dock)) = dock.filter(|(_, dock)| dock.output_id == desktop.output_id) {
+        let body = dock.body;
+        insets = match position {
+            DockPosition::Left => insets.left(body.x + body.width),
+            DockPosition::Right => insets.right(area[2] - body.x),
+            DockPosition::Top => insets.top(top.max(body.y + body.height)),
+            DockPosition::Bottom => insets.bottom(bottom.max(area[3] - body.y)),
+            DockPosition::Bar => insets,
+        };
+    }
+    let (strip, insets) = match overview {
         Some(band) => {
             let (strip, bands) = overview_bands(
                 area,
-                (top, bottom),
+                insets,
                 band,
                 bar == enzui_shell::settings::BarEdge::Bottom,
             );
             (Some(strip), bands)
         }
-        None => (None, (top, bottom)),
+        None => (None, insets),
     };
-    let places = arrange(&desktop.windows, area, bands);
+    let places = arrange(&desktop.windows, area, insets);
     let pictures = iced::futures::future::join_all(desktop.windows.iter().zip(&places).map(
         |(window, (_, to))| {
             let (w, h) = picture_pixels(*to, desktop.scale);
@@ -449,8 +467,16 @@ impl Shell {
             self.metrics,
             self.bar,
         );
+        let dock = if overview.is_some() && self.dock_active() && self.dock.window.is_some() {
+            self.dock
+                .geometry
+                .clone()
+                .map(|geometry| (self.dock.preferences.position, geometry))
+        } else {
+            None
+        };
         Task::perform(
-            load(root, compositor, metrics, bar, overview),
+            load(root, compositor, metrics, bar, overview, dock),
             move |result| Message::Spread(SpreadMessage::Loaded(generation, result)),
         )
     }
@@ -722,11 +748,7 @@ impl Shell {
 
     // The desktops beside Search: each one's preview, the current one ringed,
     // and the empty one at the end as a small add button.
-    fn overview_strip(
-        &self,
-        strip: Rect,
-        palette: &enzui_theme::Palette,
-    ) -> Element<'_, Message> {
+    fn overview_strip(&self, strip: Rect, palette: &enzui_theme::Palette) -> Element<'_, Message> {
         let p = palette.clone();
         let aspect = (self.spread.area[2] / self.spread.area[3].max(1.0)).clamp(0.5, 4.0);
         let height = (strip.height - 6.0).max(1.0);
@@ -749,19 +771,24 @@ impl Shell {
                     iced::Size::new(width, height)
                 };
                 let picture: Element<'_, Message> = if spare {
-                    container(enz_icon("plus").size(20.0).tint(p.text_muted).into_element())
-                        .center_x(size.width)
-                        .center_y(size.height)
-                        .style(move |_| container::Style {
-                            background: Some(iced::Color { a: 0.08, ..p.text }.into()),
-                            border: iced::Border {
-                                radius: 8.0.into(),
-                                width: 1.0,
-                                color: iced::Color { a: 0.22, ..p.text },
-                            },
-                            ..Default::default()
-                        })
-                        .into()
+                    container(
+                        enz_icon("plus")
+                            .size(20.0)
+                            .tint(p.text_muted)
+                            .into_element(),
+                    )
+                    .center_x(size.width)
+                    .center_y(size.height)
+                    .style(move |_| container::Style {
+                        background: Some(iced::Color { a: 0.08, ..p.text }.into()),
+                        border: iced::Border {
+                            radius: 8.0.into(),
+                            width: 1.0,
+                            color: iced::Color { a: 0.22, ..p.text },
+                        },
+                        ..Default::default()
+                    })
+                    .into()
                 } else if let Some(preview) = preview {
                     enzui_widgets::image::enz_image_handle(preview.image.clone())
                         .fit(enzui_widgets::image::EnzImageFit::Cover)
@@ -814,9 +841,7 @@ impl Shell {
             -12.0
         };
         let shown = enzui_widgets::motion::animated(
-            container(cards)
-                .center_x(strip.width)
-                .height(strip.height),
+            container(cards).center_x(strip.width).height(strip.height),
         )
         .enters_from(iced::Vector::new(0.0, from), 0.0)
         .opacity(if self.spread.phase == Phase::Closing {
@@ -1135,14 +1160,17 @@ mod tests {
     fn the_overview_strip_sits_between_search_and_the_windows_on_the_bar_side() {
         let area = [0.0, 0.0, 1440.0, 900.0];
         let band = OverviewBand { search: 216.0 };
-        let (strip, bands) = overview_bands(area, (52.0, 0.0), band, false);
+        let chrome = Padding::ZERO.top(52.0).left(72.0);
+        let (strip, insets) = overview_bands(area, chrome, band, false);
         assert_eq!(strip.y, 52.0 + 216.0 + STRIP_GAP);
         assert_eq!(strip.height, 90.0);
-        assert_eq!(bands, (strip.y + strip.height, 0.0));
+        assert_eq!(strip.x, chrome.left + MARGIN);
+        assert_eq!(insets, chrome.top(strip.y + strip.height));
 
-        let (strip, bands) = overview_bands(area, (0.0, 52.0), band, true);
+        let chrome = Padding::ZERO.bottom(52.0).top(72.0);
+        let (strip, insets) = overview_bands(area, chrome, band, true);
         assert_eq!(strip.y + strip.height, 900.0 - 52.0 - 216.0 - STRIP_GAP);
-        assert_eq!(bands, (0.0, 900.0 - strip.y));
+        assert_eq!(insets, chrome.bottom(900.0 - strip.y));
     }
 
     #[test]

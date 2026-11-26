@@ -141,6 +141,8 @@ pub struct SpreadWindow {
 /// The shell output's active desktop for the window spread.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpreadDesktop {
+    /// The compositor monitor ID for the shell output.
+    pub output_id: i64,
     /// The output's position and size, logical.
     pub output: [f32; 4],
     /// Physical pixels per logical pixel on the output.
@@ -236,6 +238,7 @@ impl Compositor {
             .collect();
         windows.sort_by_key(|(history, _)| std::cmp::Reverse(*history));
         Ok(SpreadDesktop {
+            output_id: monitor,
             output: geometry,
             scale: scale as f32,
             desktop,

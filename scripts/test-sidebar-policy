@@ -84,6 +84,14 @@ assert(app.workspace.id==nil and app.pid==777 and #app.tags==2)
 assert(enzui_sidebar_toggle(id).ok);assert(app.workspace.id==1 and app.pinned and app.size.x==360 and app.size.y==640 and app.at.x==42 and app.at.y+app.size.y/2==464)
 assert(enzui_sidebar_hide().ok);assert(app.workspace.id==nil and not app.pinned)
 assert(enzui_sidebar_unpin(id,false).ok);assert(app.size.x==700 and app.size.y==500 and app.at.x==370 and app.at.y==218 and #app.tags==0)
+app.size={x=1400,y=800};app.at={x=1600,y=400}
+assert(enzui_sidebar_pin_window(app).ok);id=enzui_sidebar.entries[1].id
+enzui_sidebar.entries[1].original.output="DISCONNECTED"
+output.width,output.height=960,540
+assert(enzui_sidebar_unpin(id,false).ok)
+assert(app.at.x==8 and app.at.y==36 and app.size.x==944 and app.size.y==496)
+output.width,output.height=1440,900
+app.size={x=700,y=500};app.at={x=370,y=218}
 enzui_sidebar.saved_sizes[app.stable_id]={x=480,y=420}
 assert(enzui_sidebar_pin_window(app).ok);id=enzui_sidebar.entries[1].id
 assert(enzui_sidebar_toggle(id).ok and app.size.x==480 and app.size.y==420)
@@ -694,3 +702,17 @@ assert(not enzui_sidebar_toggle(enzui_sidebar.entries[1].id).ok)
 assert(enzui_sidebar_configure("TEST","left","top",888,floating,nil,nil,"shared",true).ok)
 assert(enzui_sidebar_snapshot():find('"enabled":true',1,true))
 print("Sidebar power: off disables rail/input/drop/reservations without destroying entries; on restores controls.")
+local survivor={name="SURVIVOR",width=1440,height=810,scale=1.5,x=-960,y=0,enabled=true,transform=0,is_mirror=false}
+local parked=enzui_sidebar.entries[1].window
+assert(parked.workspace.id==nil)
+parked.monitor=survivor
+output.enabled=false
+workspace.monitor=survivor
+function hl.get_monitors()return{survivor}end
+function hl.get_active_workspace(name)assert(name=="SURVIVOR");return workspace end
+subscriptions["monitor.removed"](output)
+enzui_sidebar_tick()
+assert(#enzui_sidebar.entries==0 and parked.workspace.id==workspace.id and #parked.tags==0 and not parked.pinned)
+assert(parked.at.x>=survivor.x and parked.at.x+parked.size.x<=0)
+assert(parked.at.y>=survivor.y and parked.at.y+parked.size.y<=540)
+print("Lost sidebar output: parked app returns to the survivor's visible desktop within its logical bounds.")

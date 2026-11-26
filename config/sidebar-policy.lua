@@ -295,53 +295,65 @@ local function find(id)
     for index,e in ipairs(s.entries) do if e.id==id then return e,index end end
 end
 local function original(w)
-    return {at=w.at,size=w.size,workspace=w.workspace.id,floating=w.floating}
+    local m=w.monitor
+    return {at=w.at,size=w.size,workspace=w.workspace.id,floating=w.floating,output=m.name,
+        output_x=m.x,output_y=m.y,output_w=enzui_output_w(m),output_h=enzui_output_h(m)}
 end
 local function remove_sidebar_tags(e)
     checked(hl.dsp.window.tag({window=e.window,tag="-enzui-sidebar-"..e.id}))
     checked(hl.dsp.window.tag({window=e.window,tag="-enzui-sidebar-app"}))
 end
-local function restore(e,detached)
-    assert(owned(e),"Sidebar app is unavailable")
-    local target=hl.get_active_workspace(s.output)
+local function restore(e,detached,recovery_output)
+    assert(owned(e) or (recovery_output and known(e) and not remote(e.window)),"Sidebar app is unavailable")
+    local m=recovery_output or monitor()
+    assert(m,"Sidebar output unavailable")
+    local target=hl.get_active_workspace(m.name)
     assert(target and type(target.id)=="number","No desktop for sidebar restoration")
     local function tiling_at(id) return enzui_desktop_tiling_at~=nil and enzui_desktop_tiling_at(id)==true end
     local drop=tiling_at(target.id) and (e.drop_point or (detached and hl.get_cursor_pos()))
     local workspace=target.id
-    if not drop then
+    if not drop and not recovery_output then
         for _,ws in ipairs(hl.get_workspaces()) do
-            if ws.id==e.original.workspace and ws.monitor and ws.monitor.name==s.output then workspace=ws.id;break end
+            if ws.id==e.original.workspace and ws.monitor and ws.monitor.name==m.name then workspace=ws.id;break end
         end
     end
     local tiling=tiling_at(workspace)
     local at=e.icon_drop or (detached and e.window.at or e.original.at)
-    if detached or e.icon_drop then
-        local m=monitor();assert(m,"Sidebar output unavailable")
+    local size=e.original.size
+    local width,height=enzui_output_w(m),enzui_output_h(m)
+    local moved=e.original.output~=m.name or e.original.output_x~=m.x or e.original.output_y~=m.y
+    if moved and not detached and not e.icon_drop then
+        at={x=at.x-e.original.output_x+m.x,y=at.y-e.original.output_y+m.y}
+    end
+    if detached or e.icon_drop or moved or e.original.output_w~=width or e.original.output_h~=height then
         local metrics=s.metrics or enzui_resolve_metrics()
         local top=s.bar=="top" and enzui_bar_band(metrics) or metrics.frame
         local bottom=s.bar=="bottom" and enzui_bar_band(metrics) or metrics.frame
-        at={x=math.max(m.x+metrics.frame,math.min(at.x,m.x+enzui_output_w(m)-e.original.size.x-metrics.frame)),
-            y=math.max(m.y+top,math.min(at.y,m.y+enzui_output_h(m)-bottom-e.original.size.y))}
+        size={x=math.max(1,math.min(size.x,width-2*metrics.frame)),
+            y=math.max(1,math.min(size.y,height-top-bottom))}
+        at={x=math.max(m.x+metrics.frame,math.min(at.x,m.x+width-size.x-metrics.frame)),
+            y=math.max(m.y+top,math.min(at.y,m.y+height-bottom-size.y))}
     end
-    if scene() then
-        assert(scene().restore(e.window.address,s.owner,at.x,at.y,e.original.size.x,e.original.size.y),"Native restoration rejected")
+    local api=not recovery_output and scene()
+    if api then
+        assert(api.restore(e.window.address,s.owner,at.x,at.y,size.x,size.y),"Native restoration rejected")
         e.restoring=true;s.restoring=e.id;s.after_close=nil
     end
     checked(hl.dsp.window.pin({window=e.window,action="off"}))
     checked(hl.dsp.window.float({window=e.window,action="on"}))
     checked(hl.dsp.window.move({window=e.window,workspace=workspace,follow=false}))
-    checked(hl.dsp.window.resize({window=e.window,x=e.original.size.x,y=e.original.size.y}))
+    checked(hl.dsp.window.resize({window=e.window,x=size.x,y=size.y}))
     checked(hl.dsp.window.move({window=e.window,x=at.x,y=at.y}))
     remove_sidebar_tags(e)
-    if tiling and scene() and scene().place_tile then
-        local point=drop or {x=at.x+e.original.size.x/2,y=at.y+e.original.size.y/2}
-        assert(scene().tiling_mode(s.owner,true),"Native tiling mode rejected")
-        assert(scene().place_tile(e.window.address,s.owner,point.x,point.y),"Native tile placement rejected")
+    if tiling and api and api.place_tile then
+        local point=drop or {x=at.x+size.x/2,y=at.y+size.y/2}
+        assert(api.tiling_mode(s.owner,true),"Native tiling mode rejected")
+        assert(api.place_tile(e.window.address,s.owner,point.x,point.y),"Native tile placement rejected")
     elseif not e.original.floating and tiling then
         checked(hl.dsp.window.float({window=e.window,action="off"}))
     end
-    if (s.native_version or 0)>=2 then
-        assert(scene().relocated(e.window.address,s.owner),"Native relocation confirmation rejected")
+    if api and (s.native_version or 0)>=2 then
+        assert(api.relocated(e.window.address,s.owner),"Native relocation confirmation rejected")
     end
     if e.pinned_size then s.saved_sizes[e.stable_id]=e.pinned_size end
 end
@@ -732,6 +744,24 @@ function enzui_sidebar_tick()
 end
 tick_once=function()
     if not s.output then return end
+    if s.output_lost then
+        local changed=false
+        for index=#s.entries,1,-1 do
+            local e=s.entries[index]
+            if not known(e) or remote(e.window) then
+                table.remove(s.entries,index);changed=true
+            else
+                local m=e.window.monitor
+                if m and m.enabled and not m.is_mirror and pcall(restore,e,false,m) then
+                    table.remove(s.entries,index);changed=true
+                end
+            end
+        end
+        if #s.entries==0 then s.output_lost=nil;s.error="" end
+        if changed then emit() end
+        if s.output_lost then return end
+    end
+    if not monitor() then return end
     local desktop=active_desktop()
     if type(desktop)=="number" and desktop~=s.last_desktop then
         s.last_desktop=desktop
@@ -995,6 +1025,14 @@ function enzui_install_sidebar()
         for _,name in ipairs({"workspace.active","window.open","window.close","window.destroy","window.move_to_workspace","window.fullscreen","window.minimize","monitor.layout_changed"}) do
             table.insert(enzui_sidebar_event_bindings,hl.on(name,function() enzui_sidebar_wake() end))
         end
+        table.insert(enzui_sidebar_event_bindings,hl.on("monitor.removed",function(m)
+            if m.name~=s.output then return end
+            s.output_lost=true
+            s.shown=nil;s.restoring=nil;s.after_close=nil;s.next_show=nil;s.next_restore=nil
+            s.anchor=nil;s.positioned=nil
+            s.drag=nil;s.pending=nil;s.reveal=false;s.keyboard_reveal=nil
+            enzui_sidebar_wake()
+        end))
     end
     enzui_sidebar_installed=true
 end

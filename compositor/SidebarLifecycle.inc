@@ -42,6 +42,21 @@ static void init(HANDLE handle) {
     for (const auto &w : Desktop::windowState()->windows())
         if (w->mapped())
             watch(w);
+    monitorRemovedListener = Event::bus()->m_events.monitor.removed.listen([](PHLMONITOR monitor) {
+        if (monitor != output)
+            return;
+        clear();
+        clearWorkAreaViewport();
+        resetBarRegions();
+        clearRail();
+        pocket = {};
+        searchDim = {};
+        panelAnchors.clear();
+        panelFrameWake.reset();
+        railFramesUntil.reset();
+        output.reset();
+        bar.reset();
+    });
     workspaceSwitchListener = Event::bus()->m_events.workspace.active.listen([](PHLWORKSPACE workspace) {
         if (!output || !ownerAlive() || !workspace || workspace->m_monitor != output)
             return;
@@ -336,6 +351,7 @@ static void exit(HANDLE handle) {
     renderListener.reset();
     frameListener.reset();
     workspaceSwitchListener.reset();
+    monitorRemovedListener.reset();
     wallpaperCurrent.reset();
     wallpaperPrevious.reset();
     openListener.reset();

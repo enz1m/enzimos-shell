@@ -89,7 +89,7 @@ static uint64_t ticket = 0, rendered = 0, reused = 0, dismissed = 0;
 static std::bitset<768> suppressed;
 static CHyprSignalListener renderListener, frameListener, commitListener, contentListener;
 static CHyprSignalListener buttonListener, axisListener, openListener;
-static CHyprSignalListener pointerFocusListener, keyboardFocusListener, workspaceSwitchListener;
+static CHyprSignalListener pointerFocusListener, keyboardFocusListener, workspaceSwitchListener, monitorRemovedListener;
 static UP<Render::CRenderPass> captured, backingPass;
 static UP<IPassElement> pocketPass;
 // Drawn after the top layers: windows that join the display frame, so its

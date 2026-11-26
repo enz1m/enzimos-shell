@@ -22,7 +22,7 @@ stage (then recorded in the manifest). Layout:
 
   PREFIX/share/enzui/          desktop root (ENZUI_DESKTOP_ROOT): config, scripts,
                                assets, live wallpaper scenes, installed.json
-  PREFIX/lib/enzui/compositor/ pinned enz-hyprland, enz-hyprctl, private libraries, plugin
+  PREFIX/lib/enzui/compositor/ pinned enz-hyprland, enz-hyprctl, Xwayland, private libraries, plugin
   PREFIX/lib/enzui/bin/        shell, Settings, lock, greeter, polkit agent, helpers
   PREFIX/bin/enzui-session     the login session command
   PREFIX/share/wayland-sessions/enzui.desktop
@@ -55,7 +55,7 @@ EXECUTABLES = ["enzui-shell", "enzui-settings", "enzui-welcome", "enzui-shell-co
                "enzui-plugin-worker", "enzui-password-hash", "window-snapshot", "xdg-desktop-portal-enzui-remote"]
 DESKTOP_SCRIPTS = ["start-shell-platform", "run-wallpaper", "launch-desktop-app"]
 RUNTIME_TOOLS = ["python3", "bwrap", "dbus-update-activation-environment", "systemd-run", "systemctl", "loginctl", "gio",
-                 "greetd"]
+                 "greetd", "xkbcomp"]
 OPTIONAL_TOOLS = {"grim": "screenshots", "wpctl": "volume and audio devices", "nmcli": "network settings",
                   "bluetoothctl": "Bluetooth", "brightnessctl": "brightness", "wf-recorder": "screen recording",
                   "wl-copy": "copying screenshots"}
@@ -92,7 +92,26 @@ def die(message):
     sys.exit(1)
 
 
-def compositor_source(compositor, executable, control, pins, problems):
+def xwayland_source(compositor, binary, notice, pin):
+    if binary.is_symlink() or not binary.is_file() or not os.access(binary, os.X_OK) or not is_elf(binary):
+        die(f"missing executable Xwayland companion: {binary}")
+    if notice.is_symlink() or not notice.is_file():
+        die(f"missing Xwayland license notice: {notice}")
+    try:
+        receipt = json.loads((compositor / "desktop-compositor.json").read_text())["xwayland"]
+        patch = ROOT / "vendor/Hyprland/scripts/xwayland-xdnd.patch"
+        recipe = ROOT / "scripts/build-xwayland-companion"
+        revision = f"xwayland {sha256(patch)} {sha256(recipe)}"
+        revisions = (compositor / "build-revisions").read_text().splitlines()
+        expected = {**pin, "build_revision": revision, "binary_sha256": sha256(binary), "notice_sha256": sha256(notice)}
+        if receipt == expected and revisions[2:] == [revision]:
+            return receipt
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    die("Xwayland companion does not match the locked source and build receipt")
+
+
+def compositor_source(compositor, executable, control, pins, xwayland, problems):
     variant, revision = "desktop", pins["hyprland"]["revision"]
     descriptor = compositor / "desktop-compositor.json"
     try:
@@ -101,7 +120,8 @@ def compositor_source(compositor, executable, control, pins, problems):
         if (isinstance(record, dict) and record.get("complete") is True and record.get("variant") == variant
                 and record.get("revision") == revision
                 and record.get("aquamarine_revision") == pins["aquamarine"]["revision"]
-                and revisions == [record.get("fingerprint"), f"privileged-launcher-child-pidfd-v2 {revision}"]
+                and revisions == [record.get("fingerprint"), f"privileged-launcher-child-pidfd-v2 {revision}",
+                                  xwayland["build_revision"]]
                 and record.get("binary_sha256") == sha256(executable)
                 and record.get("control_sha256") == sha256(control)):
             return {"variant": variant, "revision": revision, "aquamarine_revision": record["aquamarine_revision"]}
@@ -221,11 +241,14 @@ def main():
     bin_dir = Path(args.bin_dir).resolve()
     compositor_name = "enz-hyprland"
     control_name = "enz-hyprctl"
+    xwayland = compositor / "hyprland-current-build/Xwayland"
+    xwayland_notice = xwayland.with_name("Xwayland-COPYING")
     for required in [compositor / "hyprland-current-build" / compositor_name, compositor / "hyprland-current-build/hyprctl" / control_name,
                      compositor / "build-revisions", compositor / "shell-plugins/enzui-pointer-events.so"]:
         if not required.exists():
             die(f"compositor root is incomplete: {required}")
     lock = json.loads((ROOT / "sources.lock.json").read_text())
+    xwayland_receipt = xwayland_source(compositor, xwayland, xwayland_notice, lock["xwayland"])
     revision = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     dirty = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True).stdout.strip()
     problems = []
@@ -236,7 +259,7 @@ def main():
                                  {"source.revision": revision, "framework.revision": lock["framework"]["revision"],
                                   "sources_lock_sha256": sha256(ROOT / "sources.lock.json")}, problems)
     compositor_pins = compositor_source(compositor, compositor / "hyprland-current-build" / compositor_name,
-                                        compositor / "hyprland-current-build/hyprctl" / control_name, lock, problems)
+                                        compositor / "hyprland-current-build/hyprctl" / control_name, lock, xwayland_receipt, problems)
     if problems and not args.allow_unreleased:
         die("the supplied binaries are not a release of this source:\n  " + "\n  ".join(problems)
             + "\nRebuild from the committed source, or pass --allow-unreleased for a development stage")
@@ -274,6 +297,7 @@ def main():
     build = lib / "compositor"
     copy(compositor / "hyprland-current-build" / compositor_name, build / "hyprland-current-build" / compositor_name, 0o755)
     copy(compositor / "hyprland-current-build/hyprctl" / control_name, build / "hyprland-current-build/hyprctl" / control_name, 0o755)
+    copy(xwayland, build / "hyprland-current-build/Xwayland", 0o755)
     copy(compositor / "build-revisions", build / "build-revisions", 0o644)
     # The installed launcher uses this descriptor to pass its pidfd capability.
     descriptor = compositor / "desktop-compositor.json"
@@ -435,6 +459,7 @@ def main():
 
     notices = at(prefix / "share/licenses/enzui-desktop")
     notices.mkdir(parents=True, exist_ok=True)
+    copy(xwayland_notice, notices / "Xwayland-COPYING", 0o644)
     for label, directory in [("enzimos-shell", ROOT), ("enzwall", ROOT / "enzwall"), ("Hyprland", ROOT / "vendor/Hyprland"), ("aquamarine", ROOT / "vendor/aquamarine"), ("hyprutils", ROOT / "vendor/hyprutils"),
                              ("hyprlang", ROOT / "vendor/hyprlang"), ("hyprcursor", ROOT / "vendor/hyprcursor"), ("hyprgraphics", ROOT / "vendor/hyprgraphics"),
                              ("hyprwire", ROOT / "vendor/hyprwire"), ("enzui", ROOT / "vendor/enzui"), ("iced", ROOT / "vendor/iced")]:
@@ -494,6 +519,7 @@ def main():
         "compositor": {
             "build_revisions": (compositor / "build-revisions").read_text().split(),
             "source": compositor_pins,
+            "xwayland": xwayland_receipt,
             "hyprland_version": hyprland_version,
             "plugin": plugin.name,
             "plugin_sha256": sha256(plugin),

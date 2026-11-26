@@ -1,12 +1,17 @@
 {
   "hyprland": {
     "url": "https://github.com/enz1m/enzim-hyprland.git",
-    "revision": "02586864f34f771ad078e7394fb5be398bce687f",
+    "revision": "5d4e3e75767701233118e81d1ea5bc823e3a7331",
     "destination": "vendor/Hyprland",
     "variants": {
       "scoped-eis": "173de69ebc7dc3fd3743257482bc416d0e2d8caf",
       "shared-desktop": "6e1fd309a3b9eae93f8f931fb2041e0c460331ad"
     }
+  },
+  "xwayland": {
+    "version": "24.1.15",
+    "url": "https://www.x.org/releases/individual/xserver/xwayland-24.1.15.tar.xz",
+    "sha256": "7311b4bcda22cfc19cb99680eb1c35cfc1ea885981310639f0429fe2948c122e"
   },
   "aquamarine": {
     "url": "https://github.com/enz1m/enzim-aquamarine.git",

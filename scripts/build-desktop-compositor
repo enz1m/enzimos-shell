@@ -42,8 +42,20 @@ fi
 revision=$("$ROOT/scripts/prepare-vendor-source" hyprland "$hyprland" "$SOURCE")
 aquamarine_revision=$("$ROOT/scripts/prepare-vendor-source" aquamarine "$aquamarine" "$AQUAMARINE_SOURCE")
 git -C "$SOURCE" submodule update --init --recursive
+xwayland_pin=
+xwayland_stamp=
+xwayland_patch=$SOURCE/scripts/xwayland-xdnd.patch
+if [[ $variant == desktop ]]; then
+    xwayland_pin=$(python3 -c 'import json, sys; print(json.dumps(json.load(open(sys.argv[1]))["xwayland"], sort_keys=True))' "$ROOT/sources.lock.json")
+    patch_sha256=$(sha256sum "$xwayland_patch" | cut -d ' ' -f1)
+    recipe_sha256=$(sha256sum "$ROOT/scripts/build-xwayland-companion" | cut -d ' ' -f1)
+    xwayland_stamp="xwayland $patch_sha256 $recipe_sha256"
+fi
 stamp=$({
     printf '%s\n' compositor-v3 "$variant" "$revision" "$aquamarine_revision"
+    if [[ -n $xwayland_pin ]]; then
+        printf '%s\n' "$xwayland_pin" "$xwayland_stamp"
+    fi
     for name in wayland-protocols hyprutils hyprgraphics hyprlang hyprcursor hyprwayland-scanner hyprwire; do
         git -C "$ROOT/vendor/$name" rev-parse HEAD
     done
@@ -55,13 +67,13 @@ stamp=$({
 BIN=$BUILDROOT/hyprland-current-build/$compositor
 CTL=$BUILDROOT/hyprland-current-build/hyprctl/$control
 record() {
-    python3 - "$1" "$BUILDROOT" "$revision" "$aquamarine_revision" "$variant" "$stamp" "$BIN" "$CTL" <<'PYTHON'
+    python3 - "$1" "$BUILDROOT" "$revision" "$aquamarine_revision" "$variant" "$stamp" "$BIN" "$CTL" "$xwayland_pin" "$xwayland_stamp" <<'PYTHON'
 import hashlib
 import json
 from pathlib import Path
 import sys
 
-mode, directory, revision, aquamarine, variant, fingerprint, binary, control = sys.argv[1:]
+mode, directory, revision, aquamarine, variant, fingerprint, binary, control, xwayland_pin, xwayland_stamp = sys.argv[1:]
 
 def digest(path):
     with open(path, 'rb') as source:
@@ -70,6 +82,14 @@ def digest(path):
 receipt = {'complete': True, 'revision': revision, 'aquamarine_revision': aquamarine,
            'variant': variant, 'fingerprint': fingerprint, 'binary_sha256': digest(binary),
            'control_sha256': digest(control)}
+if xwayland_pin:
+    companion = Path(binary).with_name('Xwayland')
+    notice = companion.with_name('Xwayland-COPYING')
+    try:
+        receipt['xwayland'] = {**json.loads(xwayland_pin), 'build_revision': xwayland_stamp,
+                               'binary_sha256': digest(companion), 'notice_sha256': digest(notice)}
+    except OSError as error:
+        raise SystemExit(f'Incomplete Xwayland companion: {error}. Choose a fresh build directory.')
 destination = Path(directory) / 'desktop-compositor.json'
 if mode == 'check':
     if json.loads(destination.read_text()) != receipt:
@@ -82,6 +102,10 @@ PYTHON
 }
 if [[ -x $BIN && -x $CTL && -s "$BUILDROOT/desktop-compositor.json" &&
       -s "$BUILDROOT/build-revisions" && $(head -n 1 "$BUILDROOT/build-revisions") == "$stamp" ]]; then
+    if [[ -n $xwayland_pin && ! -x ${BIN%/*}/Xwayland ]]; then
+        echo 'The completed compositor has no executable Xwayland companion. Choose a fresh build directory.' >&2
+        exit 1
+    fi
     record check
     echo 'Pinned compositor already built.'; exit 0
 fi
@@ -90,6 +114,13 @@ mode=()
 meson setup "$BUILDROOT/wayland-protocols-build" "$ROOT/vendor/wayland-protocols" \
     --prefix "$PREFIX" --buildtype release --wrap-mode nodownload -Dtests=false "${mode[@]}"
 meson install -C "$BUILDROOT/wayland-protocols-build"
+if [[ -n $xwayland_pin ]]; then
+    readarray -t xwayland_args < <(python3 -c 'import json, sys; pin = json.loads(sys.argv[1]); print(pin["version"], pin["url"], pin["sha256"], sep="\n")' "$xwayland_pin")
+    "$ROOT/scripts/build-xwayland-companion" "$BUILDROOT" "$xwayland_patch" "${xwayland_args[@]}"
+elif [[ -e ${BIN%/*}/Xwayland ]]; then
+    echo 'This build root contains an Xwayland companion from a different variant. Choose a fresh directory.' >&2
+    exit 1
+fi
 component() {
     local name=$1
     shift
@@ -123,6 +154,9 @@ record write
     printf '%s\n' "$stamp"
     if [[ $launcher_pidfd == true ]]; then
         printf 'privileged-launcher-child-pidfd-v2 %s\n' "$revision"
+    fi
+    if [[ -n $xwayland_stamp ]]; then
+        printf '%s\n' "$xwayland_stamp"
     fi
 } > "$BUILDROOT/build-revisions.pending"
 mv -- "$BUILDROOT/build-revisions.pending" "$BUILDROOT/build-revisions"

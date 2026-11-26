@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if (( $# != 5 )); then
+    echo 'Usage: build-xwayland-companion BUILD_ROOT PATCH VERSION URL SHA256' >&2
+    exit 2
+fi
+buildroot=$1 patch=$2 version=$3 url=$4 checksum=$5
+archive=$buildroot/xwayland-$version.tar.xz
+verify() {
+    printf '%s  %s\n' "$checksum" "$1" | sha256sum --check --status
+}
+if [[ ! -f $archive ]]; then
+    curl --fail --silent --show-error --location --retry 3 --proto '=https' \
+        --output "$archive.pending" "$url"
+    verify "$archive.pending" || { echo "Xwayland $version source checksum mismatch." >&2; exit 1; }
+    mv -- "$archive.pending" "$archive"
+fi
+verify "$archive" || { echo "Xwayland $version source checksum mismatch: $archive" >&2; exit 1; }
+
+attempt=$(mktemp -d "$buildroot/xwayland.XXXXXXXX")
+tar -xJf "$archive" -C "$attempt"
+source=$attempt/xwayland-$version
+# An in-checkout build root would otherwise inherit the Shell Git worktree.
+git -C "$source" init --quiet --template=
+git -C "$source" apply -- "$patch"
+# Glamor, GLX and EIS portal support are also used by the packaged Xwayland.
+meson setup "$attempt/build" "$source" --prefix=/usr --buildtype=release --wrap-mode=nodownload \
+    -Dxvfb=false -Dxace=true -Dglamor=true -Dglx=true -Ddri3=true -Dxwayland_ei=portal \
+    -Dlibdecor=false -Ddocs=false -Ddevel-docs=false -Ddocs-pdf=false \
+    -Dxselinux=false -Dsystemd_notify=false -Dxdmcp=false -Dxdm-auth-1=false -Dsecure-rpc=false \
+    -Dsha1=libnettle -Dxkb_dir=/usr/share/X11/xkb -Dxkb_output_dir=/var/lib/xkb -Dxkb_bin_dir=/usr/bin
+meson compile -C "$attempt/build" -j "${CMAKE_BUILD_PARALLEL_LEVEL:-1}" Xwayland
+binary=$attempt/build/hw/xwayland/Xwayland
+dynamic=$(LC_ALL=C readelf -d "$binary")
+if [[ $dynamic != *'(NEEDED)'* || $dynamic == *'(RUNPATH)'* || $dynamic == *'(RPATH)'* ]]; then
+    echo 'Xwayland must resolve its shared libraries from the system.' >&2
+    exit 1
+fi
+install -Dm644 "$source/COPYING" "$buildroot/hyprland-current-build/Xwayland-COPYING"
+install -m755 "$binary" "$buildroot/hyprland-current-build/Xwayland.pending"
+mv -- "$buildroot/hyprland-current-build/Xwayland.pending" "$buildroot/hyprland-current-build/Xwayland"

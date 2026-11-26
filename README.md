@@ -58,6 +58,36 @@ when closing the review should close the apps it launched.
 For login UI work, `scripts/preview-greeter-cu` opens an isolated mock greeter.
 [Greeter preview controls](docs/greeter-design-preview.md)
 
+## Xwayland companion
+
+The desktop compositor build downloads the X.Org release pinned in
+[`sources.lock.json`](sources.lock.json), checks its SHA-256, and applies
+`scripts/xwayland-xdnd.patch` from the pinned enzim-hyprland source. The
+companion uses system libraries with no ELF RUNPATH and exports beside
+`enz-hyprland` in `lib/enzui/compositor/hyprland-current-build/`. It uses the
+system XKB data and `xkbcomp`.
+
+Arch builders need `curl`, `xz`, `xorgproto`, `xtrans`, `libxkbfile`,
+`libxfont2`, `libxcvt`, `libxshmfence`, `libxau`, `libepoxy`, `nettle`,
+`mesa`, `libbsd`, and `libei` alongside the compositor build dependencies.
+
+To stage the desktop for packaging, use the pinned compositor and scene build,
+then build and export the release from the same checkout.
+
+```sh
+scripts/build-pinned-desktop-compositor
+scripts/build-release
+scripts/export-desktop --compositor "$PWD/.build/pinned-desktop" \
+    --bin-dir "$PWD/.build/release/bin" --destdir /path/to/desktop-export
+```
+
+To bump Xwayland, update its version, public archive URL and upstream
+SHA-256 in the source lock. Port the patch in enzim-hyprland as needed and
+advance the Shell gitlink and compositor pin together. Build in a fresh
+root, export, and check an X11-to-Wayland drop and system Xwayland fallback
+in a nested session. The export requires the companion and its license
+notice to match the compositor receipt.
+
 ## Where to make changes
 
 | Area | Source |

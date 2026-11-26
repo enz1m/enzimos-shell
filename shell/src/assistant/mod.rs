@@ -453,6 +453,11 @@ impl Shell {
                 }
                 match event {
                     client::TurnEvent::Event(event) => {
+                        if event["type"] == "turn.started"
+                            && let Some(model) = event["model"].as_str()
+                        {
+                            model.clone_into(&mut self.assistant.model);
+                        }
                         self.assistant.transcript.apply(&event);
                         Task::none()
                     }

@@ -340,8 +340,8 @@ pub fn apply(config: &mut Value, edit: &Edit) -> Result<(), String> {
         }
         Edit::Model(model) => {
             let model = model.trim();
-            if !(1..=128).contains(&model.len()) || model.chars().any(char::is_control) {
-                return Err(tr("shell-model-names-are-1-to-128-characters").into());
+            if model.len() > 128 || model.chars().any(char::is_control) {
+                return Err(tr("shell-model-names-up-to-128-characters").into());
             }
             config["enzui"]["model"] = json!(model);
         }

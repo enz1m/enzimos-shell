@@ -604,6 +604,15 @@ impl Transcript {
                     },
                 );
             }
+            "turn.local_limit" => {
+                self.push(
+                    "note",
+                    Body::Note {
+                        text: tr("shell-assistant-local-limit").to_owned(),
+                        error: false,
+                    },
+                );
+            }
             "turn.completed" => {
                 let seconds = event["duration_ms"].as_u64().unwrap_or(0) as f32 / 1000.0;
                 let tokens = event["usage"]["output_tokens"].as_u64().unwrap_or(0);

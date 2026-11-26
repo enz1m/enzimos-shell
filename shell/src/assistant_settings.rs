@@ -535,10 +535,12 @@ impl SettingsApp {
         let model_field = iced::widget::container(model_field).width(Length::Fixed(180.0));
         rows = rows.push(
             crate::settings_app::settings_row(tr("shell-model"))
-                .subtitle(if summary.model.is_empty() {
-                    tr("shell-not-chosen").to_owned()
-                } else {
+                .subtitle(if !summary.model.is_empty() {
                     summary.model.clone()
+                } else if summary.provider == "local" {
+                    tr("shell-assistant-automatic-model").to_owned()
+                } else {
+                    tr("shell-not-chosen").to_owned()
                 })
                 .control(
                     row![
@@ -559,6 +561,14 @@ impl SettingsApp {
                 )
                 .into_element(),
         );
+        if summary.provider == "local" && !summary.model.is_empty() {
+            rows = rows.push(
+                crate::settings_app::settings_row(tr("shell-assistant-automatic-model"))
+                    .action(tr("shell-use"), edit(Edit::Model(String::new())))
+                    .enabled(live)
+                    .into_element(),
+            );
+        }
         match &state.models {
             Some(Ok(models)) if !models.is_empty() => {
                 for model in models.iter().take(8) {

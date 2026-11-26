@@ -294,13 +294,16 @@ impl Assistant {
                         let Some(Ok(setup)) = &self.setup else {
                             return Task::none();
                         };
-                        let (Some(workspace), false) =
-                            (setup.roots.first().cloned(), setup.model.is_empty())
-                        else {
+                        let Some(workspace) = setup.roots.first().cloned() else {
+                            self.running = false;
+                            self.error = Some(tr("shell-choose-a-workspace-folder-in-settings-agents-first").into());
+                            return Task::none();
+                        };
+                        if setup.model.is_empty() && setup.provider != "local" {
                             self.running = false;
                             self.error = Some(tr("shell-choose-a-workspace-folder-and-a-model-in-settings-agents-first").into());
                             return Task::none();
-                        };
+                        }
                         let (model, provider) = (setup.model.clone(), setup.provider.clone());
                         self.pending_prompt = Some(prompt);
                         Task::perform(
@@ -548,6 +551,9 @@ impl Assistant {
                     }
                 }
             }
+            Some("turn.local_limit") => self
+                .items
+                .push(Item::Note(tr("shell-assistant-local-limit").into())),
             Some("turn.completed") if event["status"] == "failed" => self
                 .items
                 .push(Item::Note(tr("shell-the-turn-failed").into())),
@@ -565,7 +571,16 @@ impl Assistant {
             Some(Err(error)) => body = body.push(muted(error.clone())),
             Some(Ok(setup)) if self.session.is_none() && self.items.is_empty() => {
                 body = body.push(muted(match setup.roots.first() {
-                    Some(root) => tr!("shell-new-sessions-work-in-with", "arg0" => root.clone(), "arg1" => (if setup.model.is_empty() { tr("shell-no-model-chosen-yet") } else { setup.model.as_str() }).to_owned()),
+                    Some(root) => {
+                        let model = if !setup.model.is_empty() {
+                            setup.model.as_str()
+                        } else if setup.provider == "local" {
+                            tr("shell-assistant-automatic-model")
+                        } else {
+                            tr("shell-no-model-chosen-yet")
+                        };
+                        tr!("shell-new-sessions-work-in-with", "arg0" => root.clone(), "arg1" => model.to_owned())
+                    },
                     None => tr("shell-add-a-workspace-folder-in-settings-agents-to-start").into(),
                 }));
                 for (index, (id, workspace)) in setup.saved.iter().enumerate().take(12) {

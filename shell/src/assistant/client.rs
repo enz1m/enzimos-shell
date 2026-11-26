@@ -38,25 +38,23 @@ fn owns_harness() -> bool {
     !mock() && std::env::var_os("ENZUI_AGENT_SOCKET").is_none()
 }
 
-/// Opens a new session; returns its id. The harness works in the first
-/// workspace folder of Settings, Agents, with its chosen model, or the
-/// gateway's first model when none is chosen.
+/// Open a session in the first folder configured in Settings › Agents.
 pub(super) async fn open() -> Result<String, String> {
     let fields = if socket() == agent_harness::socket_path() {
         tokio::task::spawn_blocking(|| {
             let config = agent_harness::load()?.unwrap_or_else(agent_harness::starter);
             let setup = agent_harness::summary(&config);
             let unset = || {
-                tr("shell-choose-a-workspace-folder-and-a-model-in-settings-agents-first")
-                    .to_owned()
+                tr("shell-choose-a-workspace-folder-in-settings-agents-first").to_owned()
             };
             let workspace = setup.roots.first().cloned().ok_or_else(unset)?;
-            let model = match setup.model.is_empty() {
-                false => setup.model,
-                true => agent_harness::models(&setup.gateway)?
+            let model = if setup.model.is_empty() && setup.provider != "local" {
+                agent_harness::models(&setup.gateway)?
                     .into_iter()
                     .next()
-                    .ok_or_else(unset)?,
+                    .ok_or_else(|| tr("shell-the-gateway-lists-no-models").to_owned())?
+            } else {
+                setup.model
             };
             Ok::<_, String>(
                 json!({"workspace": workspace, "model": model, "provider": setup.provider}),

@@ -1,4 +1,4 @@
-use enzui_shell::i18n::tr;
+use enzui_shell::{i18n::tr, surface_scale::Scale};
 use std::time::Duration;
 
 /// Milliseconds the preview takes to travel from the window to the work area.
@@ -120,24 +120,14 @@ impl Animation {
 
 /// Premultiplied ARGB pixels for the preview: a filled, rounded rectangle with
 /// a brighter border, matching the shell's accent.
-pub fn pixels(
-    width: u32,
-    height: u32,
-    scale: i32,
+fn pixels(
+    (width, height): (u32, u32),
+    (w, h): (u32, u32),
     radius: f32,
     accent: [u8; 3],
     opacity: f32,
     body_alpha: f32,
 ) -> Result<Vec<u8>, String> {
-    if !(1..=4).contains(&scale)
-        || width == 0
-        || height == 0
-        || width > MAX_EDGE
-        || height > MAX_EDGE
-    {
-        return Err(tr("shell-unsupported-preview-geometry").into());
-    }
-    let (w, h) = (width * scale as u32, height * scale as u32);
     let length = u64::from(w) * u64::from(h) * 4;
     if length > 64 * 1024 * 1024 {
         return Err(tr("shell-preview-exceeds-its-memory-bound").into());
@@ -146,8 +136,9 @@ pub fn pixels(
     let radius = radius.clamp(0.0, (width.min(height) as f32) / 2.0);
     let border = 2.0_f32;
     let mut pixels = vec![0; length as usize];
-    let step = 1.0 / scale as f32;
     let (fw, fh) = (width as f32, height as f32);
+    let (step_x, step_y) = (fw / w as f32, fh / h as f32);
+    let step = step_x.max(step_y);
     // Rounded-rectangle signed distance: negative inside, positive outside.
     let distance = |x: f32, y: f32| {
         let dx = (radius - x).max(x - (fw - radius)).max(0.0);
@@ -176,14 +167,15 @@ pub fn pixels(
     let body_pixel = encode(1.0, 0.0);
     let border_pixel = encode(1.0, 1.0);
     // Rows that contain no corner curve are spans: border, body, border.
-    let straight_rows = radius.ceil() as u32 * scale as u32;
-    let inset = (border * scale as f32).ceil() as u32;
+    let straight_rows = (radius.ceil() / step_y).ceil() as u32;
+    let inset_x = (border / step_x).ceil() as u32;
+    let inset_y = (border / step_y).ceil() as u32;
     for row in 0..h {
         if row < straight_rows || row >= h.saturating_sub(straight_rows) {
             continue;
         }
         let start = (row * w * 4) as usize;
-        let full = row < inset || row >= h.saturating_sub(inset);
+        let full = row < inset_y || row >= h.saturating_sub(inset_y);
         let line = &mut pixels[start..start + (w * 4) as usize];
         if full {
             for pixel in line.as_chunks_mut::<4>().0 {
@@ -193,7 +185,7 @@ pub fn pixels(
         }
         for (column, pixel) in line.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let column = column as u32;
-            if column < inset || column >= w.saturating_sub(inset) {
+            if column < inset_x || column >= w.saturating_sub(inset_x) {
                 pixel.copy_from_slice(&border_pixel);
             } else {
                 pixel.copy_from_slice(&body_pixel);
@@ -205,8 +197,8 @@ pub fn pixels(
         if row >= straight_rows && row < h.saturating_sub(straight_rows) {
             continue;
         }
-        let px = (index as u32 % w) as f32 / scale as f32 + step * 0.5;
-        let py = row as f32 / scale as f32 + step * 0.5;
+        let px = ((index as u32 % w) as f32 + 0.5) * step_x;
+        let py = (row as f32 + 0.5) * step_y;
         let centre = distance(px, py);
         // Supersample only near edges to keep window-sized previews within the frame budget.
         let ambiguous = centre.abs() <= step || (centre <= 0.0 && (-centre - border).abs() <= step);
@@ -216,8 +208,8 @@ pub fn pixels(
             let samples = 4;
             for sy in 0..samples {
                 for sx in 0..samples {
-                    let ox = px + (sx as f32 + 0.5) * step / samples as f32 - step * 0.5;
-                    let oy = py + (sy as f32 + 0.5) * step / samples as f32 - step * 0.5;
+                    let ox = px + ((sx as f32 + 0.5) / samples as f32 - 0.5) * step_x;
+                    let oy = py + ((sy as f32 + 0.5) / samples as f32 - 0.5) * step_y;
                     let d = distance(ox, oy);
                     if d <= 0.0 {
                         inside += 1;
@@ -266,7 +258,7 @@ pub fn pixels(
 pub fn frame_pixels(
     surface_width: u32,
     surface_height: u32,
-    scale: i32,
+    scale: Scale,
     rect: Rect,
     origin: (i32, i32),
     radius: f32,
@@ -274,7 +266,7 @@ pub fn frame_pixels(
     opacity: f32,
     body_alpha: f32,
 ) -> Result<Vec<u8>, String> {
-    if !(1..=4).contains(&scale)
+    if !scale.supported()
         || surface_width == 0
         || surface_height == 0
         || surface_width > MAX_EDGE
@@ -282,7 +274,7 @@ pub fn frame_pixels(
     {
         return Err(tr("shell-unsupported-preview-surface").into());
     }
-    let (w, h) = (surface_width * scale as u32, surface_height * scale as u32);
+    let (w, h) = scale.physical((surface_width, surface_height));
     let length = u64::from(w) * u64::from(h) * 4;
     if length > 256 * 1024 * 1024 {
         return Err(tr("shell-preview-surface-exceeds-its-memory-bound").into());
@@ -291,34 +283,42 @@ pub fn frame_pixels(
     if opacity <= 0.0 || !rect.valid() {
         return Ok(surface);
     }
+    // Snap both edges in viewport coordinates so rounding the origin cannot shift the far edge.
+    let pixel_edge = |edge: i64, physical: u32, logical: u32| {
+        (edge as f64 * f64::from(physical) / f64::from(logical)).round() as i64
+    };
+    let x = i64::from(rect.x) - i64::from(origin.0);
+    let y = i64::from(rect.y) - i64::from(origin.1);
+    let left = pixel_edge(x, w, surface_width);
+    let top = pixel_edge(y, h, surface_height);
+    let tile_w = pixel_edge(x + i64::from(rect.width), w, surface_width) - left;
+    let tile_h = pixel_edge(y + i64::from(rect.height), h, surface_height) - top;
+    if tile_w == 0 || tile_h == 0 {
+        return Ok(surface);
+    }
     let tile = pixels(
-        rect.width,
-        rect.height,
-        scale,
+        (rect.width, rect.height),
+        (tile_w as u32, tile_h as u32),
         radius,
         accent,
         opacity,
         body_alpha,
     )?;
-    let left = (rect.x - origin.0) * scale;
-    let top = (rect.y - origin.1) * scale;
-    let tile_w = i64::from(rect.width * scale as u32);
-    let tile_h = i64::from(rect.height * scale as u32);
     // Rows are contiguous in both buffers, so each visible row is copied as one
     // slice rather than a pixel at a time.
     for row in 0..tile_h {
-        let dy = row + i64::from(top);
+        let dy = row + top;
         if dy < 0 || dy >= i64::from(h) {
             continue;
         }
-        let first = (-i64::from(left)).clamp(0, tile_w);
-        let last = (i64::from(w) - i64::from(left)).clamp(0, tile_w);
+        let first = (-left).clamp(0, tile_w);
+        let last = (i64::from(w) - left).clamp(0, tile_w);
         if first >= last {
             continue;
         }
         let span = ((last - first) * 4) as usize;
         let source = ((row * tile_w + first) * 4) as usize;
-        let destination = ((dy * i64::from(w) + first + i64::from(left)) * 4) as usize;
+        let destination = ((dy * i64::from(w) + first + left) * 4) as usize;
         surface[destination..destination + span].copy_from_slice(&tile[source..source + span]);
     }
     Ok(surface)
@@ -446,6 +446,33 @@ mod tests {
             y,
             width,
             height,
+        }
+    }
+
+    #[test]
+    fn fractional_preview_snaps_both_edges_of_a_clipped_rectangle() {
+        let pixels = frame_pixels(
+            10,
+            9,
+            Scale::Fractional(180),
+            rect(1, -1, 1, 10),
+            (0, 0),
+            0.0,
+            [255, 255, 255],
+            1.0,
+            BODY_WASH,
+        )
+        .unwrap();
+        assert_eq!(pixels.len(), 15 * 14 * 4);
+        for row in pixels.as_chunks::<{ 15 * 4 }>().0 {
+            let painted = row
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .enumerate()
+                .filter_map(|(column, pixel)| (*pixel != [0; 4]).then_some(column))
+                .collect::<Vec<_>>();
+            assert_eq!(painted, [2]);
         }
     }
 

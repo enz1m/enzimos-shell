@@ -1,5 +1,5 @@
 use crate::settings::{Metric, Metrics, SidebarEdge};
-use enzui_shell::i18n::tr;
+use enzui_shell::{i18n::tr, surface_scale::Scale};
 use std::{path::Path, process::Stdio, time::Duration};
 use tokio::{io::AsyncWriteExt, process::Command, sync::watch};
 
@@ -431,14 +431,14 @@ impl Piece {
         self,
         width: u32,
         height: u32,
-        scale: i32,
+        scale: Scale,
         appearance: Appearance,
     ) -> Result<Vec<u8>, String> {
-        if !(1..=4).contains(&scale) || width == 0 || height == 0 || width > 16384 || height > 16384
-        {
+        if !scale.supported() || width == 0 || height == 0 || width > 16384 || height > 16384 {
             return Err(tr("shell-unsupported-frame-geometry").into());
         }
-        let (w, h) = (width * scale as u32, height * scale as u32);
+        let (w, h) = scale.physical((width, height));
+        let (step_x, step_y) = (width as f32 / w as f32, height as f32 / h as f32);
         let length = u64::from(w) * u64::from(h) * 4;
         if length > 16 * 1024 * 1024 {
             return Err(tr("shell-frame-strip-exceeds-its-memory-bound").into());
@@ -452,15 +452,15 @@ impl Piece {
             );
             if bar_strip && appearance.bar_shadow > 0 && appearance.shape_count > 0 {
                 for (index, pixel) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-                    let x = (index as u32 % w) as f32 / scale as f32 + 0.5 / scale as f32;
-                    let y = (index as u32 / w) as f32 / scale as f32 + 0.5 / scale as f32;
+                    let x = ((index as u32 % w) as f32 + 0.5) * step_x;
+                    let y = ((index as u32 / w) as f32 + 0.5) * step_y;
                     let near = if matches!(self, Self::Top) {
                         y
                     } else {
                         height as f32 - y
                     };
                     pixel.copy_from_slice(
-                        &(island_shadow(x, near, appearance, scale as f32) << 24).to_ne_bytes(),
+                        &(island_shadow(x, near, appearance, 1.0 / step_x) << 24).to_ne_bytes(),
                     );
                 }
             }
@@ -470,16 +470,15 @@ impl Piece {
             .surface
             .unwrap_or_else(|| color(appearance.light));
         for (index, pixel) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-            let x = (index as u32 % w) as f32 / scale as f32;
-            let y = (index as u32 / w) as f32 / scale as f32;
-            let step = 1.0 / scale as f32;
+            let x = (index as u32 % w) as f32 * step_x;
+            let y = (index as u32 / w) as f32 * step_y;
             let a = if self.corner_pixel(x, y, width as f32, height as f32, appearance) {
                 let mut count = 0;
                 for sy in 0..4 {
                     for sx in 0..4 {
                         count += u32::from(self.covered(
-                            x + (sx as f32 + 0.5) * step / 4.0,
-                            y + (sy as f32 + 0.5) * step / 4.0,
+                            x + (sx as f32 + 0.5) * step_x / 4.0,
+                            y + (sy as f32 + 0.5) * step_y / 4.0,
                             width as f32,
                             height as f32,
                             appearance,
@@ -489,8 +488,8 @@ impl Piece {
                 (count * 255 + 8) / 16
             } else {
                 if self.covered(
-                    x + step * 0.5,
-                    y + step * 0.5,
+                    x + step_x * 0.5,
+                    y + step_y * 0.5,
                     width as f32,
                     height as f32,
                     appearance,
@@ -507,8 +506,8 @@ impl Piece {
             // the frame reads above them.
             let shade = if a < 255 && appearance.bar_shadow > 0 {
                 self.shadow(
-                    x + step * 0.5,
-                    y + step * 0.5,
+                    x + step_x * 0.5,
+                    y + step_y * 0.5,
                     width as f32,
                     height as f32,
                     appearance,
@@ -780,13 +779,13 @@ mod tests {
                                 }
                             }
                             let top = Piece::Top
-                                .pixels_for_bar(240, HORIZONTAL_BAND, 1, a)
+                                .pixels_for_bar(240, HORIZONTAL_BAND, Scale::Integer(1), a)
                                 .unwrap();
                             let bottom = Piece::Bottom
                                 .pixels_for_bar(
                                     240,
                                     HORIZONTAL_BAND,
-                                    1,
+                                    Scale::Integer(1),
                                     Appearance { bottom: true, ..a },
                                 )
                                 .unwrap();
@@ -812,12 +811,12 @@ mod tests {
             {
                 assert!(
                     Piece::Top
-                        .pixels_for_bar(16384, 16384, 4, Appearance::default())
+                        .pixels_for_bar(16384, 16384, Scale::Integer(4), Appearance::default())
                         .is_err()
                 );
                 assert!(
                     Piece::Top
-                        .pixels_for_bar(1, 1, 0, Appearance::default())
+                        .pixels_for_bar(1, 1, Scale::Integer(0), Appearance::default())
                         .is_err()
                 );
                 for curve in 0..=3 {

@@ -1,7 +1,11 @@
 //! Draws the animated window-placement preview on compositor layer surfaces.
 use enzui_shell::desktop_frame::valid_output;
-use enzui_shell::i18n::{self, tr};
 use enzui_shell::maximize_preview::{Animation, BODY_WASH, Command, Rect, frame_pixels};
+use enzui_shell::{
+    delegate_surface_scale,
+    i18n::{self, tr},
+    surface_scale::{ScaleHandler, ScaleProtocols, SurfaceScale},
+};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
     delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_shm,
@@ -36,13 +40,13 @@ struct Preview {
     registry: RegistryState,
     outputs: OutputState,
     compositor: CompositorState,
+    scale_protocols: Option<ScaleProtocols>,
     layers: LayerShell,
     shm: Shm,
     pool: SlotPool,
     target: String,
     output: Option<wl_output::WlOutput>,
-    layer: Option<LayerSurface>,
-    scale: i32,
+    layer: Option<(SurfaceScale, LayerSurface)>,
     origin: (i32, i32),
     configured: Option<(u32, u32)>,
     animation: Option<Animation>,
@@ -65,8 +69,13 @@ impl Preview {
             return;
         }
         self.output = Some(output.clone());
-        self.scale = info.scale_factor;
         let surface = self.compositor.create_surface(qh);
+        let scale = SurfaceScale::new(
+            info.scale_factor,
+            self.scale_protocols.as_ref(),
+            &surface,
+            qh,
+        );
         // The preview is decoration: it must never take pointer input away from
         // the drag that is producing it.
         let region = Region::new(&self.compositor).expect("input region");
@@ -86,10 +95,10 @@ impl Preview {
         layer.set_size(0, 0);
         layer.set_margin(0, 0, 0, 0);
         layer.commit();
-        self.layer = Some(layer);
+        self.layer = Some((scale, layer));
     }
     fn paint(&mut self, qh: &QueueHandle<Self>) -> Result<(), Box<dyn std::error::Error>> {
-        let Some(layer) = self.layer.clone() else {
+        let Some((scale, layer)) = &self.layer else {
             return Ok(());
         };
         let Some((width, height)) = self.configured.filter(|(w, h)| *w > 0 && *h > 0) else {
@@ -103,7 +112,7 @@ impl Preview {
         let data = frame_pixels(
             width,
             height,
-            self.scale,
+            scale.scale(),
             rect,
             self.origin,
             f32::from(self.radius),
@@ -111,8 +120,8 @@ impl Preview {
             opacity,
             BODY_WASH,
         )?;
-        let w = width as i32 * self.scale;
-        let h = height as i32 * self.scale;
+        let (w, h) = scale.scale().physical((width, height));
+        let (w, h) = (w as i32, h as i32);
         let (buffer, _) = self
             .pool
             .create_buffer(w, h, w * 4, wl_shm::Format::Argb8888)?;
@@ -121,7 +130,7 @@ impl Preview {
             .ok_or_else(|| tr("shell-preview-buffer-is-unavailable"))?
             .copy_from_slice(&data);
         let surface = layer.wl_surface();
-        surface.set_buffer_scale(self.scale);
+        scale.apply(surface, (width, height));
         surface.damage_buffer(0, 0, w, h);
         surface.frame(qh, surface.clone());
         buffer.attach_to(surface)?;
@@ -198,7 +207,9 @@ impl CompositorHandler for Preview {
         _: &wl_surface::WlSurface,
         factor: i32,
     ) {
-        self.scale = factor;
+        if let Some((scale, _)) = &mut self.layer {
+            scale.set_integer(factor);
+        }
     }
     fn transform_changed(
         &mut self,
@@ -272,6 +283,15 @@ impl ShmHandler for Preview {
         &mut self.shm
     }
 }
+impl ScaleHandler for Preview {
+    fn preferred_scale_changed(&mut self, _: &wl_surface::WlSurface, scale: u32) {
+        if let Some((surface_scale, _)) = &mut self.layer {
+            surface_scale.set_preferred(scale);
+        }
+    }
+}
+
+delegate_surface_scale!(Preview);
 delegate_compositor!(Preview);
 delegate_output!(Preview);
 delegate_shm!(Preview);
@@ -356,13 +376,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         registry: RegistryState::new(&globals),
         outputs: OutputState::new(&globals, &qh),
         compositor,
+        scale_protocols: ScaleProtocols::bind(&globals, &qh),
         layers,
         pool: SlotPool::new(4096, &shm)?,
         shm,
         target: args[0].clone(),
         output: None,
         layer: None,
-        scale: 1,
         origin: (0, 0),
         configured: None,
         animation: None,

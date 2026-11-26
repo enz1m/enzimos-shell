@@ -1,6 +1,10 @@
 //! Draws the desktop edge bands and rounded corners on compositor layer surfaces.
 use enzui_shell::desktop_frame::{Appearance, HORIZONTAL_BAND, Piece, SIDE_BAND, valid_output};
-use enzui_shell::i18n::{self, tr};
+use enzui_shell::{
+    delegate_surface_scale,
+    i18n::{self, tr},
+    surface_scale::{ScaleHandler, ScaleProtocols, SurfaceScale},
+};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
     delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_shm,
@@ -39,7 +43,7 @@ struct Strip {
     piece: Piece,
     width: u32,
     height: u32,
-    scale: i32,
+    scale: SurfaceScale,
     /// A picture committed and not yet shown, since when. The compositor
     /// sends no frame for a surface it does not draw (one faded out, an idle
     /// desktop), so a wait is given up after a while.
@@ -58,6 +62,7 @@ struct Frame {
     registry: RegistryState,
     outputs: OutputState,
     compositor: CompositorState,
+    scale_protocols: Option<ScaleProtocols>,
     layers: LayerShell,
     shm: Shm,
     pool: SlotPool,
@@ -110,6 +115,12 @@ impl Frame {
             let surface = self.compositor.create_surface(qh);
             let region = Region::new(&self.compositor).expect("input region");
             surface.set_input_region(Some(region.wl_region()));
+            let scale = SurfaceScale::new(
+                info.scale_factor,
+                self.scale_protocols.as_ref(),
+                &surface,
+                qh,
+            );
             let layer = self.layers.create_layer_surface(
                 qh,
                 surface,
@@ -130,7 +141,7 @@ impl Frame {
                 piece,
                 width: 0,
                 height: 0,
-                scale: info.scale_factor,
+                scale,
                 pending: None,
                 dirty: false,
             });
@@ -150,17 +161,17 @@ impl Frame {
             if !strip.dirty || strip.waiting() || strip.width == 0 || strip.height == 0 {
                 continue;
             }
-            let mut pixels = strip.piece.pixels_for_bar(
-                strip.width,
-                strip.height,
-                strip.scale,
-                self.appearance,
-            )?;
+            let logical = (strip.width, strip.height);
+            let scale = strip.scale.scale();
+            let mut pixels =
+                strip
+                    .piece
+                    .pixels_for_bar(strip.width, strip.height, scale, self.appearance)?;
             if blank {
                 pixels.fill(0);
             }
-            let w = strip.width as i32 * strip.scale;
-            let h = strip.height as i32 * strip.scale;
+            let (w, h) = scale.physical(logical);
+            let (w, h) = (w as i32, h as i32);
             let (buffer, _) = self
                 .pool
                 .create_buffer(w, h, w * 4, wl_shm::Format::Argb8888)?;
@@ -169,7 +180,7 @@ impl Frame {
                 .ok_or_else(|| tr("shell-frame-buffer-is-unavailable"))?
                 .copy_from_slice(&pixels);
             let surface = strip.layer.wl_surface();
-            surface.set_buffer_scale(strip.scale);
+            strip.scale.apply(surface, logical);
             surface.damage_buffer(0, 0, w, h);
             surface.frame(qh, surface.clone());
             buffer.attach_to(surface)?;
@@ -258,8 +269,7 @@ impl CompositorHandler for Frame {
     ) {
         for strip in &mut self.strips {
             if strip.layer.wl_surface() == surface {
-                strip.scale = factor;
-                strip.dirty = true;
+                strip.dirty |= strip.scale.set_integer(factor);
             }
         }
     }
@@ -353,6 +363,19 @@ impl ShmHandler for Frame {
         &mut self.shm
     }
 }
+impl ScaleHandler for Frame {
+    fn preferred_scale_changed(&mut self, surface: &wl_surface::WlSurface, scale: u32) {
+        if let Some(strip) = self
+            .strips
+            .iter_mut()
+            .find(|strip| strip.layer.wl_surface() == surface)
+        {
+            strip.dirty |= strip.scale.set_preferred(scale);
+        }
+    }
+}
+
+delegate_surface_scale!(Frame);
 delegate_compositor!(Frame);
 delegate_output!(Frame);
 delegate_shm!(Frame);
@@ -434,6 +457,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         registry: RegistryState::new(&globals),
         outputs: OutputState::new(&globals, &qh),
         compositor,
+        scale_protocols: ScaleProtocols::bind(&globals, &qh),
         layers,
         pool: SlotPool::new(4096, &shm)?,
         shm,

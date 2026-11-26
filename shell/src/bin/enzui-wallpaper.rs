@@ -1,5 +1,9 @@
 //! Renders image or colour wallpaper surfaces for the desktop.
-use enzui_shell::i18n::{self, tr};
+use enzui_shell::{
+    delegate_surface_scale,
+    i18n::{self, tr},
+    surface_scale::{ScaleHandler, ScaleProtocols, SurfaceScale},
+};
 use std::env;
 use std::io::Write;
 use std::path::PathBuf;
@@ -169,11 +173,12 @@ fn packed_pixel(rgb: [u8; 3], opacity: u8) -> [u8; 4] {
 struct Screen {
     output: wl_output::WlOutput,
     layer: LayerSurface,
-    scale: i32,
+    scale: SurfaceScale,
     pixels: Vec<[u8; 3]>,
     size: (u32, u32),
     started: Option<Instant>,
-    opaque_ack_requested: bool,
+    pending_frame: Option<bool>,
+    dirty: bool,
     completed: bool,
 }
 
@@ -181,6 +186,7 @@ struct Wallpaper {
     registry: RegistryState,
     output: OutputState,
     compositor: CompositorState,
+    scale_protocols: Option<ScaleProtocols>,
     layer_shell: LayerShell,
     shm: Shm,
     pool: SlotPool,
@@ -205,7 +211,7 @@ impl Wallpaper {
         let surface = self.compositor.create_surface(qh);
         let region = self.compositor.wl_compositor().create_region(qh, ());
         surface.set_input_region(Some(&region));
-        surface.set_buffer_scale(scale);
+        let scale = SurfaceScale::new(scale, self.scale_protocols.as_ref(), &surface, qh);
         let layer = self.layer_shell.create_layer_surface(
             qh,
             surface,
@@ -225,31 +231,28 @@ impl Wallpaper {
             pixels: Vec::new(),
             size: (0, 0),
             started: None,
-            opaque_ack_requested: false,
+            pending_frame: None,
+            dirty: false,
             completed: false,
         });
     }
 
     fn render(&mut self, index: usize, qh: &QueueHandle<Self>) {
         let screen = &mut self.screens[index];
-        let (width, height) = (
-            screen.size.0 * screen.scale as u32,
-            screen.size.1 * screen.scale as u32,
-        );
+        let (width, height) = screen.scale.scale().physical(screen.size);
         screen.pixels =
             pixels(&self.settings, width, height).expect("Wallpaper image could not be rendered");
         screen.started = None;
-        screen.opaque_ack_requested = false;
+        // A callback for the previous size cannot acknowledge the replacement.
+        screen.pending_frame = screen.pending_frame.map(|_| false);
         screen.completed = false;
+        screen.dirty = false;
         self.draw(index, qh);
     }
 
     fn draw(&mut self, index: usize, qh: &QueueHandle<Self>) {
         let screen = &mut self.screens[index];
-        let (width, height) = (
-            screen.size.0 * screen.scale as u32,
-            screen.size.1 * screen.scale as u32,
-        );
+        let (width, height) = screen.scale.scale().physical(screen.size);
         let elapsed = screen.started.get_or_insert_with(Instant::now).elapsed();
         let opacity = if self.settings.animate {
             ((elapsed.as_secs_f32() / FADE.as_secs_f32()).min(1.0) * 255.0)
@@ -272,13 +275,11 @@ impl Wallpaper {
             pixel.copy_from_slice(&packed_pixel(*rgb, opacity));
         }
         let surface = screen.layer.wl_surface();
-        surface.set_buffer_scale(screen.scale);
+        screen.scale.apply(surface, screen.size);
         surface.damage_buffer(0, 0, width as i32, height as i32);
-        if opacity < 255 || !screen.opaque_ack_requested {
+        if screen.pending_frame.is_none() {
             surface.frame(qh, surface.clone());
-            if opacity == 255 {
-                screen.opaque_ack_requested = true;
-            }
+            screen.pending_frame = Some(opacity == 255);
         }
         buffer
             .attach_to(surface)
@@ -306,18 +307,13 @@ impl CompositorHandler for Wallpaper {
     fn scale_factor_changed(
         &mut self,
         _: &Connection,
-        qh: &QueueHandle<Self>,
+        _: &QueueHandle<Self>,
         surface: &wl_surface::WlSurface,
         factor: i32,
     ) {
         if let Some(index) = self.screen(surface) {
-            let factor = factor.clamp(1, 4);
-            if self.screens[index].scale != factor {
-                self.screens[index].scale = factor;
-                if self.screens[index].size != (0, 0) {
-                    self.render(index, qh);
-                }
-            }
+            let screen = &mut self.screens[index];
+            screen.dirty |= screen.scale.set_integer(factor.clamp(1, 4));
         }
     }
     fn transform_changed(
@@ -338,11 +334,14 @@ impl CompositorHandler for Wallpaper {
         let Some(index) = self.screen(surface) else {
             return;
         };
-        if self.screens[index].opaque_ack_requested {
-            self.screens[index].completed = true;
-            self.announce();
-        } else {
-            self.draw(index, qh);
+        let screen = &mut self.screens[index];
+        let opaque = screen.pending_frame.take() == Some(true);
+        if !screen.dirty {
+            if opaque {
+                screen.completed = true;
+            } else {
+                self.draw(index, qh);
+            }
         }
     }
     fn surface_enter(
@@ -386,7 +385,6 @@ impl OutputHandler for Wallpaper {
         output: wl_output::WlOutput,
     ) {
         self.screens.retain(|s| s.output != output);
-        self.announce();
     }
 }
 
@@ -399,12 +397,11 @@ impl ShmHandler for Wallpaper {
 impl LayerShellHandler for Wallpaper {
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
         self.screens.retain(|s| &s.layer != layer);
-        self.announce();
     }
     fn configure(
         &mut self,
         _: &Connection,
-        qh: &QueueHandle<Self>,
+        _: &QueueHandle<Self>,
         layer: &LayerSurface,
         configure: LayerSurfaceConfigure,
         _: u32,
@@ -416,15 +413,22 @@ impl LayerShellHandler for Wallpaper {
         if size.0 == 0 || size.1 == 0 {
             return;
         }
-        if size != self.screens[index].size {
-            self.screens[index].size = size;
-            self.render(index, qh);
-        } else {
-            self.draw(index, qh);
+        let screen = &mut self.screens[index];
+        screen.dirty |= size != screen.size;
+        screen.size = size;
+    }
+}
+
+impl ScaleHandler for Wallpaper {
+    fn preferred_scale_changed(&mut self, surface: &wl_surface::WlSurface, scale: u32) {
+        if let Some(index) = self.screen(surface) {
+            let screen = &mut self.screens[index];
+            screen.dirty |= screen.scale.set_preferred(scale);
         }
     }
 }
 
+delegate_surface_scale!(Wallpaper);
 delegate_compositor!(Wallpaper);
 delegate_output!(Wallpaper);
 delegate_shm!(Wallpaper);
@@ -464,6 +468,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         output: OutputState::new(&globals, &qh),
         pool: SlotPool::new(4, &shm)?,
         compositor,
+        scale_protocols: ScaleProtocols::bind(&globals, &qh),
         layer_shell,
         shm,
         settings,
@@ -472,6 +477,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     loop {
         queue.blocking_dispatch(&mut state)?;
+        for index in 0..state.screens.len() {
+            let screen = &state.screens[index];
+            if screen.dirty && screen.size != (0, 0) {
+                state.render(index, &qh);
+            }
+        }
+        state.announce();
     }
 }
 

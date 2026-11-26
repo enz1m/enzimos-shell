@@ -121,6 +121,7 @@ pub mod sidebar_preferences;
 pub mod spread_layout;
 pub mod startup_apps;
 pub mod surface_input;
+pub mod surface_scale;
 pub mod system_controls;
 pub mod system_settings;
 #[cfg(test)]

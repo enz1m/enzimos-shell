@@ -117,7 +117,7 @@ mod tests {
         let mut prompts = Prompts::default();
         let now = Instant::now();
         prompts.sync(&mut model, dialogs(), now, 1).unwrap();
-        let notice = model.active().next().unwrap().clone();
+        let notice = std::sync::Arc::clone(model.active().next().unwrap());
         assert_eq!(notice.draft.body, "Unlock \"Work, vault\"");
         assert!(notice.toast.visible(now));
         assert!(notice.expires.is_none());

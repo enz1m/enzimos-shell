@@ -34,7 +34,7 @@ local function switch(key, direction, same_app)
 end
 switch("ALT + Tab", 1, false)
 switch("ALT + SHIFT + Tab", -1, false)
-switch("ALT + grave", 1, true)
+switch("ALT + code:49", 1, true)
 hl.bind("ALT + Escape", function()
     if enzui_switcher.active then return enzui_switcher_cancel() end
     return {ok=true, pass_event=true}
@@ -51,23 +51,23 @@ for mod, keys in pairs({
 end
 hl.bind("SUPER + SPACE", command("search"))
 hl.bind("SUPER + A", command("launcher"))
-hl.bind("SUPER + slash", command("shortcuts"))
+hl.bind("SUPER + code:61", command("shortcuts"))
 hl.bind("SUPER + C", command("controls"))
 hl.bind("SUPER + N", command("notifications"))
 hl.bind("SUPER + SHIFT + D", command("dock"))
 hl.bind("SUPER + D", command("overview"))
 hl.bind("SUPER + ALT + K", command("keyboard"))
-hl.bind("SUPER + period", command("emoji-picker"))
+hl.bind("SUPER + code:60", command("emoji-picker"))
 -- Dictation: hold to talk, or tap for hands-free; the daemon tells them apart.
 hl.bind("SUPER + H", hl.dsp.exec_cmd("enzimos-dictation press"))
 hl.bind("SUPER + H", hl.dsp.exec_cmd("enzimos-dictation release"), { release = true })
 hl.bind("SUPER + W", command("window-spread"))
 -- Locking goes through the shell, which supervises the lock client.
 hl.bind("SUPER + L", command("lock"))
-hl.bind("CTRL + SHIFT + ALT + R", command("record"))
+hl.bind("CTRL + ALT + SHIFT + R", command("record"))
 hl.bind("Print", command("capture"))
 hl.bind("SHIFT + Print", command("screenshot-screen"))
 hl.bind("ALT + Print", command("screenshot-window"))
-hl.bind("SUPER + ALT + equal", command("zoom-in"), level)
-hl.bind("SUPER + ALT + minus", command("zoom-out"), level)
-hl.bind("SUPER + ALT + 8", command("zoom-reset"), { locked = true })
+hl.bind("SUPER + ALT + code:21", command("zoom-in"), level)
+hl.bind("SUPER + ALT + code:20", command("zoom-out"), level)
+hl.bind("SUPER + ALT + code:17", command("zoom-reset"), { locked = true })

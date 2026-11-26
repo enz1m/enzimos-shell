@@ -63,6 +63,13 @@ impl SettingsApp {
             window::close_requests().map(|_| Message::Close),
             window::open_events().map(Message::Opened),
             self.shortcut_capture_subscription(),
+            if self.page == Page::Keyboard {
+                enzui_shell::shortcut_map::key_labels_subscription().map(|labels| {
+                    Message::Shortcuts(shortcuts_settings::Message::KeyLabels(labels))
+                })
+            } else {
+                Subscription::none()
+            },
             self.chrome.subscription().map(Message::WindowState),
             self.themes
                 .as_ref()

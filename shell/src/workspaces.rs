@@ -121,8 +121,14 @@ pub fn focus_changes(socket: Option<std::path::PathBuf>) -> iced::Subscription<(
     iced::Subscription::run_with((socket, Events::Focus), event_stream)
 }
 
-/// Windows of apps opening, closing, moving or being parked in the sidebar:
-/// what changes which apps have windows.
+pub(crate) fn keyboard_events(
+    socket: Option<std::path::PathBuf>,
+) -> impl iced::futures::Stream<Item = ()> {
+    event_stream(&(socket, Events::Keyboard))
+}
+
+/// Windows of apps opening or closing, or being moved or parked in the sidebar:
+/// what changes which apps may show or hide.
 pub fn window_events(socket: Option<std::path::PathBuf>) -> impl iced::futures::Stream<Item = ()> {
     event_stream(&(socket, Events::Windows))
 }
@@ -137,6 +143,7 @@ enum Events {
     Desktop,
     Focus,
     Windows,
+    Keyboard,
     Dock,
     Config,
 }
@@ -151,6 +158,9 @@ fn event_stream(
         Events::Desktop => relevant_event,
         Events::Focus => focus_event,
         Events::Windows => window_event,
+        Events::Keyboard => {
+            |line| line.starts_with(b"activelayout>>") || line == b"configreloaded>>\n"
+        }
         Events::Dock => dock_event,
         Events::Config => |line| line == b"configreloaded>>\n",
     };

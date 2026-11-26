@@ -717,7 +717,7 @@ impl Compositor {
             .as_str()
             .ok_or_else(|| tr("shell-missing-settings-output"))?;
         let lua = format!(
-            "{}\nif enzui_settings_binding then enzui_settings_binding:remove() end; enzui_settings_binding=hl.bind(\"SUPER + comma\",function() for _,w in ipairs(hl.get_windows()) do if w.pid=={} and (w.class==\"dev.enzui.PluginPanel\" or w.class==\"dev.enzui.ControlCenter\" or w.class==\"dev.enzui.WorkspaceOverview\" or w.class==\"dev.enzui.Launcher\" or w.class==\"dev.enzui.QuickSearch\" or w.class==\"dev.enzui.NotificationCenter\") then hl.dispatch(hl.dsp.window.close({{window=w}})) end end; return hl.dispatch(hl.dsp.exec_cmd(enzui_settings_command({}, {}))) end)",
+            "{}\nif enzui_settings_binding then enzui_settings_binding:remove() end; enzui_settings_binding=hl.bind(\"SUPER + code:59\",function() for _,w in ipairs(hl.get_windows()) do if w.pid=={} and (w.class==\"dev.enzui.PluginPanel\" or w.class==\"dev.enzui.ControlCenter\" or w.class==\"dev.enzui.WorkspaceOverview\" or w.class==\"dev.enzui.Launcher\" or w.class==\"dev.enzui.QuickSearch\" or w.class==\"dev.enzui.NotificationCenter\") then hl.dispatch(hl.dsp.window.close({{window=w}})) end end; return hl.dispatch(hl.dsp.exec_cmd(enzui_settings_command({}, {}))) end)",
             concat!(
                 "\n",
                 include_str!("../../../config/output-size.lua"),

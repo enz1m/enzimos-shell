@@ -1,5 +1,9 @@
 //! Account-editable compositor chords shared with config/shortcut-map.lua.
 
+mod key_labels;
+
+pub use key_labels::{KeyLabels, modifier_labels, subscription as key_labels_subscription};
+
 use enzui_core::{Modifier, NamedKey, Shortcut, ShortcutKey, ShortcutValidity};
 use enzui_shell::i18n::tr;
 use enzui_shell::tr;
@@ -11,6 +15,7 @@ use std::collections::BTreeMap;
 #[derive(Clone, Copy, Debug)]
 pub struct Action {
     pub id: &'static str,
+    pub route: &'static str,
     pub name: &'static str,
     pub section: &'static str,
     pub default: &'static str,
@@ -18,7 +23,7 @@ pub struct Action {
 
 macro_rules! actions {
     ($($id:literal, $name:literal, $section:literal, $default:literal;)*) => {
-        &[$(Action { id: $id, name: $name, section: $section, default: $default }),*]
+        &[$(Action { id: $id, route: concat!("keyboard/shortcut-", $id), name: $name, section: $section, default: $default }),*]
     };
 }
 
@@ -27,13 +32,13 @@ pub const ACTIONS: &[Action] = actions![
     "launcher", "Open Applications", "Apps", "SUPER + A";
     "terminal", "Open Terminal", "Apps", "SUPER + Return";
     "terminal-alias", "Open Terminal (second shortcut)", "Apps", "SUPER + T";
-    "shortcuts", "Show keyboard shortcuts", "System", "SUPER + slash";
+    "shortcuts", "Show keyboard shortcuts", "System", "SUPER + code:61";
     "controls", "Open Control Center", "System", "SUPER + C";
     "dock", "Turn the dock on or off", "System", "SUPER + SHIFT + D";
     "lock", "Lock the screen", "System", "SUPER + L";
     "notifications", "Show notifications", "System", "SUPER + N";
-    "settings", "Open Settings", "System", "SUPER + comma";
-    "emoji", "Emoji picker", "System", "SUPER + period";
+    "settings", "Open Settings", "System", "SUPER + code:59";
+    "emoji", "Emoji picker", "System", "SUPER + code:60";
     "sidebar", "Show the sidebar", "System", "SUPER + SHIFT + B";
     "brightness-up", "Increase brightness", "System", "XF86MonBrightnessUp";
     "brightness-down", "Decrease brightness", "System", "XF86MonBrightnessDown";
@@ -45,40 +50,40 @@ pub const ACTIONS: &[Action] = actions![
     "window-spread", "Show all windows", "Windows", "SUPER + W";
     "switch-next", "Switch windows", "Switching", "ALT + Tab";
     "switch-previous", "Switch windows backwards", "Switching", "ALT + SHIFT + Tab";
-    "switch-app", "Switch windows of the app", "Switching", "ALT + grave";
+    "switch-app", "Switch windows of the app", "Switching", "ALT + code:49";
     "switch-cancel", "Cancel window switching", "Switching", "ALT + Escape";
     "overview", "Show desktops", "Desktops", "SUPER + D";
     "desktop-before", "Go to previous desktop", "Desktops", "SUPER + Prior";
     "desktop-after", "Go to next desktop", "Desktops", "SUPER + Next";
     "move-before", "Move window to previous desktop", "Desktops", "SUPER + SHIFT + Prior";
     "move-after", "Move window to next desktop", "Desktops", "SUPER + SHIFT + Next";
-    "desktop-1", "Go to desktop 1", "Desktops", "SUPER + 1";
-    "desktop-2", "Go to desktop 2", "Desktops", "SUPER + 2";
-    "desktop-3", "Go to desktop 3", "Desktops", "SUPER + 3";
-    "desktop-4", "Go to desktop 4", "Desktops", "SUPER + 4";
-    "desktop-5", "Go to desktop 5", "Desktops", "SUPER + 5";
-    "desktop-6", "Go to desktop 6", "Desktops", "SUPER + 6";
-    "desktop-7", "Go to desktop 7", "Desktops", "SUPER + 7";
-    "desktop-8", "Go to desktop 8", "Desktops", "SUPER + 8";
-    "desktop-9", "Go to desktop 9", "Desktops", "SUPER + 9";
-    "move-1", "Move window to desktop 1", "Desktops", "SUPER + SHIFT + 1";
-    "move-2", "Move window to desktop 2", "Desktops", "SUPER + SHIFT + 2";
-    "move-3", "Move window to desktop 3", "Desktops", "SUPER + SHIFT + 3";
-    "move-4", "Move window to desktop 4", "Desktops", "SUPER + SHIFT + 4";
-    "move-5", "Move window to desktop 5", "Desktops", "SUPER + SHIFT + 5";
-    "move-6", "Move window to desktop 6", "Desktops", "SUPER + SHIFT + 6";
-    "move-7", "Move window to desktop 7", "Desktops", "SUPER + SHIFT + 7";
-    "move-8", "Move window to desktop 8", "Desktops", "SUPER + SHIFT + 8";
-    "move-9", "Move window to desktop 9", "Desktops", "SUPER + SHIFT + 9";
+    "desktop-1", "Go to desktop 1", "Desktops", "SUPER + code:10";
+    "desktop-2", "Go to desktop 2", "Desktops", "SUPER + code:11";
+    "desktop-3", "Go to desktop 3", "Desktops", "SUPER + code:12";
+    "desktop-4", "Go to desktop 4", "Desktops", "SUPER + code:13";
+    "desktop-5", "Go to desktop 5", "Desktops", "SUPER + code:14";
+    "desktop-6", "Go to desktop 6", "Desktops", "SUPER + code:15";
+    "desktop-7", "Go to desktop 7", "Desktops", "SUPER + code:16";
+    "desktop-8", "Go to desktop 8", "Desktops", "SUPER + code:17";
+    "desktop-9", "Go to desktop 9", "Desktops", "SUPER + code:18";
+    "move-1", "Move window to desktop 1", "Desktops", "SUPER + SHIFT + code:10";
+    "move-2", "Move window to desktop 2", "Desktops", "SUPER + SHIFT + code:11";
+    "move-3", "Move window to desktop 3", "Desktops", "SUPER + SHIFT + code:12";
+    "move-4", "Move window to desktop 4", "Desktops", "SUPER + SHIFT + code:13";
+    "move-5", "Move window to desktop 5", "Desktops", "SUPER + SHIFT + code:14";
+    "move-6", "Move window to desktop 6", "Desktops", "SUPER + SHIFT + code:15";
+    "move-7", "Move window to desktop 7", "Desktops", "SUPER + SHIFT + code:16";
+    "move-8", "Move window to desktop 8", "Desktops", "SUPER + SHIFT + code:17";
+    "move-9", "Move window to desktop 9", "Desktops", "SUPER + SHIFT + code:18";
     "capture", "Screenshot or record", "Screenshots", "Print";
     "screenshot-screen", "Screenshot the screen", "Screenshots", "SHIFT + Print";
     "screenshot-window", "Screenshot a window", "Screenshots", "ALT + Print";
-    "record", "Record the screen", "Screenshots", "CTRL + SHIFT + ALT + R";
+    "record", "Record the screen", "Screenshots", "CTRL + ALT + SHIFT + R";
     "dictation", "Dictate (hold, or tap for hands-free)", "Accessibility", "SUPER + H";
     "screen-reader", "Screen reader", "Accessibility", "SUPER + ALT + S";
-    "zoom-in", "Zoom in", "Accessibility", "SUPER + ALT + equal";
-    "zoom-out", "Zoom out", "Accessibility", "SUPER + ALT + minus";
-    "zoom-reset", "Reset zoom", "Accessibility", "SUPER + ALT + 8";
+    "zoom-in", "Zoom in", "Accessibility", "SUPER + ALT + code:21";
+    "zoom-out", "Zoom out", "Accessibility", "SUPER + ALT + code:20";
+    "zoom-reset", "Reset zoom", "Accessibility", "SUPER + ALT + code:17";
     "keyboard", "Show the on-screen keyboard", "Accessibility", "SUPER + ALT + K";
     "volume-up", "Raise volume", "Sound and Media", "XF86AudioRaiseVolume";
     "volume-down", "Lower volume", "Sound and Media", "XF86AudioLowerVolume";
@@ -177,17 +182,6 @@ fn function_key(key: NamedKey) -> Option<usize> {
 /// The compositor chord for `shortcut`, or `None` for a key it cannot name.
 #[must_use]
 pub fn to_chord(shortcut: &Shortcut) -> Option<String> {
-    let modifiers = shortcut.modifiers();
-    let mut parts: Vec<String> = [
-        (Modifier::SUPER, "SUPER"),
-        (Modifier::CTRL, "CTRL"),
-        (Modifier::SHIFT, "SHIFT"),
-        (Modifier::ALT, "ALT"),
-    ]
-    .into_iter()
-    .filter(|(modifier, _)| modifiers.contains(*modifier))
-    .map(|(_, name)| name.to_owned())
-    .collect();
     let key = match shortcut.key() {
         ShortcutKey::Named(key) => named(*key)?,
         ShortcutKey::Character(text) => {
@@ -206,15 +200,26 @@ pub fn to_chord(shortcut: &Shortcut) -> Option<String> {
             }
         }
     };
-    parts.push(key);
-    Some(parts.join(" + "))
+    Some(format_chord(shortcut.modifiers(), &key))
 }
 
-/// The shortcut a compositor chord names.
-#[must_use]
-pub fn from_chord(chord: &str) -> Option<Shortcut> {
-    let mut parts: Vec<&str> = chord.split('+').map(str::trim).collect();
-    let key = parts.pop().filter(|key| !key.is_empty())?;
+fn format_chord(modifiers: Modifier, key: &str) -> String {
+    [
+        (Modifier::SUPER, "SUPER"),
+        (Modifier::CTRL, "CTRL"),
+        (Modifier::ALT, "ALT"),
+        (Modifier::SHIFT, "SHIFT"),
+    ]
+    .into_iter()
+    .filter_map(|(modifier, name)| modifiers.contains(modifier).then_some(name))
+    .chain([key])
+    .collect::<Vec<_>>()
+    .join(" + ")
+}
+
+fn split_chord(chord: &str) -> Option<(Modifier, &str)> {
+    let mut parts = chord.rsplit('+').map(str::trim);
+    let key = parts.next().filter(|key| !key.is_empty())?;
     let mut modifiers = Modifier::NONE;
     for part in parts {
         modifiers |= match part.to_ascii_uppercase().as_str() {
@@ -225,6 +230,19 @@ pub fn from_chord(chord: &str) -> Option<Shortcut> {
             _ => return None,
         };
     }
+    Some((modifiers, key))
+}
+
+fn physical_chord(chord: &str) -> Option<(Modifier, u32)> {
+    let (modifiers, key) = split_chord(chord)?;
+    let code = key.strip_prefix("code:")?.parse().ok()?;
+    key_labels::known_code(code).then_some((modifiers, code))
+}
+
+/// The logical shortcut a compositor chord names.
+#[must_use]
+pub fn from_chord(chord: &str) -> Option<Shortcut> {
+    let (modifiers, key) = split_chord(chord)?;
     let key: ShortcutKey = if key.len() == 1 && key.chars().all(|c| c.is_ascii_alphanumeric()) {
         key.to_ascii_lowercase().as_str().into()
     } else if let Some((symbol, _)) = SYMBOLS
@@ -279,21 +297,47 @@ pub fn validity(shortcut: &Shortcut) -> ShortcutValidity {
             tr("shell-this-key-cannot-be-used-for-a-shortcut").into(),
         );
     };
-    if chord == "SUPER + CTRL + SHIFT + ALT + F24" {
+    if chord == "SUPER + CTRL + ALT + SHIFT + F24" {
         return ShortcutValidity::Reserved(tr!("shell-is-kept-by-the-desktop", "arg0" => chord));
     }
     let standalone = matches!(shortcut.key(), ShortcutKey::Named(key)
         if *key == NamedKey::PrintScreen || function_key(*key).is_some()
             || MEDIA.iter().any(|(named, _)| named == key));
     let modifiers = shortcut.modifiers();
-    if !standalone
-        && !(modifiers.contains(Modifier::SUPER)
-            || modifiers.contains(Modifier::CTRL)
-            || modifiers.contains(Modifier::ALT))
-    {
+    if !standalone && !has_shortcut_modifier(modifiers) {
         return ShortcutValidity::Invalid(tr("shell-hold-super-ctrl-or-alt-with-the-key").into());
     }
     ShortcutValidity::Valid
+}
+
+fn has_shortcut_modifier(modifiers: Modifier) -> bool {
+    modifiers.contains(Modifier::SUPER)
+        || modifiers.contains(Modifier::CTRL)
+        || modifiers.contains(Modifier::ALT)
+}
+
+/// Encodes a key press by position for printable keys and by name for other keys.
+pub fn capture_chord(
+    key: &iced::keyboard::Key,
+    physical: iced::keyboard::key::Physical,
+    modifiers: iced::keyboard::Modifiers,
+) -> Option<Result<String, String>> {
+    use enzui_widgets::key_capture_chip::{CaptureAction, capture_action};
+    if let Some(code) = key_labels::position(physical) {
+        let modifiers = Modifier::from_iced(modifiers);
+        return Some(if has_shortcut_modifier(modifiers) {
+            Ok(format_chord(modifiers, &format!("code:{code}")))
+        } else {
+            Err(tr("shell-hold-super-ctrl-or-alt-with-the-key").into())
+        });
+    }
+    let CaptureAction::Candidate(shortcut) = capture_action(key, modifiers, false) else {
+        return None;
+    };
+    Some(match validity(&shortcut) {
+        ShortcutValidity::Valid => Ok(to_chord(&shortcut)?),
+        ShortcutValidity::Invalid(reason) | ShortcutValidity::Reserved(reason) => Err(reason),
+    })
 }
 
 /// A user-defined keyboard shortcut.
@@ -391,23 +435,60 @@ pub fn important(preferences: &crate::desktop_preferences::CompositorPreferences
     .collect()
 }
 
-pub(crate) fn preserve_existing_assignments(choices: &mut BTreeMap<String, String>) {
+pub(crate) fn preserve_existing_assignments(
+    choices: &mut BTreeMap<String, String>,
+    custom: &BTreeMap<String, CustomShortcut>,
+    keys: &KeyLabels,
+) {
     let claimed: Vec<_> = choices
         .values()
-        .filter_map(|chord| from_chord(chord))
+        .map(String::as_str)
+        .chain(custom.values().map(|shortcut| shortcut.chord.as_str()))
+        .filter_map(|chord| checked_chord(chord).ok().flatten())
         .collect();
-    for id in NEW_DEFAULTS {
-        if let Some(action) = action(id)
-            && from_chord(action.default).is_some_and(|key| claimed.contains(&key))
+    for action in ACTIONS {
+        if (NEW_DEFAULTS.contains(&action.id) || physical_chord(action.default).is_some())
+            && claimed
+                .iter()
+                .any(|chord| overlaps(chord, action.default, keys))
         {
-            choices.entry((*id).into()).or_default();
+            choices.entry(action.id.into()).or_default();
         }
+    }
+}
+
+fn overlaps(a: &str, b: &str, keys: &KeyLabels) -> bool {
+    if a == b {
+        return true;
+    }
+    let Some(((mods_a, key_a), (mods_b, key_b))) = a.rsplit_once(" + ").zip(b.rsplit_once(" + "))
+    else {
+        return false;
+    };
+    if mods_a != mods_b {
+        return false;
+    }
+    match (key_a.strip_prefix("code:"), key_b.strip_prefix("code:")) {
+        (Some(code), None) => code
+            .parse()
+            .is_ok_and(|code| keys.matches_symbol(code, key_b)),
+        (None, Some(code)) => code
+            .parse()
+            .is_ok_and(|code| keys.matches_symbol(code, key_a)),
+        _ => false,
     }
 }
 
 fn checked_chord(chord: &str) -> Result<Option<String>, String> {
     if chord.is_empty() {
         return Ok(None);
+    }
+    if let Some((modifiers, code)) = physical_chord(chord) {
+        return if has_shortcut_modifier(modifiers) {
+            Ok(Some(format_chord(modifiers, &format!("code:{code}"))))
+        } else {
+            Err(tr("shell-hold-super-ctrl-or-alt-with-the-key").into())
+        };
     }
     let shortcut =
         from_chord(chord).ok_or_else(|| tr("shell-this-key-cannot-be-used-for-a-shortcut"))?;
@@ -420,20 +501,37 @@ fn checked_chord(chord: &str) -> Result<Option<String>, String> {
 pub(crate) fn validate(
     choices: &BTreeMap<String, String>,
     custom: &BTreeMap<String, CustomShortcut>,
+    keys: &KeyLabels,
+    edited: Option<&str>,
 ) -> Result<(), String> {
     if choices.keys().any(|id| action(id).is_none()) || custom.len() > MAX_CUSTOM {
         return Err(tr("shell-invalid-keyboard-shortcuts").into());
     }
-    let mut taken = BTreeMap::new();
-    for action in ACTIONS {
-        let name = crate::i18n::label(action.name);
-        if let Some(key) = checked_chord(chord(action, choices))?
-            && let Some(other) = taken.insert(key.clone(), name)
-        {
-            return Err(
-                tr!("shell-shortcuts-conflict", "shortcut" => badge(&key), "action" => other.to_owned()),
-            );
+    let mut taken = Vec::<(String, &str, &str)>::new();
+    let mut claim = |id, chord, name| {
+        if let Some(key) = checked_chord(chord)? {
+            if let Some((prior_key, prior_id, prior_name)) = taken
+                .iter()
+                .find(|(other, _, _)| overlaps(other, &key, keys))
+            {
+                let (requested, assigned) = if Some(*prior_id) == edited {
+                    (prior_key, name)
+                } else {
+                    (&key, *prior_name)
+                };
+                return Err(tr!("shell-shortcuts-conflict",
+                    "shortcut" => keys.badge(requested), "action" => assigned.to_owned()));
+            }
+            taken.push((key, id, name));
         }
+        Ok(())
+    };
+    for action in ACTIONS {
+        claim(
+            action.id,
+            chord(action, choices),
+            crate::i18n::label(action.name),
+        )?;
     }
     for (id, custom) in custom {
         let valid_text = |value: &str, max: usize| {
@@ -451,23 +549,13 @@ pub(crate) fn validate(
         {
             return Err(tr("shell-shortcuts-custom-invalid").into());
         }
-        if let Some(key) = checked_chord(&custom.chord)?
-            && let Some(other) = taken.insert(key.clone(), custom.name.as_str())
-        {
-            return Err(
-                tr!("shell-shortcuts-conflict", "shortcut" => badge(&key), "action" => other.to_owned()),
-            );
-        }
+        claim(id.as_str(), &custom.chord, custom.name.as_str())?;
     }
     Ok(())
 }
 
-/// Formats a compositor chord using the current language and readable media labels.
-pub fn badge(chord: &str) -> String {
-    if chord.is_empty() {
-        return tr("shell-shortcuts-unassigned").into();
-    }
-    let key = match chord {
+fn logical_label(chord: &str, key: &str) -> String {
+    let key = match key {
         "XF86MonBrightnessUp" => "shell-shortcut-key-brightness-up",
         "XF86MonBrightnessDown" => "shell-shortcut-key-brightness-down",
         "XF86AudioRaiseVolume" => "shell-shortcut-key-volume-up",
@@ -480,7 +568,10 @@ pub fn badge(chord: &str) -> String {
         "XF86AudioPrev" => "shell-previous-track",
         "XF86AudioStop" => "shell-shortcut-key-stop",
         _ => {
-            return from_chord(chord).map_or_else(|| chord.to_owned(), |key| key.localized_label());
+            return from_chord(chord).map_or_else(
+                || key.to_owned(),
+                |shortcut| Shortcut::new(Modifier::NONE, shortcut.key().clone()).localized_label(),
+            );
         }
     };
     tr(key).into()
@@ -552,22 +643,24 @@ pub(crate) fn live_snapshot_lua() -> String {
 pub async fn live_bindings(
     compositor: &crate::compositor::Compositor,
     preferences: &crate::desktop_preferences::CompositorPreferences,
-) -> Result<Vec<Binding>, String> {
-    let snapshot = compositor
-        .request(&["--batch", &live_snapshot_lua()])
-        .await?;
+) -> Result<(Vec<Binding>, KeyLabels), String> {
+    let query = live_snapshot_lua();
+    let args = ["--batch", query.as_str()];
+    let (snapshot, keys) = tokio::join!(compositor.request(&args), KeyLabels::read(compositor),);
+    let snapshot = snapshot?;
     let live: BTreeMap<_, _> = snapshot
         .lines()
         .filter_map(|line| line.split_once('\t'))
         .collect();
-    Ok(bindings(preferences)
+    let bindings = bindings(preferences)
         .into_iter()
         .filter_map(|mut entry| {
             let key = action(&entry.id).map_or(entry.id.as_str(), |action| action.default);
             entry.chord = (*live.get(key)?).into();
             Some(entry)
         })
-        .collect())
+        .collect();
+    Ok((bindings, keys))
 }
 
 #[cfg(test)]
@@ -575,14 +668,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hungarian_shift_slash_keeps_the_number_row_position_and_shift() {
+        use iced::keyboard::{Key, Modifiers, key::Code};
+
+        let chord = capture_chord(
+            &Key::Character("6".into()),
+            iced::keyboard::key::Physical::Code(Code::Digit6),
+            Modifiers::LOGO | Modifiers::SHIFT,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(chord, action("move-6").unwrap().default);
+
+        let keys = KeyLabels::configured("hu", "", "");
+        assert!(overlaps(
+            "SUPER + minus",
+            action("shortcuts").unwrap().default,
+            &keys
+        ));
+        assert!(!overlaps(
+            "SUPER + SHIFT + minus",
+            action("shortcuts").unwrap().default,
+            &keys
+        ));
+        assert!(!overlaps(
+            "SUPER + slash",
+            action("shortcuts").unwrap().default,
+            &keys
+        ));
+    }
+
+    #[test]
     fn shortcut_map_behaviour() {
+        let keys = KeyLabels::configured("us", "", "");
         let mut choices = BTreeMap::new();
         let mut custom = BTreeMap::new();
-        assert!(validate(&choices, &custom).is_ok());
+        assert!(validate(&choices, &custom, &keys, None).is_ok());
         for action in ACTIONS {
-            let key = from_chord(action.default).unwrap();
-            assert_eq!(from_chord(&to_chord(&key).unwrap()), Some(key));
+            assert_eq!(
+                checked_chord(action.default).unwrap().as_deref(),
+                Some(action.default)
+            );
         }
+        choices.insert("search".into(), "SUPER + code:61".into());
+        let conflict = validate(&choices, &custom, &keys, Some("search")).unwrap_err();
+        assert!(conflict.contains(crate::i18n::label(action("shortcuts").unwrap().name)));
+        choices.remove("search");
         choices.insert("lock".into(), "super+J".into());
         custom.insert(
             "custom-a".into(),
@@ -592,13 +723,13 @@ mod tests {
                 target: CustomTarget::Command("printf '%s' 'lá'".into()),
             },
         );
-        assert!(validate(&choices, &custom).is_err());
+        assert!(validate(&choices, &custom, &keys, None).is_err());
         choices.insert("lock".into(), String::new());
-        assert!(validate(&choices, &custom).is_ok());
+        assert!(validate(&choices, &custom, &keys, None).is_ok());
         assert!(lua(&choices, &custom).contains(&lua_string("printf '%s' 'lá'")));
-        choices.insert("window-float".into(), "SUPER + slash".into());
-        preserve_existing_assignments(&mut choices);
+        choices.insert("window-float".into(), "SUPER + code:61".into());
+        preserve_existing_assignments(&mut choices, &custom, &keys);
         assert_eq!(choices["shortcuts"], "");
-        assert!(validate(&choices, &custom).is_ok());
+        assert!(validate(&choices, &custom, &keys, None).is_ok());
     }
 }

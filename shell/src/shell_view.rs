@@ -26,6 +26,13 @@ impl Shell {
         Subscription::batch([
             self.tick_subscription(),
             self.overview_frame_subscription(),
+            if self.shortcut_overlay.window.is_some() {
+                enzui_shell::shortcut_map::key_labels_subscription().map(|keys| {
+                    Message::ShortcutOverlay(crate::shortcut_overlay::Message::KeyLabels(keys))
+                })
+            } else {
+                Subscription::none()
+            },
             if self.control_frames > 0 {
                 iced::event::listen_raw(|event, _, id| match event {
                     iced::Event::Window(window::Event::RedrawRequested(_)) => {

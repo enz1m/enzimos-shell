@@ -2,16 +2,16 @@ use super::{Message as ShellMessage, Shell, window_settings};
 use enzui_shell::{i18n::tr, shortcut_map};
 use enzui_widgets::{
     button::{ButtonKind, enz_button},
+    key_badge::enz_key_badge,
     modal_host::{ModalHostEvent, enz_modal_host, focus_wrap_operation},
     modal_surface::enz_modal_surface,
     scroll_view::enz_scroll_view,
     search_field::enz_search_field,
-    shortcut_list::{ShortcutEntry, enz_shortcut_list},
     text::{TextSize, enz_text},
 };
 use iced::{
-    Element, Length, Size, Task,
-    widget::{Space, column, row},
+    Alignment, Element, Length, Size, Task,
+    widget::{Column, Space, column, row},
     window,
 };
 
@@ -22,17 +22,21 @@ pub(super) struct State {
     revision: u64,
     size: Size,
     bindings: Vec<shortcut_map::Binding>,
+    key_labels: shortcut_map::KeyLabels,
     query: String,
 }
 
 #[derive(Clone, Debug)]
 pub(super) enum Message {
-    Prepared(u64, Result<(Size, Vec<shortcut_map::Binding>), String>),
-    Refreshed(u64, Result<Vec<shortcut_map::Binding>, String>),
+    Prepared(u64, Result<(Size, LiveBindings), String>),
+    Refreshed(u64, Result<LiveBindings, String>),
+    KeyLabels(shortcut_map::KeyLabels),
     Filter(String),
     Settings,
     Host(ModalHostEvent),
 }
+
+type LiveBindings = (Vec<shortcut_map::Binding>, shortcut_map::KeyLabels);
 
 impl Shell {
     pub(super) fn shortcuts_toggle(&mut self) -> Task<ShellMessage> {
@@ -103,7 +107,8 @@ impl Shell {
             Message::Prepared(revision, result) if revision == self.shortcut_overlay.revision => {
                 self.shortcut_overlay.pending = false;
                 match result {
-                    Ok((size, bindings)) => {
+                    Ok((size, (bindings, keys))) => {
+                        self.shortcut_overlay.key_labels = keys;
                         self.shortcut_overlay.size = size;
                         self.shortcut_overlay.bindings = bindings;
                         let (id, open) = window::open(window_settings(
@@ -120,10 +125,15 @@ impl Shell {
                     }
                 }
             }
-            Message::Refreshed(revision, Ok(bindings))
+            Message::Refreshed(revision, Ok((bindings, keys)))
                 if revision == self.shortcut_overlay.revision =>
             {
+                self.shortcut_overlay.key_labels = keys;
                 self.shortcut_overlay.bindings = bindings;
+                Task::none()
+            }
+            Message::KeyLabels(keys) => {
+                self.shortcut_overlay.key_labels = keys;
                 Task::none()
             }
             Message::Filter(query) => {
@@ -142,27 +152,9 @@ impl Shell {
     }
 
     pub(super) fn shortcuts_overlay_view(&self) -> Element<'_, ShellMessage> {
-        let query = self.shortcut_overlay.query.trim().to_lowercase();
-        let entries = self
-            .shortcut_overlay
-            .bindings
-            .iter()
-            .filter_map(|binding| {
-                let badge = shortcut_map::badge(&binding.chord);
-                [&binding.name, &binding.section, &badge]
-                    .iter()
-                    .any(|text| text.to_lowercase().contains(&query))
-                    .then(|| {
-                        ShortcutEntry::new(&binding.section, badge, &binding.name)
-                            .stable_key(&binding.id)
-                    })
-            })
-            .collect::<Vec<_>>();
-        let list: Element<'_, ShellMessage> = if entries.is_empty() {
-            enz_text(tr("shell-shortcuts-no-matches")).into_element()
-        } else {
-            enz_shortcut_list(entries).into_element()
-        };
+        let size = self.shortcut_overlay.size;
+        let width = (size.width - 32.0).clamp(1.0, 1440.0);
+        let list = self.shortcut_overlay.groups(width - 48.0);
         let label = tr("shell-keyboard-shortcuts");
         let search = enz_search_field(&self.shortcut_overlay.query, |query| {
             ShellMessage::ShortcutOverlay(Message::Filter(query))
@@ -184,10 +176,9 @@ impl Shell {
             row![Space::new().width(Length::Fill), settings],
         ]
         .spacing(16);
-        let size = self.shortcut_overlay.size;
         let surface = enz_modal_surface(content.into())
-            .width((size.width - 32.0).clamp(1.0, 640.0))
-            .height((size.height - 48.0).clamp(1.0, 680.0))
+            .width(width)
+            .height((size.height - 48.0).clamp(1.0, 880.0))
             .padding(24.0)
             .on_dismiss(|| {
                 ShellMessage::ShortcutOverlay(Message::Host(ModalHostEvent::Dismissed(
@@ -202,5 +193,97 @@ impl Shell {
         )
         .label(label)
         .into_element()
+    }
+}
+
+impl State {
+    fn groups(&self, width: f32) -> Element<'_, ShellMessage> {
+        const GAP: f32 = 24.0;
+        let columns = if width >= 3.0 * 325.0 + 2.0 * GAP {
+            3
+        } else if width >= 2.0 * 325.0 + GAP {
+            2
+        } else {
+            1
+        };
+        let query = self.query.trim().to_lowercase();
+        let mut groups = Vec::new();
+        for bindings in self.bindings.chunk_by(|a, b| a.section == b.section) {
+            let section = &bindings[0].section;
+            let matches_section = section.to_lowercase().contains(&query);
+            let entries = bindings
+                .iter()
+                .filter_map(|binding| {
+                    let caps = self.key_labels.caps(&binding.chord);
+                    (matches_section
+                        || binding.name.to_lowercase().contains(&query)
+                        || caps.join("+").to_lowercase().contains(&query)
+                        || caps.join(" + ").to_lowercase().contains(&query))
+                    .then_some((binding, caps))
+                })
+                .collect::<Vec<_>>();
+            if !entries.is_empty() {
+                groups.push((section, entries));
+            }
+        }
+        if groups.is_empty() {
+            return enz_text(tr("shell-shortcuts-no-matches")).into_element();
+        }
+
+        let mut placement: Vec<_> = (0..groups.len()).collect();
+        if columns > 1 {
+            placement.sort_by_key(|&index| std::cmp::Reverse(groups[index].1.len()));
+        }
+        let mut assigned = vec![Vec::new(); columns];
+        let mut heights = vec![0; columns];
+        for index in placement {
+            let column = (0..columns)
+                .min_by_key(|&column| heights[column])
+                .unwrap_or(0);
+            assigned[column].push(index);
+            heights[column] += groups[index].1.len() + 2;
+        }
+        for column in &mut assigned {
+            column.sort_unstable();
+        }
+        assigned.sort_by_key(|column| column.first().copied().unwrap_or(usize::MAX));
+
+        row(assigned.into_iter().map(|column| {
+            Column::with_children(column.into_iter().map(|index| {
+                let (section, entries) = &groups[index];
+                let heading = enz_text(section.as_str())
+                    .size(TextSize::Footnote)
+                    .weight_rung(enzui_theme::WeightRung::Semibold)
+                    .into_element();
+                let rows = entries.iter().map(|(binding, keys)| {
+                    let caps = row(keys.iter().map(|key| {
+                        enz_key_badge(key.clone())
+                            .height(20.0)
+                            .padding(5.0)
+                            .into_element()
+                    }))
+                    .spacing(3);
+                    row![
+                        enz_text(binding.name.as_str())
+                            .size(TextSize::Footnote)
+                            .width(Length::Fill)
+                            .into_element(),
+                        caps,
+                    ]
+                    .align_y(Alignment::Center)
+                    .spacing(6)
+                    .into()
+                });
+                Column::with_children(std::iter::once(heading).chain(rows))
+                    .spacing(2)
+                    .into()
+            }))
+            .width(Length::FillPortion(1))
+            .spacing(12)
+            .into()
+        }))
+        .width(Length::Fill)
+        .spacing(GAP)
+        .into()
     }
 }

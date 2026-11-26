@@ -127,7 +127,7 @@ end
 function enzui_install_workspace_keys()
     if enzui_workspace_keys_version==3 then return end
     for index=1,9 do
-        local key="SUPER + "..index
+        local key="SUPER + code:" .. (index + 9)
         hl.unbind(key)
         hl.bind(key,function()
             local workspace=hl.get_active_workspace()

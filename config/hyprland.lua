@@ -121,7 +121,7 @@ hl.bind(mod .. " + T", open_terminal)
 -- Super+Alt+S starts or stops the Orca screen reader, also while locked.
 hl.bind(mod .. " + ALT + S", hl.dsp.exec_cmd('pkill -u "$(id -u)" -x orca || exec orca --replace'), { locked = true })
 for i = 1, 9 do
-    hl.bind(mod .. " + " .. i, hl.dsp.focus({ workspace = i }))
+    hl.bind(mod .. " + code:" .. (i + 9), hl.dsp.focus({ workspace = i }))
 end
 dofile(directory .. "/panel-policy.lua")
 dofile(directory .. "/shell-keys.lua")

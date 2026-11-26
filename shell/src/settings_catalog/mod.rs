@@ -12,10 +12,14 @@ pub struct Entry {
     title_key: &'static str,
     section_key: &'static str,
     keywords_key: &'static str,
+    shortcut: Option<&'static crate::shortcut_map::Action>,
 }
 impl Entry {
     pub fn title(self) -> &'static str {
-        tr(self.title_key)
+        self.shortcut.map_or_else(
+            || tr(self.title_key),
+            |action| crate::i18n::label(action.name),
+        )
     }
     pub fn section(self) -> &'static str {
         tr(self.section_key)
@@ -23,7 +27,10 @@ impl Entry {
     fn english_search_text(self) -> String {
         format!(
             "{} {} {}",
-            crate::i18n::english(self.title_key),
+            self.shortcut.map_or_else(
+                || crate::i18n::english(self.title_key),
+                |action| action.name
+            ),
             crate::i18n::english(self.section_key),
             crate::i18n::english(self.keywords_key)
         )
@@ -247,8 +254,22 @@ pub fn icon(route: &str) -> Option<&'static str> {
         _ => return None,
     })
 }
+fn all_entries() -> impl Iterator<Item = Entry> {
+    ENTRIES
+        .iter()
+        .copied()
+        .chain(crate::shortcut_map::ACTIONS.iter().map(|action| Entry {
+            category: Category::Keyboard,
+            route: action.route,
+            title_key: "",
+            section_key: "shell-keyboard-shortcuts",
+            keywords_key: "shell-shortcuts",
+            shortcut: Some(action),
+        }))
+}
+
 pub fn find(route: &str) -> Option<Entry> {
-    ENTRIES.iter().find(|entry| entry.route == route).copied()
+    all_entries().find(|entry| entry.route == route)
 }
 pub fn valid_route(route: &str) -> bool {
     category(route).is_some() || find(route).is_some()
@@ -259,8 +280,7 @@ pub fn search(query: &str) -> Vec<Entry> {
         return Vec::new();
     }
     let words: Vec<_> = query.split_whitespace().collect();
-    let mut found: Vec<_> = ENTRIES
-        .iter()
+    let mut found: Vec<_> = all_entries()
         .filter(|entry| {
             let text = enzui_core::palette::normalize(&format!(
                 "{} {} {} {} {}",
@@ -272,11 +292,11 @@ pub fn search(query: &str) -> Vec<Entry> {
             ));
             words.iter().all(|word| text.contains(word))
         })
-        .copied()
         .collect();
     found.sort_by_key(|entry| {
         (
             !enzui_core::palette::normalize(entry.title()).starts_with(&query),
+            entry.shortcut.is_some(),
             entry.title(),
         )
     });

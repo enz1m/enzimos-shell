@@ -70,7 +70,7 @@ fn settings_behaviour() {
         let store = Store::at(temp.path().join("settings.json")).unwrap();
         std::fs::write(
             store.path(),
-            r#"{"quick_search":{"shortcut":"alt_space","future":42},"compositor":{"shortcuts":{"lock":"SUPER + slash"}}}"#,
+            r#"{"quick_search":{"shortcut":"alt_space","future":42},"compositor":{"keyboard_layouts":"us","shortcuts":{"lock":"SUPER + slash"}}}"#,
         ).unwrap();
         let loaded = store.load().unwrap();
         assert_eq!(loaded.compositor.shortcuts["search"], "ALT + SPACE");

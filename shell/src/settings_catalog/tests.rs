@@ -33,3 +33,21 @@ fn launch_requests_resolve_routes_pages_and_gated_categories() {
         Category::Appearance
     );
 }
+
+#[test]
+fn shortcut_search_targets_the_reference_and_individual_settings_rows() {
+    let generic = search("shortcut");
+    assert!(
+        generic
+            .iter()
+            .any(|entry| entry.route == "keyboard/shortcut-reference")
+    );
+    assert!(
+        generic
+            .iter()
+            .any(|entry| entry.route == "windows/layout_switch")
+    );
+    let action = &search("shortcut move window to desktop 6")[0];
+    assert_eq!(action.route, "keyboard/shortcut-move-6");
+    assert_eq!(find(action.route).unwrap().widget_id(), action.widget_id());
+}

@@ -61,7 +61,7 @@ if enzui_panel_policy_installed ~= 17 then
     bind("SUPER + F", focused(hl.dsp.window.fullscreen()))
     bind("SUPER + M", focused(hl.dsp.window.fullscreen({mode="maximized"})))
     for i=1,9 do
-        bind("SUPER + SHIFT + " .. i, focused(function()
+        bind("SUPER + SHIFT + code:" .. (i + 9), focused(function()
             local window=hl.get_active_window()
             local id=i
             if enzui_workspace_id_at then

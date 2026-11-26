@@ -10,6 +10,7 @@ macro_rules! entry {
             title_key: $title,
             section_key: $section,
             keywords_key: $keywords,
+            shortcut: None,
         }
     };
 }
@@ -1372,6 +1373,13 @@ pub static ENTRIES: &[Entry] = &[
         "shell-keyboard-shortcuts",
         "shell-shortcuts",
         "shell-shortcuts-keys-hotkeys-keybindings-rebind-change-close-lock-screenshot-deskt"
+    ),
+    entry!(
+        Keyboard,
+        "keyboard/shortcut-reference",
+        "shell-shortcuts-reference",
+        "shell-keyboard-shortcuts",
+        "shell-show-keyboard-shortcuts"
     ),
     entry!(
         Keyboard,

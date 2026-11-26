@@ -332,7 +332,12 @@ impl CompositorPreferences {
                 .map_err(|_| tr("shell-invalid-compositor-preferences"))?,
             None => Self::default(),
         };
-        crate::shortcut_map::preserve_existing_assignments(&mut result.shortcuts);
+        let keys = result.shortcut_keys();
+        crate::shortcut_map::preserve_existing_assignments(
+            &mut result.shortcuts,
+            &result.custom_shortcuts,
+            &keys,
+        );
         result.validate()?;
         Ok(result)
     }
@@ -441,6 +446,10 @@ impl CompositorPreferences {
         self.keyboard_layouts = unique.join(",");
         Ok(())
     }
+    fn shortcut_keys(&self) -> crate::shortcut_map::KeyLabels {
+        let (layout, variant, options) = keyboard(self, &system_keyboard());
+        crate::shortcut_map::KeyLabels::configured(&layout, &variant, &options)
+    }
     pub fn validate(&self) -> Result<(), String> {
         for key in OptionKey::ALL {
             let (min, max) = key.bounds();
@@ -466,7 +475,12 @@ impl CompositorPreferences {
         {
             return Err(tr("shell-invalid-colour-modes").into());
         }
-        crate::shortcut_map::validate(&self.shortcuts, &self.custom_shortcuts)
+        crate::shortcut_map::validate(
+            &self.shortcuts,
+            &self.custom_shortcuts,
+            &self.shortcut_keys(),
+            None,
+        )
     }
 
     pub(crate) fn shortcuts_from_account(value: &serde_json::Value) -> Result<Self, String> {
@@ -507,7 +521,12 @@ impl CompositorPreferences {
                 }
             }
         }
-        crate::shortcut_map::validate(&choices, &self.custom_shortcuts)?;
+        crate::shortcut_map::validate(
+            &choices,
+            &self.custom_shortcuts,
+            &self.shortcut_keys(),
+            Some(id),
+        )?;
         self.shortcuts = choices;
         Ok(())
     }
@@ -524,7 +543,7 @@ impl CompositorPreferences {
         } else {
             custom.remove(id);
         }
-        crate::shortcut_map::validate(&self.shortcuts, &custom)?;
+        crate::shortcut_map::validate(&self.shortcuts, &custom, &self.shortcut_keys(), Some(id))?;
         self.custom_shortcuts = custom;
         Ok(())
     }

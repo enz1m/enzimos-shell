@@ -24,6 +24,7 @@ const TARGET_MENU: &str = "custom-shortcut-target";
 #[derive(Default)]
 pub(super) struct State {
     armed: Option<String>,
+    key_labels: shortcut_map::KeyLabels,
     modifiers: Modifiers,
     recording: bool,
     switching: bool,
@@ -36,6 +37,8 @@ pub(super) struct State {
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Capture(String, KeyCapture),
+    Captured(Result<String, String>),
+    KeyLabels(shortcut_map::KeyLabels),
     Modifiers(Modifiers),
     Recording(bool, Result<(), String>),
     Timeout(u64),
@@ -81,6 +84,14 @@ impl SettingsApp {
             return Subscription::none();
         }
         iced::event::listen_raw(|event_data, _, _| match event_data {
+            iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key,
+                physical_key,
+                modifiers,
+                repeat: false,
+                ..
+            }) => shortcut_map::capture_chord(&key, physical_key, modifiers)
+                .map(|chord| event(Message::Captured(chord))),
             iced::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers)) => {
                 Some(event(Message::Modifiers(modifiers)))
             }
@@ -156,21 +167,31 @@ impl SettingsApp {
                     ),
                 ])
             }
-            Message::Capture(id, capture) if self.shortcuts.armed.as_ref() == Some(&id) => {
+            Message::KeyLabels(labels) => {
+                self.shortcuts.key_labels = labels;
+                Task::none()
+            }
+            Message::Capture(id, KeyCapture::Cleared)
+                if self.shortcuts.armed.as_ref() == Some(&id) =>
+            {
+                self.shortcuts_message(Message::Captured(Ok(String::new())))
+            }
+            Message::Capture(id, KeyCapture::Cancelled)
+                if self.shortcuts.armed.as_ref() == Some(&id) =>
+            {
+                self.cancel_shortcut_capture()
+            }
+            Message::Captured(chord) => {
+                let Some(id) = self.shortcuts.armed.take() else {
+                    return Task::none();
+                };
                 let resume = self.cancel_shortcut_capture();
-                let chord = match capture {
-                    KeyCapture::Cleared => String::new(),
-                    KeyCapture::Candidate(key) => match shortcut_map::validity(&key) {
-                        enzui_core::ShortcutValidity::Valid => {
-                            shortcut_map::to_chord(&key).unwrap_or_default()
-                        }
-                        enzui_core::ShortcutValidity::Invalid(reason)
-                        | enzui_core::ShortcutValidity::Reserved(reason) => {
-                            self.shortcuts.feedback = Some((id, reason));
-                            return resume;
-                        }
-                    },
-                    KeyCapture::Cancelled | KeyCapture::Started => return resume,
+                let chord = match chord {
+                    Ok(chord) => chord,
+                    Err(reason) => {
+                        self.shortcuts.feedback = Some((id, reason));
+                        return resume;
+                    }
                 };
                 if id == DRAFT {
                     if let Some((id, draft)) = &mut self.shortcuts.draft {
@@ -326,18 +347,10 @@ impl SettingsApp {
     fn shortcut_chip(&self, id: &str, name: &str, chord: &str) -> Element<'static, ParentMessage> {
         let armed = self.shortcuts.armed.as_deref() == Some(id);
         let prompt = if armed {
-            let modifiers = self.shortcuts.modifiers;
-            [
-                (Modifiers::LOGO, "Super"),
-                (Modifiers::CTRL, "Ctrl"),
-                (Modifiers::ALT, "Alt"),
-                (Modifiers::SHIFT, tr("shell-shortcuts-shift")),
-            ]
-            .into_iter()
-            .filter_map(|(flag, label)| modifiers.contains(flag).then_some(label))
-            .chain([tr("shell-shortcuts-press-keys")])
-            .collect::<Vec<_>>()
-            .join(" + ")
+            shortcut_map::modifier_labels(enzui_core::Modifier::from_iced(self.shortcuts.modifiers))
+                .chain([tr("shell-shortcuts-press-keys").to_owned()])
+                .collect::<Vec<_>>()
+                .join(" + ")
         } else {
             String::new()
         };
@@ -348,7 +361,7 @@ impl SettingsApp {
         .id(format!("capture-{id}").into())
         .armed(armed)
         .capture_hint(prompt)
-        .empty_hint(shortcut_map::badge(chord))
+        .empty_hint(self.shortcuts.key_labels.badge(chord))
         .invalid(
             self.shortcuts
                 .feedback
@@ -468,6 +481,7 @@ impl SettingsApp {
                 ))
                 .into_element(),
         );
+        let reference = self.mark_setting("keyboard/shortcut-reference", reference);
         let mut groups = column![self.mark_setting("keyboard/shortcuts", reference)].spacing(20);
         let mut custom = column![
             settings_row(tr("shell-shortcuts-custom"))
@@ -485,7 +499,7 @@ impl SettingsApp {
         }
         for (id, shortcut) in &preferences.custom_shortcuts {
             let controls = row![
-                enz_text(shortcut_map::badge(&shortcut.chord))
+                enz_text(self.shortcuts.key_labels.badge(&shortcut.chord))
                     .size(TextSize::Footnote)
                     .into_element(),
                 button(
@@ -577,7 +591,10 @@ impl SettingsApp {
                         live,
                     ));
                 }
-                rows = rows.push(settings_row(name).control(controls).into_element());
+                rows = rows.push(self.mark_setting(
+                    action.route,
+                    settings_row(name).control(controls).into_element(),
+                ));
                 if let Some(error) = self.shortcut_feedback(action.id) {
                     rows = rows.push(container(error).padding([2, 12]));
                 }

@@ -1186,6 +1186,51 @@ esac"#,
         }
     }
 
+    #[tokio::test]
+    async fn adding_a_printer_refuses_to_replace_a_print_queue() {
+        let root = tempfile::tempdir().unwrap();
+        let settings = fixture(root.path());
+        let request = Request::PrinterAdd(Discovered {
+            name: "Office Printer".into(),
+            uri: "ipp://second.local/ipp/print".into(),
+            unsupported: false,
+            driver: None,
+        });
+
+        script(
+            root.path(),
+            "lpstat",
+            "echo 'office_printer not accepting requests'",
+        );
+        assert_eq!(
+            settings.apply(&request).await.unwrap_err(),
+            tr("shell-that-print-queue-already-exists")
+        );
+        assert!(!settings.check_new_printer_queue("Warehouse").await.unwrap());
+
+        script(
+            root.path(),
+            "lpstat",
+            "echo 'lpstat: No destinations added.' >&2; exit 1",
+        );
+        assert!(
+            settings
+                .check_new_printer_queue("Office_Printer")
+                .await
+                .unwrap()
+        );
+
+        script(
+            root.path(),
+            "lpstat",
+            "echo 'lpstat: Connection refused' >&2; exit 1",
+        );
+        assert_eq!(
+            settings.apply(&request).await.unwrap_err(),
+            tr("shell-could-not-check-existing-print-queues")
+        );
+    }
+
     fn fixture(root: &std::path::Path) -> SystemSettings {
         SystemSettings {
             controls: SystemControls::fixture(root),

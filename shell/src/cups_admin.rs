@@ -92,12 +92,7 @@ fn explain(error: &str) -> String {
     }
 }
 
-/// Adds a driverless (IPP Everywhere) queue for `uri`.
-pub async fn add(queue: &str, uri: &str, description: &str) -> Result<(), String> {
-    add_with_driver(queue, uri, "everywhere", description).await
-}
-
-/// Add a queue that prints through `driver` (a name from `lpinfo -m`).
+/// Adds a queue using IPP Everywhere or a driver name from `lpinfo -m`.
 pub async fn add_with_driver(
     queue: &str,
     uri: &str,

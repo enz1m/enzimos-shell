@@ -763,42 +763,7 @@ impl SystemSettings {
                 }
                 self.tool("bluetoothctl", &["remove", address], 10).await
             }
-            Request::PrinterAdd(printer) if printer.driver.is_some() => {
-                let Some((driver, _)) = &printer.driver else {
-                    return Err(tr("shell-printer-no-driver").into());
-                };
-                if !crate::cups_admin::valid_device_uri(&printer.uri) {
-                    return Err(tr("shell-printer-no-driver").into());
-                }
-                let name = crate::cups_admin::display_name(&printer.name)
-                    .ok_or_else(|| tr("shell-that-printer-has-no-usable-name"))?;
-                let queue = printer_queue_name(&name);
-                let first = self.printers().await.printers.is_empty();
-                crate::cups_admin::add_with_driver(&queue, &printer.uri, driver, &name).await?;
-                if first {
-                    let _ = self.tool("lpoptions", &["-d", &queue], 10).await;
-                }
-                Ok(())
-            }
-            Request::PrinterAdd(printer) => {
-                if !crate::cups_admin::valid_uri(&printer.uri) {
-                    return Err(
-                        tr("shell-only-network-printers-that-support-ipp-can-be-added").into(),
-                    );
-                }
-                let name = crate::cups_admin::display_name(&printer.name)
-                    .ok_or_else(|| tr("shell-that-printer-has-no-usable-name"))?;
-                let queue = printer_queue_name(&name);
-                let first = self.printers().await.printers.is_empty();
-                // IPP Everywhere: the printer describes itself, no driver
-                // needed; polkit decides whether an administrator must approve.
-                crate::cups_admin::add(&queue, &printer.uri, &name).await?;
-                if first {
-                    // This account's default; changing it needs nobody else.
-                    let _ = self.tool("lpoptions", &["-d", &queue], 10).await;
-                }
-                Ok(())
-            }
+            Request::PrinterAdd(printer) => self.add_printer(printer).await,
             Request::PrinterRemove(name) => {
                 self.known_printer(name).await?;
                 crate::cups_admin::remove(name).await
@@ -853,6 +818,56 @@ impl SystemSettings {
             }
         }
     }
+    async fn add_printer(&self, printer: &Discovered) -> Result<(), String> {
+        let driver = match &printer.driver {
+            Some((driver, _)) if crate::cups_admin::valid_device_uri(&printer.uri) => driver,
+            Some(_) => return Err(tr("shell-printer-no-driver").into()),
+            None if crate::cups_admin::valid_uri(&printer.uri) => "everywhere",
+            None => {
+                return Err(tr("shell-only-network-printers-that-support-ipp-can-be-added").into());
+            }
+        };
+        let name = crate::cups_admin::display_name(&printer.name)
+            .ok_or_else(|| tr("shell-that-printer-has-no-usable-name"))?;
+        let queue = printer_queue_name(&name);
+        static ADD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let _adding = ADD.lock().await;
+        let first = self.check_new_printer_queue(&queue).await?;
+        crate::cups_admin::add_with_driver(&queue, &printer.uri, driver, &name).await?;
+        if first {
+            let _ = self.tool("lpoptions", &["-d", &queue], 10).await;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn check_new_printer_queue(&self, queue: &str) -> Result<bool, String> {
+        let result = self
+            .controls
+            .run_with(
+                "lpstat",
+                &["-h", "/run/cups/cups.sock", "-a"],
+                None,
+                Duration::from_secs(5),
+            )
+            .await;
+        let listing = match result {
+            Ok(listing) => listing,
+            Err(Failure::Rejected(line)) if line == "lpstat: No destinations added." => {
+                return Ok(true);
+            }
+            Err(_) => return Err(tr("shell-could-not-check-existing-print-queues").into()),
+        };
+        // CUPS adds or modifies a destination and compares queue names case-insensitively.
+        if listing
+            .lines()
+            .filter_map(|line| line.split_whitespace().next())
+            .any(|name| name.eq_ignore_ascii_case(queue))
+        {
+            return Err(tr("shell-that-print-queue-already-exists").into());
+        }
+        Ok(listing.trim().is_empty())
+    }
+
     /// Adds a VPN profile through NetworkManager's settings service on the
     /// system bus. Its group or pre-shared secret goes in the same call:
     /// given to `nmcli` it would sit on the command line, which every account

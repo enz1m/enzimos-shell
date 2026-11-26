@@ -845,6 +845,7 @@ shell-this-desktop = Este escritorio
 shell-lock-desktop = Bloquear el escritorio
 shell-power-options = Opciones de energía
 shell-not-active-or-unavailable = No activa o no disponible
+shell-gamemode-service-unavailable = El servicio de GameMode no está disponible
 shell-desktop-request-click-to-release = Solicitud de escritorio · haga clic para liberar
 shell-off-click-to-request = Desactivar · hacer clic para solicitar
 shell-not-available = No disponible

@@ -21,19 +21,6 @@ pub enum QuickAction {
     Phone,
 }
 impl QuickAction {
-    /// Shown until the user chooses; the controls added later start hidden.
-    /// Lock and Power are left out: the panel's header always has both.
-    pub const DEFAULT: [Self; 9] = [
-        Self::Network,
-        Self::Bluetooth,
-        Self::Phone,
-        Self::Appearance,
-        Self::Tiling,
-        Self::Volume,
-        Self::Brightness,
-        Self::Dnd,
-        Self::Screenshot,
-    ];
     pub const ALL: [Self; 17] = [
         Self::Network,
         Self::Bluetooth,

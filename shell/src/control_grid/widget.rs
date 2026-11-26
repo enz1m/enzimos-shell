@@ -3,7 +3,7 @@ use super::{
     model::{DetailPhase, Drag, Edit, State, edit_bounds, resize_handle, resize_hit},
 };
 use crate::{
-    control_layout::{Placement, Shape, closest_slot},
+    control_layout::{Placement, closest_slot},
     settings::QuickAction,
 };
 use iced::advanced::{
@@ -374,11 +374,13 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Grid<'_, Message>
                 drag.started |= point.distance(drag.start) >= 6.0;
                 if drag.started {
                     if drag.resize {
-                        let width = drag.initial.width + point.x - drag.start.x;
-                        drag.preview.set_shape(
+                        let shape = self.model.shape_after_resize(
                             drag.action,
-                            Shape::nearest(width, bounds.width, self.height),
+                            point.x - drag.start.x,
+                            bounds.width,
+                            self.height,
                         );
+                        drag.preview.set_shape(drag.action, shape);
                     } else if let Some(slot) = closest_slot(&drag.slots, point - drag.offset) {
                         drag.preview = (*self.model).clone();
                         drag.preview.move_before(drag.action, slot.before);

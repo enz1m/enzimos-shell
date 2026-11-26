@@ -93,10 +93,7 @@ impl SystemSnapshot {
             QuickAction::Lock => self.lock,
             QuickAction::Power => self.power,
             QuickAction::PowerMode => self.power_mode.is_some(),
-            QuickAction::GameMode => self
-                .platform
-                .as_ref()
-                .is_none_or(|platform| platform.offers(crate::platform::Feature::GameMode)),
+            QuickAction::GameMode => self.game_mode.is_some(),
             QuickAction::Drives => self.drives.is_some(),
             QuickAction::Appearance
             | QuickAction::Tiling

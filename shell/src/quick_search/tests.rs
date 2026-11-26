@@ -160,12 +160,6 @@ fn quick_search_behaviour() {
         let _ = shell.search_trigger();
         assert!(shell.search.showing, "the next click did not open Search");
     }
-    // Quick search lists only the Settings pages this computer shows, and the
-    // Game mode tile follows GameMode: off enzimOS without NetworkManager or
-    // GameMode those are not offered; on enzimOS everything is.
-    //
-    // Sabotage: drop the `shows` filter on the categories or on the catalog
-    // entries in `search_commands`, or make the Game mode tile always available.
     {
         use enzui_shell::platform::Platform;
         use enzui_shell::settings::QuickAction;
@@ -204,6 +198,11 @@ fn quick_search_behaviour() {
         ] {
             assert!(enzimos.iter().any(|id| id == shown), "{shown}");
         }
+        assert!(!shell.system.available(QuickAction::GameMode));
+        shell.system.game_mode = Some(enzui_shell::game_mode::Status {
+            clients: 0,
+            requested: false,
+        });
         assert!(shell.system.available(QuickAction::GameMode));
     }
 }

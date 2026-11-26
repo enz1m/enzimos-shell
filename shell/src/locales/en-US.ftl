@@ -791,6 +791,7 @@ shell-this-desktop = This desktop
 shell-lock-desktop = Lock desktop
 shell-power-options = Power options
 shell-not-active-or-unavailable = Not active or unavailable
+shell-gamemode-service-unavailable = The GameMode service is unavailable
 shell-desktop-request-click-to-release = Desktop request · click to release
 shell-off-click-to-request = Off · click to request
 shell-not-available = Not available

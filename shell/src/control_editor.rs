@@ -252,7 +252,7 @@ impl SettingsApp {
                 items.push((action, disclosure, self.mark_control_anchor(route, tile)));
             } else {
                 let available = system.available(action);
-                let detail = Info::read(action, &self.settings, system, false, true).detail;
+                let info = Info::read(action, &self.settings, system, false, true);
                 let design: Element<'_, Parent> = if action == QuickAction::Bluetooth {
                     enz_toolbar_icon("eye", Parent::Controls(Message::Details(Some(action))))
                         .id("control-bluetooth-design".into())
@@ -263,14 +263,13 @@ impl SettingsApp {
                 } else {
                     space().width(0).into()
                 };
-                // An unavailable control reads as inactive throughout: a
-                // disabled row with its reason instead of a button.
-                let icon = Info::read(action, &self.settings, system, false, true).icon;
                 let mut entry = crate::settings_app::settings_row(action.label())
-                    .icon(icon)
-                    // Hidden rows sit under their own heading; only an
-                    // unavailable one needs to say why.
-                    .subtitle(if available { String::new() } else { detail })
+                    .icon(info.icon)
+                    .subtitle(if available {
+                        String::new()
+                    } else {
+                        info.detail
+                    })
                     .enabled(available && !self.closing);
                 entry = if available {
                     entry.control(

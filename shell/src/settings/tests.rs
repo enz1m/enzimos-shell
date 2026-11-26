@@ -116,8 +116,50 @@ fn settings_behaviour() {
             }
         );
     }
-    // The control panel's header always has Lock and Power, so the default
-    // tiles do not repeat them; they stay available to add.
+    {
+        use QuickAction::*;
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::at(temp.path().join("settings.json")).unwrap();
+        std::fs::write(
+            store.path(),
+            r#"{"control_center_layout":{"version":1,"columns":6,
+                "order":["network","bluetooth","appearance","phone","tiling","volume","brightness",
+                         "dnd","screenshot","lock","power","night_light","power_mode","keyboard",
+                         "drives","game_mode","dictation"]}}"#,
+        )
+        .unwrap();
+        let selected = |settings: &Settings| {
+            settings
+                .controls
+                .order()
+                .iter()
+                .copied()
+                .filter(|&action| settings.shows(action))
+                .collect::<Vec<_>>()
+        };
+        let defaults = store.load().unwrap();
+        assert_eq!(
+            selected(&defaults),
+            [
+                Network, Bluetooth, Appearance, Phone, Tiling, Volume, Brightness, Dnd, Screenshot,
+                NightLight, PowerMode, Keyboard, Drives, GameMode, Dictation,
+            ]
+        );
+        store
+            .update(Change::QuickAction(NightLight, false))
+            .unwrap();
+        let saved = store.load().unwrap();
+        assert_eq!(saved.controls, defaults.controls);
+        assert_eq!(
+            selected(&saved),
+            selected(&defaults)
+                .into_iter()
+                .filter(|&action| action != NightLight)
+                .collect::<Vec<_>>()
+        );
+        std::fs::write(store.path(), r#"{"quick_actions":["network"]}"#).unwrap();
+        assert_eq!(selected(&store.load().unwrap()), [Network]);
+    }
     {
         use crate::font_settings::{FontChange, Fonts, Slot, Weight, migrate_legacy};
         use enzui_core::theme_file::{ThemeDocument, ThemePaths};

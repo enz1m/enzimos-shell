@@ -73,26 +73,6 @@ impl Shape {
             Self::Wide => columns,
         }
     }
-    pub fn nearest(width: f32, available: f32, height: f32) -> Self {
-        let count = columns(available, height);
-        let cell = ((available + GAP) / count as f32 - GAP).max(height.min(available));
-        Self::ALL
-            .into_iter()
-            .min_by(|a, b| {
-                let distance = |shape: Self| {
-                    let snapped = if shape == Self::Wide {
-                        available
-                    } else if shape == Self::Compact {
-                        height.min(available)
-                    } else {
-                        shape.span(count) as f32 * (cell + GAP) - GAP
-                    };
-                    (width - snapped).abs()
-                };
-                distance(*a).total_cmp(&distance(*b))
-            })
-            .unwrap_or_default()
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -348,6 +328,35 @@ impl Layout {
         );
         Ok(())
     }
+    fn grid_metrics(&self, width: f32, height: f32) -> (usize, f32) {
+        let columns = columns(width, height).min(self.columns as usize);
+        let cell = ((width + GAP) / columns as f32 - GAP).max(height.min(width));
+        (columns, cell)
+    }
+
+    pub fn shape_after_resize(
+        &self,
+        action: QuickAction,
+        delta: f32,
+        width: f32,
+        height: f32,
+    ) -> Shape {
+        let (columns, cell) = self.grid_metrics(width, height);
+        let original = self.shape(action);
+        // Row stretching changes the handle's starting position without changing its saved span.
+        let target = original.span(columns) as f32 * (cell + GAP) + delta;
+        Shape::ALL
+            .into_iter()
+            .min_by(|a, b| {
+                let distance =
+                    |shape: Shape| (target - shape.span(columns) as f32 * (cell + GAP)).abs();
+                distance(*a)
+                    .total_cmp(&distance(*b))
+                    .then((*a != original).cmp(&(*b != original)))
+            })
+            .unwrap_or(original)
+    }
+
     /// Packs visible controls in logical pixels; hidden controls retain their saved order and size.
     pub fn placements(
         &self,
@@ -392,10 +401,7 @@ impl Layout {
         if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
             return Vec::new();
         }
-        let columns = columns(width, height).min(self.columns as usize);
-        // Cells share the whole width, so they are wider than they are tall.
-        let cell = ((width + GAP) / columns as f32 - GAP).max(height.min(width));
-        let inset = ((width - columns as f32 * cell - (columns - 1) as f32 * GAP) * 0.5).max(0.0);
+        let (columns, cell) = self.grid_metrics(width, height);
         let mut used = 0;
         let mut row = 0;
         let mut placements = Vec::new();
@@ -413,27 +419,39 @@ impl Layout {
                 row += 1;
                 used = 0;
             }
-            let tile_width = resized.unwrap_or_else(|| {
-                if self.shape(action) == Shape::Wide {
-                    width
-                } else {
-                    span as f32 * cell + (span - 1) as f32 * GAP
-                }
-            });
+            let tile_width =
+                resized.unwrap_or_else(|| span as f32 * cell + (span - 1) as f32 * GAP);
             placements.push(Placement {
                 action,
                 bounds: Rectangle {
-                    x: if self.shape(action) == Shape::Wide {
-                        0.0
-                    } else {
-                        (inset + used as f32 * (cell + GAP)).min((width - tile_width).max(0.0))
-                    },
+                    x: 0.0,
                     y: row as f32 * (height + GAP),
                     width: tile_width,
                     height: height.min(tile_width),
                 },
             });
             used += span;
+        }
+        let stretchable = |action| {
+            self.shape(action) != Shape::Compact && !resizing.is_some_and(|(key, _)| key == action)
+        };
+        for row in placements.chunk_by_mut(|a, b| a.bounds.y == b.bounds.y) {
+            let used = row.iter().map(|tile| tile.bounds.width).sum::<f32>()
+                + (row.len() - 1) as f32 * GAP;
+            let spare = (width - used).max(0.0);
+            let stretch_count = row.iter().filter(|tile| stretchable(tile.action)).count();
+            let (mut x, extra) = if stretch_count == 0 {
+                (spare * 0.5, 0.0)
+            } else {
+                (0.0, spare / stretch_count as f32)
+            };
+            for tile in row {
+                tile.bounds.x = x;
+                if stretchable(tile.action) {
+                    tile.bounds.width += extra;
+                }
+                x += tile.bounds.width + GAP;
+            }
         }
         placements
     }
@@ -461,6 +479,44 @@ mod tests {
             layout.write_json(&mut value).unwrap();
             assert_eq!(Layout::from_json(Some(&value)).unwrap(), layout);
             assert_eq!(value["peer"], json!({"future":true}));
+        }
+        {
+            use QuickAction::*;
+            let mut layout = Layout::default();
+            layout.move_before(Phone, Some(Tiling));
+            let width = grid_width(13.0);
+            let height = row_height(13.0);
+            let visible = [
+                Appearance, Phone, Tiling, Volume, Dnd, Screenshot, NightLight,
+            ];
+            let placed = layout.placements(width, height, |action| visible.contains(&action));
+            assert_eq!(
+                placed.iter().map(|tile| tile.action).collect::<Vec<_>>(),
+                visible
+            );
+            let [appearance, phone, tiling, volume, dnd, _, night_light] = placed.as_slice() else {
+                panic!("missing a selected control");
+            };
+            let right = |p: &Placement| p.bounds.x + p.bounds.width;
+            assert_eq!(appearance.bounds.y, tiling.bounds.y);
+            assert!((right(tiling) - width).abs() < 0.001);
+            assert!(phone.bounds.width < appearance.bounds.width);
+            assert!(volume.bounds.y > tiling.bounds.y);
+            assert!(night_light.bounds.y > volume.bounds.y);
+            assert!((dnd.bounds.x - (width - right(night_light))).abs() < 0.001);
+            assert_eq!(
+                layout.shape_after_resize(Appearance, 8.0, width, height),
+                Shape::Pill
+            );
+            let with_details = layout.placements_with_detail(
+                width,
+                height,
+                |action| visible.contains(&action),
+                Some((Tiling, 100.0)),
+                None,
+            );
+            assert_eq!(with_details[2], *tiling);
+            assert_eq!(with_details[3].bounds.y, volume.bounds.y + 100.0);
         }
         // Packed rectangles fit without overlap at every supported width.
         {

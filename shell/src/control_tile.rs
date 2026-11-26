@@ -74,7 +74,9 @@ impl Info {
             ),
             Network => (
                 "ethernet-port",
-                if system.network.ethernet {
+                if !system.network.ethernet_present {
+                    tr("shell-no-network")
+                } else if system.network.ethernet {
                     connected(system)
                 } else {
                     tr("shell-not-connected")
@@ -183,7 +185,12 @@ impl Info {
             ),
             Screenshot => (
                 "camera",
-                tr("shell-this-desktop").into(),
+                if system.screenshot {
+                    tr("shell-this-desktop")
+                } else {
+                    tr("shell-grim-is-not-installed")
+                }
+                .into(),
                 None,
                 system.screenshot,
                 false,
@@ -191,7 +198,14 @@ impl Info {
             Phone => (
                 "smartphone",
                 system.phone.as_ref().map_or_else(
-                    || tr("shell-off").to_owned(),
+                    || {
+                        tr(if crate::phone_link::available() {
+                            "shell-off"
+                        } else {
+                            "shell-phone-not-installed"
+                        })
+                        .into()
+                    },
                     |presence| {
                         if presence.connected > 0 {
                             match presence.battery {
@@ -223,14 +237,24 @@ impl Info {
             ),
             Lock => (
                 "lock-keyhole",
-                tr("shell-lock-desktop").into(),
+                if system.lock {
+                    tr("shell-lock-desktop")
+                } else {
+                    tr("shell-the-enzui-lock-screen-is-not-installed")
+                }
+                .into(),
                 None,
                 system.lock,
                 false,
             ),
             Power => (
                 "power",
-                tr("shell-power-options").into(),
+                if system.power {
+                    tr("shell-power-options")
+                } else {
+                    tr("shell-not-available")
+                }
+                .into(),
                 None,
                 system.power,
                 true,
@@ -255,7 +279,7 @@ impl Info {
                 (
                     "gamepad-2",
                     mode.map_or_else(
-                        || tr("shell-not-active-or-unavailable").into(),
+                        || tr("shell-gamemode-service-unavailable").into(),
                         |mode| {
                             if mode.requested {
                                 tr("shell-desktop-request-click-to-release").into()
@@ -279,7 +303,13 @@ impl Info {
                     system.system_writes,
                     true,
                 ),
-                None => ("gauge", tr("shell-not-available").into(), None, false, true),
+                None => (
+                    "gauge",
+                    tr("shell-power-modes-are-not-available").into(),
+                    None,
+                    false,
+                    true,
+                ),
             },
             Keyboard => {
                 let layouts = settings.compositor.layouts();
@@ -295,13 +325,14 @@ impl Info {
                 )
             }
             Drives => match system.drives.as_deref() {
-                Some([]) | None => (
+                None => (
                     "hard-drive",
-                    tr("shell-no-drives").into(),
+                    tr("shell-disks-service-unavailable").into(),
                     None,
-                    system.drives.is_some(),
+                    false,
                     true,
                 ),
+                Some([]) => ("hard-drive", tr("shell-no-drives").into(), None, true, true),
                 Some([drive]) => ("usb", drive.label.clone(), None, true, true),
                 Some(drives) => (
                     "usb",

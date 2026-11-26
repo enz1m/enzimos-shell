@@ -101,8 +101,9 @@ impl Default for Settings {
             screen_time: false,
             world_clocks: Vec::new(),
             metrics: Metrics::default(),
-            quick_actions: QuickAction::DEFAULT
-                .iter()
+            quick_actions: QuickAction::ALL
+                .into_iter()
+                .filter(|action| !matches!(action, QuickAction::Lock | QuickAction::Power))
                 .fold(0, |mask, action| mask | action.bit()),
             controls: Arc::default(),
             layout: Arc::new(crate::bar_layout::BarLayout::default().with_notifications()),

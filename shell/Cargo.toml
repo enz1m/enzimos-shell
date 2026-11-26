@@ -13,6 +13,7 @@ x11 = ["iced/x11", "enzui-widgets/x11"]
 frame-report = ["iced/performance-observer"]
 
 [dependencies]
+ab_glyph = "=0.2.32"
 enzimos-phone-client = { path = "../vendor/phone-link/crates/host-client" }
 evdev = { version = "=0.13.2", features = ["tokio"] }
 iced = { git = "https://github.com/enz1m/enzim-iced.git", rev = "838066d2e7373e87cfb42e62cca5a1dc9625b5f9", features = ["wgpu", "tiny-skia", "crisp", "web-colors", "thread-pool", "linux-theme-detection", "wayland", "tokio", "advanced", "svg", "a11y", "sysinfo"], default-features = false }

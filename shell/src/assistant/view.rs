@@ -714,7 +714,17 @@ impl Shell {
                     .into_element(),
             );
         }
-        column![options, screenshots].spacing(8).into()
+        let mut permissions = column![options, screenshots].spacing(8);
+        if state.session.is_some() && enzui_shell::desktop_session::mode().managed() {
+            permissions = permissions.push(
+                enz_button(tr("shell-assistant-control-allow"), message(Message::AllowDesktopControl))
+                    .kind(ButtonKind::Secondary)
+                    .size(ButtonSize::Sm)
+                    .enabled(!state.desktop_control_pending)
+                    .into_element(),
+            );
+        }
+        permissions.into()
     }
 
     fn assistant_composer(&self, palette: &Palette) -> Element<'_, ShellMessage> {
@@ -1147,7 +1157,7 @@ fn assistant_row<'a>(
                         .size(16.0)
                         .tint(palette.warning)
                         .into_element(),
-                    enz_text(enzui_shell::tr!("shell-allow-2", "arg0" => enzui_shell::i18n::argument(&(title))))
+                    enz_text(enzui_shell::tr!("shell-allow-2", "arg0" => enzui_shell::i18n::argument(if title.trim().is_empty() { tool } else { title })))
                         .size_px(BODY)
                         .weight(Weight::Semibold)
                         .into_element(),

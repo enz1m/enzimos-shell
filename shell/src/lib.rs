@@ -43,6 +43,7 @@ pub mod controllers;
 pub mod crash_reports;
 pub mod cups_admin;
 pub mod default_apps;
+pub mod desktop_control;
 pub mod desktop_frame;
 pub mod desktop_glass;
 pub mod desktop_portal;

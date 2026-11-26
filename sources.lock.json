@@ -1,7 +1,7 @@
 {
   "hyprland": {
     "url": "https://github.com/enz1m/enzim-hyprland.git",
-    "revision": "53445c9fac117e328ad510638f8bcecd964dd0e4",
+    "revision": "61ebe6098b0e870c5f1980feeecbfe5afcdff037",
     "destination": "vendor/Hyprland",
     "variants": {
       "scoped-eis": "173de69ebc7dc3fd3743257482bc416d0e2d8caf",
@@ -36,7 +36,7 @@
   },
   "remote_desktop_portal": {
     "url": "https://github.com/enz1m/enzim-xdg-desktop-portal-hyprland.git",
-    "revision": "1e1585c2c43b5faa9c85dae555d143101ce04d55",
+    "revision": "c1960a3a79308f86ea4e1482753da865009e5f67",
     "upstream_revision": "0e832b50ecc49d4bae01a29845c1b3fafc5c5c99",
     "destination": "vendor/xdg-desktop-portal-hyprland"
   },

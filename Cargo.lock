@@ -1175,6 +1175,7 @@ dependencies = [
 name = "enzui-shell"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "async-trait",
  "base64",
  "chrono",

@@ -16,7 +16,8 @@ REVISION = PIN["revision"]
 UPSTREAM_REVISION = PIN["upstream_revision"]
 SUBMODULES = {"subprojects/sdbus-cpp": "b7d85f936d622299ee57966c2b2aefde5e4f3684",
               "subprojects/hyprland-protocols": "bd153e76f751f150a09328dbdeb5e4fab9d23622"}
-PROTOCOLS = {"wlr-virtual-pointer-unstable-v1": ROOT / "vendor/Hyprland/protocols/wlr-virtual-pointer-unstable-v1.xml",
+PROTOCOLS = {"enzui-assistant-input-v1": ROOT / "vendor/Hyprland/protocols/enzui-assistant-input-v1.xml",
+             "wlr-virtual-pointer-unstable-v1": ROOT / "vendor/Hyprland/protocols/wlr-virtual-pointer-unstable-v1.xml",
              "virtual-keyboard-unstable-v1": ROOT / "vendor/Hyprland/protocols/virtual-keyboard-unstable-v1.xml"}
 
 

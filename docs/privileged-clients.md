@@ -121,15 +121,38 @@ capture/input by rewriting an allowlist. On executable routes, nonempty
 `LD_PRELOAD`/`LD_AUDIT` and a differing nonempty `LD_LIBRARY_PATH` refuse
 admission. Root grants continue to trust root's unit environment.
 
-Locking disconnects clients admitted for capture or virtual input, apart from
-the registered shell. The input-method and text-commit connections can stay open. New portal and ordinary helper clients are refused while locked;
-unlocking requires a fresh connection. While locked, the input method receives
+Locking disconnects capture and virtual-input helpers. The registered Shell,
+remote desktop backend, input methods and text-commit clients keep their
+connections. Existing RemoteDesktop and ScreenCast sessions pause input and
+frame delivery until unlock. New capture and virtual input globals are
+withheld while locked. While locked, the input method receives
 no keys and no lock-screen field state, and active input capture is released and
 cannot start again until unlock. Root grants stay in
 `/run/enzimos-compositor-grants`; the private `/run/enzimos` directory is
 unchanged. The grant directory is root-owned and not group/world writable. Each
 grant is a regular, root-owned, singly linked, non-group/world-writable file of
 at most 4 KiB.
+
+## Assistant desktop control
+
+The managed Shell opens an input-only RemoteDesktop session through the portal
+frontend. The harness binds a peer-verified Unix connection to the live conversation
+while consent is pending. The Shell activates the connection only
+after the portal grants pointer and keyboard and the compositor displays the
+Shell's indicator on every active output. The connection generation bounds
+the tools exposed to each model request. A stale tool response cannot use a
+new grant for the same conversation.
+
+The indicator is an authenticated overlay above fullscreen windows. Clicking
+it or pressing Super+Esc revokes the grant at the compositor. The shortcut is
+handled before shortcut and input capture policy. The compositor disables the
+Assistant's virtual devices and releases held inputs before asking the portal
+to close its session and EIS context. If the backend fails to acknowledge that
+close within 500 ms, the compositor logs and drops the shared portal connection.
+Device loss, output changes, session close and loss
+of the Shell or portal invalidate the conversation lease. The broker sends paired key and button transitions and retains the EIS
+descriptor in the Shell. Approval modes and screenshot access are independent
+of desktop control.
 
 ## Acceptance boundaries
 

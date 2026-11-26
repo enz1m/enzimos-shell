@@ -604,6 +604,10 @@ impl Transcript {
                     },
                 );
             }
+            "turn.vision_fallback" => {
+                self.restart_reply();
+                self.push("notice", Body::Note { text: tr("shell-assistant-vision-fallback").into(), error: false });
+            }
             "turn.local_limit" => {
                 self.push(
                     "note",

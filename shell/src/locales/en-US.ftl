@@ -194,6 +194,7 @@ shell-start = Start
 shell-provider = Provider
 shell-only-providers-approved-in-this-configuration-there-is-no-automatic-fallback = Only providers approved in this configuration; there is no automatic fallback.
 shell-assistant-automatic-model = Automatic local model
+shell-assistant-vision-fallback = This model can’t see images. The Assistant is using the text description of the screenshot.
 shell-assistant-local-limit = The local model had trouble completing this request. Try a shorter request or connect a larger model in Settings › AI Providers and select it in Settings › Agents.
 shell-model-name = Model name
 shell-model = Model
@@ -5497,3 +5498,7 @@ writing-shortcut = Writing Tools shortcut
 writing-shortcut-edit = Edit shortcut
 writing-search-keywords = selected text proofread rewrite friendly professional concise summarize writing tools
 writing-model-keywords = writing tools preferred model on device local AI
+
+shell-assistant-control-allow = Allow the assistant to control this computer
+shell-assistant-control-unavailable = Desktop control was declined or is unavailable.
+shell-assistant-control-indicator = Assistant control active · Click to stop

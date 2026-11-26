@@ -67,6 +67,9 @@ enum Message {
     ChooseApproval(ApprovalMode),
     EnableFullSend,
     ChooseScreenshots(Screenshots),
+    AllowDesktopControl,
+    DesktopControlFinished(Result<(), String>),
+    Close(iced::window::Id),
     PermissionsChanged(Result<(ApprovalMode, Screenshots), String>),
     Resolved(String, bool, Result<(), String>),
     Cancel,
@@ -78,12 +81,19 @@ enum Message {
 }
 
 #[derive(Clone, Debug)]
+struct SavedConversation {
+    id: String,
+    title: Option<String>,
+    workspace: String,
+}
+
+#[derive(Debug, Clone)]
 struct Setup {
     roots: Vec<String>,
     model: String,
     provider: String,
     approval_default: ApprovalMode,
-    saved: Vec<(String, String)>,
+    saved: Vec<SavedConversation>,
     // `Err` when the harness could not list them; turns still work without.
     skills: Result<Vec<agent_harness::Skill>, String>,
 }
@@ -108,6 +118,7 @@ struct Assistant {
     show_permissions: bool,
     confirm_full_send: bool,
     changing_permissions: bool,
+    desktop_control_pending: bool,
     error: Option<String>,
     // Skills added to each turn, as listed: (name, sha256).
     chosen: Vec<(String, String)>,
@@ -132,10 +143,11 @@ fn ready() -> Task<Message> {
                 .into_iter()
                 .flatten()
                 .filter_map(|row| {
-                    Some((
-                        row["id"].as_str()?.to_owned(),
-                        row["workspace"].as_str().unwrap_or("").to_owned(),
-                    ))
+                    Some(SavedConversation {
+                        id: row["id"].as_str()?.to_owned(),
+                        title: row["title"].as_str().filter(|title| !title.trim().is_empty()).map(str::to_owned),
+                        workspace: row["workspace"].as_str().unwrap_or("").to_owned(),
+                    })
                 })
                 .collect();
             let skills = agent_harness::request("skills.list", json!({}))
@@ -277,6 +289,7 @@ impl Assistant {
                 show_permissions: false,
                 confirm_full_send: false,
                 changing_permissions: false,
+                desktop_control_pending: false,
                 error: None,
                 chosen: Vec::new(),
             },
@@ -567,6 +580,26 @@ impl Assistant {
                 self.configure(ApprovalMode::FullSend, self.screenshots)
             }
             Message::EnableFullSend => Task::none(),
+            Message::AllowDesktopControl => {
+                let Some(session) = self.session.clone().filter(|_| !self.running && !self.desktop_control_pending) else {
+                    return Task::none();
+                };
+                self.desktop_control_pending = true;
+                self.show_permissions = false;
+                self.error = None;
+                Task::perform(
+                    async move {
+                        use enzui_shell::desktop_control::{Request, request};
+                        request(&session, Request::Allow).await
+                    },
+                    Message::DesktopControlFinished,
+                )
+            }
+            Message::DesktopControlFinished(result) => {
+                self.desktop_control_pending = false;
+                self.error = result.err();
+                Task::none()
+            }
             Message::ChooseScreenshots(screenshots) => {
                 self.configure(self.approval_mode, screenshots)
             }
@@ -581,6 +614,20 @@ impl Assistant {
                 }
                 Task::none()
             }
+            Message::Close(window) => {
+                if let Some(stop) = self.stop.take() {
+                    let _ = stop.send(());
+                }
+                let close = iced::window::close(window);
+                if let Some(session) = self.session.take() {
+                    Task::future(async move {
+                        use enzui_shell::desktop_control::{Request, request};
+                        let _ = request(&session, Request::Revoke).await;
+                    }).discard().chain(close)
+                } else {
+                    close
+                }
+            }
             Message::Cancel => {
                 if let Some(stop) = self.stop.take() {
                     let _ = stop.send(());
@@ -588,7 +635,7 @@ impl Assistant {
                 self.pending_prompt = None;
                 Task::none()
             }
-            Message::New if !self.running && !self.changing_permissions => {
+            Message::New if !self.running && !self.changing_permissions && !self.desktop_control_pending => {
                 self.screenshots = Screenshots::Off;
                 self.show_permissions = false;
                 self.confirm_full_send = false;
@@ -726,6 +773,9 @@ impl Assistant {
                     }
                 }
             }
+            Some("turn.vision_fallback") => self
+                .items
+                .push(Item::Note(tr("shell-assistant-vision-fallback").into())),
             Some("turn.local_limit") => self
                 .items
                 .push(Item::Note(tr("shell-assistant-local-limit").into())),
@@ -758,11 +808,11 @@ impl Assistant {
                     },
                     None => tr("shell-add-a-workspace-folder-in-settings-agents-to-start").into(),
                 }));
-                for (index, (id, workspace)) in setup.saved.iter().enumerate().take(12) {
+                for (index, saved) in setup.saved.iter().enumerate().take(12) {
                     body = body.push(
-                        enz_preferences_row(tr!("shell-session", "arg0" => format!("{:}", index + 1)))
-                            .subtitle(workspace.clone())
-                            .action(tr("shell-resume"), Message::Resume(id.clone()))
+                        enz_preferences_row(saved.title.clone().unwrap_or_else(|| tr!("shell-session", "arg0" => (index + 1).to_string())))
+                            .subtitle(saved.workspace.clone())
+                            .action(tr("shell-resume"), Message::Resume(saved.id.clone()))
                             .into_element(),
                     );
                 }
@@ -865,6 +915,15 @@ impl Assistant {
                     iced::widget::row(modes).spacing(6).wrap(),
                     muted(tr("shell-agent-screenshots-caption").into()),
                     iced::widget::row(access).spacing(6).wrap(),
+                    if self.session.is_some() && enzui_shell::desktop_session::mode().managed() {
+                        enz_button(tr("shell-assistant-control-allow"), Message::AllowDesktopControl)
+                            .kind(ButtonKind::Secondary)
+                            .size(ButtonSize::Sm)
+                            .enabled(!self.desktop_control_pending)
+                            .into_element()
+                    } else {
+                        iced::widget::space().height(0).into()
+                    },
                 ].spacing(6).padding([6, 16]).into()
             }
         } else {
@@ -919,10 +978,12 @@ pub(crate) fn run() -> iced::Result {
     let mut settings = enz_window_settings(ShellLayout::TitlebarContent);
     settings.size = iced::Size::new(560.0, 720.0);
     settings.platform_specific.application_id = "dev.enzui.Assistant".into();
+    settings.exit_on_close_request = false;
     enzui_widgets::app_setup::run_with_services(
         iced::application(Assistant::new, Assistant::update, Assistant::view)
             .title(|_: &Assistant| tr("shell-assistant").to_owned())
             .window(settings)
+            .subscription(|_: &Assistant| iced::window::close_requests().map(Message::Close))
             .theme(Assistant::theme),
         enzui_widgets::app_setup::AppServices::default()
             .localizer(enzui_shell::i18n::localizer().clone()),

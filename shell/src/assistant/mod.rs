@@ -57,6 +57,8 @@ pub(crate) enum Message {
     ConfirmFullSend,
     ApprovalChanged(Result<(), String>, ApprovalMode),
     ChooseScreenshots(Screenshots),
+    AllowDesktopControl,
+    DesktopControlFinished(String, Result<(), String>),
     ScreenshotsChanged(Result<Value, String>, Screenshots),
     Link(String),
     Copy(String),
@@ -126,6 +128,7 @@ pub(crate) struct State {
     pub choosing_approval: bool,
     pub confirming_full_send: bool,
     pub approval_busy: bool,
+    pub desktop_control_pending: bool,
     pub title: String,
     pub transcript: Transcript,
     pub composer: text_editor::Content,
@@ -174,6 +177,16 @@ fn perform(
     Task::perform(future, message)
 }
 
+fn revoke_desktop_control(session: Option<String>) -> Task<ShellMessage> {
+    let Some(session) = session else {
+        return Task::none();
+    };
+    Task::future(async move {
+        use enzui_shell::desktop_control::{Request, request};
+        let _ = request(&session, Request::Revoke).await;
+    }).discard()
+}
+
 fn rows(value: &Value) -> Vec<SessionRow> {
     value
         .as_array()
@@ -184,6 +197,7 @@ fn rows(value: &Value) -> Vec<SessionRow> {
                 id: row["id"].as_str()?.to_owned(),
                 title: row["title"]
                     .as_str()
+                    .filter(|title| !title.trim().is_empty())
                     .unwrap_or_else(|| tr("shell-chat"))
                     .to_owned(),
                 preview: row["preview"].as_str().unwrap_or("").to_owned(),
@@ -454,6 +468,7 @@ impl Shell {
                             .load(value["items"].as_array().map_or(&[][..], Vec::as_slice));
                         value["title"]
                             .as_str()
+                            .filter(|title| !title.trim().is_empty())
                             .unwrap_or_else(|| tr("shell-chat"))
                             .clone_into(&mut self.assistant.title);
                         self.assistant.error = None;
@@ -565,13 +580,13 @@ impl Shell {
                 if self.assistant.running.is_some() || self.assistant.approval_busy {
                     return Task::none();
                 }
-                self.assistant.session = None;
+                let revoke = revoke_desktop_control(self.assistant.session.take());
                 self.assistant_new_approval();
                 self.assistant.title = String::new();
                 self.assistant.transcript.clear();
                 self.assistant.history = false;
                 self.assistant.error = None;
-                iced::widget::operation::focus(COMPOSER)
+                Task::batch([revoke, iced::widget::operation::focus(COMPOSER)])
             }
             Message::History(open) => {
                 self.assistant.history = open;
@@ -589,7 +604,7 @@ impl Shell {
                 {
                     return Task::none();
                 }
-                self.assistant.session = Some(id.clone());
+                let revoke = revoke_desktop_control(self.assistant.session.replace(id.clone()));
                 self.assistant.approval_busy = true;
                 self.assistant.approval_mode = ApprovalMode::Ask;
                 self.assistant.screenshots = Screenshots::Off;
@@ -603,7 +618,7 @@ impl Shell {
                     .map(|row| row.title.clone())
                     .unwrap_or_default();
                 self.assistant.transcript.clear();
-                export(id)
+                Task::batch([revoke, export(id)])
             }
             Message::Toggled(key) => {
                 self.assistant.transcript.toggle(&key);
@@ -644,6 +659,29 @@ impl Shell {
                 match result {
                     Ok(()) => self.assistant.approval_mode = mode,
                     Err(error) => self.assistant.error = Some(error),
+                }
+                Task::none()
+            }
+            Message::AllowDesktopControl => {
+                if self.assistant.desktop_control_pending || self.assistant.running.is_some() {
+                    return Task::none();
+                }
+                let Some(id) = self.assistant.session.clone() else {
+                    return Task::none();
+                };
+                self.assistant.desktop_control_pending = true;
+                self.assistant.choosing_approval = false;
+                self.assistant.error = None;
+                perform(async move {
+                    use enzui_shell::desktop_control::{Request, request};
+                    let result = request(&id, Request::Allow).await;
+                    Message::DesktopControlFinished(id, result)
+                })
+            }
+            Message::DesktopControlFinished(id, result) => {
+                self.assistant.desktop_control_pending = false;
+                if self.assistant.session.as_deref() == Some(id.as_str()) {
+                    self.assistant.error = result.err();
                 }
                 Task::none()
             }

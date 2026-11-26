@@ -208,8 +208,8 @@ pub(crate) enum Fingerprint {
     Matched,
     /// The finger did not match, several times.
     Refused,
-    /// No reader, no enrolled finger, or no fingerprint service: the lock
-    /// shows nothing about fingerprints.
+    /// No reader, no enrolled finger, no fingerprint service, or a reader
+    /// error such as a sleep or an overheated sensor ending the attempt.
     Unavailable,
 }
 

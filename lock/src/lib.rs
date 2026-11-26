@@ -14,6 +14,7 @@ mod avatars;
 mod background;
 mod clock_widgets;
 mod exec;
+mod fingerprint;
 mod gpu;
 mod greetd;
 mod greeter_session;
@@ -31,7 +32,7 @@ mod ui;
 use std::io::{Read as _, Write};
 use std::os::fd::{AsFd, OwnedFd};
 use std::ptr::NonNull;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use iced_runtime::user_interface::{self, UserInterface};
@@ -717,9 +718,10 @@ pub fn run(mode: Mode) -> Result<(), String> {
     let reveal_from = Instant::now();
     ui.started = reveal_from + Duration::from_secs(3600);
     let (auth_tx, auth_rx) = mpsc::channel::<bool>();
-    // Fingerprint unlock beside the password, on the lock screen only:
-    // after a restart the password is needed to unlock the keyring.
+    // Fingerprint unlock beside the password, on the lock screen only: a
+    // sign-in needs the password, which unlocks saved credentials.
     let (finger_tx, finger_rx) = mpsc::channel::<Option<String>>();
+    let waiting_for_password = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut finger_wake = (mode == Mode::Lock && auth::fingerprint_offered())
         .then(|| {
             rustix::pipe::pipe_with(
@@ -730,27 +732,20 @@ pub fn run(mode: Mode) -> Result<(), String> {
         .flatten()
         .map(|(read, write)| {
             let unlock = auth_tx.clone();
+            let waiting = Arc::clone(&waiting_for_password);
             std::thread::spawn(move || {
-                let wake = || {
+                let report = |event: fingerprint::Report| {
+                    match event {
+                        fingerprint::Report::Matched => {
+                            let _ = unlock.send(true);
+                        }
+                        fingerprint::Report::Text(text) => {
+                            let _ = finger_tx.send(text);
+                        }
+                    }
                     let _ = rustix::io::write(&write, &[1]);
                 };
-                let show = |text: String| {
-                    let _ = finger_tx.send(Some(text));
-                    wake();
-                };
-                match auth::fingerprint(&show) {
-                    auth::Fingerprint::Matched => {
-                        let _ = unlock.send(true);
-                    }
-                    auth::Fingerprint::Refused => {
-                        let _ =
-                            finger_tx.send(Some(tr("shell-fingerprint-not-recognized").to_owned()));
-                    }
-                    auth::Fingerprint::Unavailable => {
-                        let _ = finger_tx.send(None);
-                    }
-                }
-                wake();
+                fingerprint::run(&report, &waiting);
             });
             read
         });
@@ -946,6 +941,9 @@ pub fn run(mode: Mode) -> Result<(), String> {
         let answered = auth_rx.try_recv();
         if let Ok(ok) = answered {
             if ok {
+                if waiting_for_password.load(std::sync::atomic::Ordering::Acquire) {
+                    fingerprint::password_used_for_keyring();
+                }
                 enzui_shell::power_boost::request();
                 ui.phase = ui::Phase::Leaving(Instant::now());
             } else {

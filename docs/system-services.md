@@ -177,8 +177,13 @@ and [compositor admission](privileged-clients.md).
 - **Fingerprints** (Settings > Users): enrollment through fprintd (polkit asks
   for the user's own password). The lock screen runs the `enzui-fingerprint` PAM
   service (pam_fprintd only) in a thread beside the password and shows the
-  reader's messages; three wrong fingers end it until the next lock. Login after
-  a restart, sudo and administrator approval keep the password.
+  reader's messages; three wrong fingers end it until the next lock. An attempt
+  that a sleep or an overheated reader ends starts again. A finger never
+  unlocks saved credentials: while the Secret Service's default collection is
+  locked, the lock asks for the password, which oo7's PAM hook passes on. If that
+  password leaves the collection locked, fingerprints return while it stays
+  locked. Sign-in at the greeter, sudo and administrator approval keep the
+  password.
 - **VPNs**: hand-added L2TP/IPsec, IKEv2, Cisco IPsec, PPTP and OpenConnect
   profiles are built from checked fields (no separators or quotes) and added
   with `nmcli`; passwords are asked at connect time. The secret agent runs

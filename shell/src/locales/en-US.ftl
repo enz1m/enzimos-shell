@@ -5159,6 +5159,7 @@ shell-finger-left-little = Left little finger
 shell-finger-other = Finger
 shell-fingerprint-search-keywords = fingerprint reader unlock touch biometric fprint
 shell-fingerprint-not-recognized = Fingerprint not recognized. Enter your password.
+shell-fingerprint-credentials-locked = Enter your password to unlock your saved credentials.
 shell-printer-usb = USB
 shell-printer-no-driver = no driver for this printer is installed
 shell-printer-driver = driver: { $arg0 }

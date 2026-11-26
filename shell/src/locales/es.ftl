@@ -5153,6 +5153,7 @@ shell-finger-left-little = Meñique izquierdo
 shell-finger-other = Dedo
 shell-fingerprint-search-keywords = huella dactilar lector desbloquear biometría
 shell-fingerprint-not-recognized = No se reconoció la huella. Escribe tu contraseña.
+shell-fingerprint-credentials-locked = Escribe tu contraseña para desbloquear tus credenciales guardadas.
 shell-printer-usb = USB
 shell-printer-no-driver = no hay ningún controlador instalado para esta impresora
 shell-printer-driver = controlador: { $arg0 }

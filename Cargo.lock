@@ -1140,10 +1140,12 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tiny-skia 0.12.0",
+ "tokio",
  "wayland-client",
  "wayland-protocols",
  "wayland-protocols-wlr",
  "xkbcommon-dl",
+ "zbus",
 ]
 
 [[package]]

@@ -17,6 +17,7 @@
 #include <GLES3/gl32.h>
 #include "material-shaders.h"
 #include "MaterialReadback.hpp"
+#include "GlScissorState.hpp"
 #include <wayland-server-core.h>
 #include <algorithm>
 #include <any>
@@ -1040,7 +1041,8 @@ class GlassPass final : public IPassElement {
             glActiveTexture(GL_TEXTURE0 + i);
             glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTextures[i]);
         }
-        const bool blend = glIsEnabled(GL_BLEND), scissor = glIsEnabled(GL_SCISSOR_TEST), stencil = glIsEnabled(GL_STENCIL_TEST);
+        const bool blend = glIsEnabled(GL_BLEND), stencil = glIsEnabled(GL_STENCIL_TEST);
+        const EnzMaterial::ScissorState<EnzMaterial::LiveGl> scissorState;
         glDisable(GL_SCISSOR_TEST);
         glDisable(GL_STENCIL_TEST);
         glBindVertexArray(gl.vao);
@@ -1348,7 +1350,6 @@ class GlassPass final : public IPassElement {
         glViewport(previousViewport[0], previousViewport[1], previousViewport[2], previousViewport[3]);
         glBlendFuncSeparate(blendSrc, blendDst, blendSrcA, blendDstA);
         blend ? glEnable(GL_BLEND) : glDisable(GL_BLEND);
-        scissor ? glEnable(GL_SCISSOR_TEST) : glDisable(GL_SCISSOR_TEST);
         stencil ? glEnable(GL_STENCIL_TEST) : glDisable(GL_STENCIL_TEST);
         return {};
     }

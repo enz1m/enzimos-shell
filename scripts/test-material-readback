@@ -5,5 +5,7 @@ mkdir -p "$root/.build/material-readback-tests"
 exec "$root/scripts/with-build-budget" bash -c '
     set -euo pipefail
     c++ -std=c++23 -O1 -Wall -Wextra -Werror "$1/tests/material-readback.cpp" -o "$1/.build/material-readback-tests/policy"
+    c++ -std=c++23 -O1 -Wall -Wextra -Werror "$1/tests/gl-scissor-state.cpp" -o "$1/.build/material-readback-tests/scissor"
     "$1/.build/material-readback-tests/policy"
+    "$1/.build/material-readback-tests/scissor"
 ' _ "$root"

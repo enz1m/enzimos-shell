@@ -147,6 +147,8 @@ impl Shell {
             Command::WindowSpread => {
                 self.spread_message(crate::window_spread::SpreadMessage::Toggle)
             }
+            Command::Activities => self.activities_command(true),
+            Command::ActivitiesSearch => self.activities_command(false),
             Command::Keyboard => self.toggle_osk(),
             // The supervised lock, as the Control Center's: it holds logind's
             // lock hint and refuses a second lock client.

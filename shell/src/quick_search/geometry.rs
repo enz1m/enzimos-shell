@@ -93,10 +93,8 @@ impl Shell {
                 + results::GROUP_HEADING_HEIGHT * headings as f32
                 + if feedback { 40.0 } else { 0.0 })
             .min(self.search_height_limit())
-        } else if self.search.preferences.shows(Category::Apps) {
-            BLANK_HEIGHT
         } else {
-            112.0
+            self.search_resting_height()
         };
         iced::Size::new(
             maximum.width,
@@ -105,6 +103,14 @@ impl Shell {
                     island.attachment.join(f32::from(self.metrics.radius))
                 }),
         )
+    }
+    /// The card's height before anything is typed, as it rests under the bar.
+    pub(crate) fn search_resting_height(&self) -> f32 {
+        if self.search.preferences.shows(Category::Apps) {
+            BLANK_HEIGHT
+        } else {
+            112.0
+        }
     }
     pub(super) fn search_window_extent(&self) -> iced::Size {
         let mut size = self.search_surface_size();
@@ -402,6 +408,23 @@ impl Shell {
             .map_or_else(Task::none, |id| self.finish_panel_close(id))
     }
     pub(crate) fn close_search(&mut self) -> Task<ShellMessage> {
+        let overview = self.overview_search_closing();
+        self.search.overview = false;
+        Task::batch([overview, self.close_search_card()])
+    }
+    /// Closes Search without its closing motion, which stops once the card's
+    /// desktop is no longer shown and would leave the card unparked there.
+    pub(crate) fn close_search_at_once(&mut self) -> Task<ShellMessage> {
+        let close = self.close_search();
+        let hidden = match self.search.window {
+            Some(id) if !self.search.showing && self.search.started => {
+                self.search_message(Message::Hidden(id, self.search.epoch))
+            }
+            _ => Task::none(),
+        };
+        Task::batch([close, hidden])
+    }
+    fn close_search_card(&mut self) -> Task<ShellMessage> {
         if !self.search.showing && !self.search.preparing {
             return Task::none();
         }

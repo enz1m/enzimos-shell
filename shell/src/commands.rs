@@ -47,10 +47,15 @@ pub enum Command {
     OutputRescaling,
     /// Settings has applied that change, or failed to.
     OutputRescaled,
+    /// Super was pressed and released alone on a floating desktop.
+    Activities,
+    /// Super was pressed and released alone where the overview has no window
+    /// spread: a tiling desktop or a fullscreen app.
+    ActivitiesSearch,
 }
 
 impl Command {
-    const ALL: [(Self, &'static str); 39] = [
+    const ALL: [(Self, &'static str); 41] = [
         (Self::VolumeUp, "volume-up"),
         (Self::VolumeDown, "volume-down"),
         (Self::VolumeMute, "volume-mute"),
@@ -90,6 +95,8 @@ impl Command {
         (Self::PointerPress, "pointer-press"),
         (Self::OutputRescaling, "output-rescaling"),
         (Self::OutputRescaled, "output-rescaled"),
+        (Self::Activities, "activities"),
+        (Self::ActivitiesSearch, "activities-search"),
     ];
 
     #[must_use]

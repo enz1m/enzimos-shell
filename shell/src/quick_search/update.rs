@@ -14,7 +14,10 @@ use crate::{Message as ShellMessage, Shell, notification_panel};
 use enzui_shell::i18n::tr;
 use enzui_shell::tr;
 use enzui_shell::{
-    search::{self, Category, DesktopAction, Item, Target, Ticket, preferences::Change},
+    search::{
+        self, Category, DesktopAction, Item, Target, Ticket, compositor::IslandPlacement,
+        preferences::Change,
+    },
     settings::Change as SettingChange,
 };
 use iced::{Task, window};
@@ -120,8 +123,12 @@ impl Shell {
                     self.force_close_launcher(),
                     self.search_icons_changed(),
                     windows,
-                    enzui_shell::widget_bounds::bounds(self.panel, "applications")
-                        .map(move |rect| message(Message::Anchor(epoch, rect))),
+                    if self.search.overview {
+                        Task::done(message(Message::Anchor(epoch, None)))
+                    } else {
+                        enzui_shell::widget_bounds::bounds(self.panel, "applications")
+                            .map(move |rect| message(Message::Anchor(epoch, rect)))
+                    },
                 ])
             }
             Message::Anchor(epoch, anchor) if epoch == self.search.epoch && self.search.showing => {
@@ -140,7 +147,10 @@ impl Shell {
                     Ok(geometry) => {
                         let output = geometry.output;
                         self.search.geometry = Some((geometry.body_max, output.clone()));
-                        self.search.island = geometry.island;
+                        self.search.island = geometry.island.map(|island| IslandPlacement {
+                            dim: island.dim && !self.search.overview,
+                            ..island
+                        });
                         self.search.preparing = false;
                         self.search.layout_busy = false;
                         self.search.layout_revision = self.search.layout_revision.saturating_add(1);

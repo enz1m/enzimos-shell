@@ -177,6 +177,7 @@ pub fn icon(route: &str) -> Option<&'static str> {
         "windows/repeat_delay" => "timer",
         "windows/repeat_rate" => "repeat",
         "windows/caps_lock" => "arrow-big-up",
+        "windows/super_key" => "command",
         "windows/zoom" => "zoom-in",
         "windows/cursor_size" => "mouse-pointer-2",
         "notifications/dnd" | "notifications/hold_fullscreen" => "bell-off",

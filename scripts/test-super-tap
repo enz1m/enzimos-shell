@@ -1,0 +1,82 @@
+#!/usr/bin/env lua
+-- A lone Super tap asks for the overview; any key, button or wheel input while
+-- Super is held cancels it, and the desktop's state chooses which overview.
+local bindings, listeners, events = {}, {}, {}
+local tiling, fullscreen = false, false
+hl = {
+    dsp = {
+        event = function(name) return { event = name } end,
+        exec_cmd = function(command) return { exec = command } end,
+    },
+    dispatch = function(action)
+        if type(action) == "table" and action.event then events[#events + 1] = action.event end
+        return { ok = true }
+    end,
+    bind = function(key, action, options)
+        bindings[key] = bindings[key] or {}
+        table.insert(bindings[key], { action = action, options = options or {} })
+        return {}
+    end,
+    on = function(name, callback)
+        listeners[name] = callback
+        return {}
+    end,
+    get_active_workspace = function() return { id = 3 } end,
+    define_submap = function() end,
+}
+function enzui_desktop_tiling_at(id)
+    assert(id == 3)
+    return tiling
+end
+function enzui_desktop_fullscreen() return fullscreen end
+dofile(arg[0]:match("^(.*)/") .. "/../config/shell-keys.lua")
+
+local SUPER_L, SUPER_R, Q = 133, 134, 24
+local function key(code, pressed) listeners["input.keyboard.key"](code, 0, pressed and 1 or 0) end
+local function release(name, code)
+    key(code, false)
+    for _, bind in ipairs(bindings[name]) do
+        if bind.options.release then bind.action() end
+    end
+end
+local function pointer(input)
+    for _, bind in ipairs(bindings[input]) do
+        assert(bind.options.non_consuming and bind.options.ignore_mods, input)
+        bind.action()
+    end
+end
+local function last() return events[#events] end
+
+key(SUPER_L, true); release("SUPER + Super_L", SUPER_L)
+assert(#events == 1 and last() == "enzui-command:activities")
+
+key(SUPER_R, true); release("SUPER + Super_R", SUPER_R)
+assert(#events == 2 and last() == "enzui-command:activities")
+
+key(SUPER_L, true); key(Q, true); key(Q, false); release("SUPER + Super_L", SUPER_L)
+assert(#events == 2, "Super+Q must not open the overview")
+
+key(SUPER_L, true); key(Q, true); release("SUPER + Super_L", SUPER_L); key(Q, false)
+assert(#events == 2, "Super released while Q is held must not open the overview")
+
+for _, input in ipairs({ "mouse:272", "mouse:273", "mouse:274", "mouse_up", "mouse_down" }) do
+    key(SUPER_L, true); pointer(input); release("SUPER + Super_L", SUPER_L)
+    assert(#events == 2, input .. " while Super is held must not open the overview")
+end
+
+pointer("mouse:272")
+key(SUPER_L, true); release("SUPER + Super_L", SUPER_L)
+assert(#events == 3, "a click before Super does not cancel the tap")
+
+tiling = true
+key(SUPER_L, true); release("SUPER + Super_L", SUPER_L)
+assert(#events == 4 and last() == "enzui-command:activities-search")
+
+tiling, fullscreen = false, true
+key(SUPER_L, true); release("SUPER + Super_L", SUPER_L)
+assert(#events == 5 and last() == "enzui-command:activities-search")
+
+for _, name in ipairs({ "SUPER + Super_L", "SUPER + Super_R" }) do
+    for _, bind in ipairs(bindings[name]) do assert(not bind.options.locked, "the overview stays shut while locked") end
+end
+print("super tap policy ok")

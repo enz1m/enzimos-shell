@@ -14,6 +14,8 @@ const MARGIN: f32 = 32.0;
 const GAP: f32 = 28.0;
 const LABEL: f32 = 34.0;
 const RING: f32 = 5.0;
+// The overview's desktops strip: room between it, Search and the windows.
+const STRIP_GAP: f32 = 18.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 enum Phase {
@@ -41,6 +43,14 @@ pub(crate) struct Loaded {
     rounding: f32,
     area: [f32; 4],
     entries: Vec<Entry>,
+    strip: Option<Rect>,
+}
+
+/// Room the overview keeps on the bar's side for Search's resting card; the
+/// desktops strip goes beside it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct OverviewBand {
+    pub search: f32,
 }
 
 #[derive(Debug, Default)]
@@ -67,11 +77,15 @@ pub(crate) struct Spread {
     allocations: Vec<image::Allocation>,
     ready: bool,
     ready_frames: u8,
+    // The overview's desktops strip, overlay-local; Search keeps the keyboard.
+    strip: Option<Rect>,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) enum SpreadMessage {
     Toggle,
+    Overview(OverviewBand),
+    Desktop(u32),
     Loaded(u64, Result<Loaded, String>),
     Allocated(u64, Vec<image::Allocation>),
     Presented(window::Id),
@@ -147,6 +161,31 @@ impl Spread {
     }
 }
 
+// The strip and the bands the windows keep clear, overlay-local; the strip
+// sits beside Search on the bar's side.
+fn overview_bands(
+    area: [f32; 4],
+    bands: (f32, f32),
+    band: OverviewBand,
+    bottom: bool,
+) -> (Rect, (f32, f32)) {
+    // A tenth of the output, between a readable preview and the windows' room.
+    let height = (area[3] * 0.1).clamp(56.0, 104.0);
+    let y = if bottom {
+        area[3] - bands.1 - band.search - STRIP_GAP - height
+    } else {
+        bands.0 + band.search + STRIP_GAP
+    };
+    let strip = Rect::new(MARGIN, y, (area[2] - 2.0 * MARGIN).max(1.0), height);
+    let clear = height + band.search + STRIP_GAP;
+    let bands = if bottom {
+        (bands.0, bands.1 + clear)
+    } else {
+        (bands.0 + clear, bands.1)
+    };
+    (strip, bands)
+}
+
 fn arrange(windows: &[SpreadWindow], area: [f32; 4], bands: (f32, f32)) -> Vec<(Rect, Rect)> {
     let from: Vec<Rect> = windows
         .iter()
@@ -193,14 +232,30 @@ async fn load(
     compositor: enzui_shell::compositor::Compositor,
     metrics: enzui_shell::settings::Metrics,
     bar: enzui_shell::settings::BarEdge,
+    overview: Option<OverviewBand>,
 ) -> Result<Loaded, String> {
     let desktop = compositor.spread_windows().await?;
-    if desktop.windows.is_empty() {
+    // The overview opens on an empty desktop too, for Search and the desktops.
+    if desktop.windows.is_empty() && overview.is_none() {
         return Err(tr("shell-no-windows-to-spread").into());
     }
-    let (area, top, bottom) = compositor.prepare_spread(metrics, bar).await?;
+    let (area, top, bottom) = compositor
+        .prepare_spread(metrics, bar, overview.is_none())
+        .await?;
     let (rounding, _) = compositor.window_rounding().await;
-    let places = arrange(&desktop.windows, area, (top, bottom));
+    let (strip, bands) = match overview {
+        Some(band) => {
+            let (strip, bands) = overview_bands(
+                area,
+                (top, bottom),
+                band,
+                bar == enzui_shell::settings::BarEdge::Bottom,
+            );
+            (Some(strip), bands)
+        }
+        None => (None, (top, bottom)),
+    };
+    let places = arrange(&desktop.windows, area, bands);
     let pictures = iced::futures::future::join_all(desktop.windows.iter().zip(&places).map(
         |(window, (_, to))| {
             let (w, h) = picture_pixels(*to, desktop.scale);
@@ -224,6 +279,7 @@ async fn load(
                 picture: picture.ok(),
             })
             .collect(),
+        strip,
     })
 }
 
@@ -232,23 +288,10 @@ impl Shell {
         let generation = self.spread.generation;
         match message {
             SpreadMessage::Toggle => match self.spread.phase {
-                Phase::Idle => {
-                    // Floating and tiled desktops both spread (windows are only
-                    // made transparent while their pictures stand in); the
-                    // spread loads the windows itself.
-                    self.spread.generation += 1;
-                    self.spread.phase = Phase::Loading;
-                    let generation = self.spread.generation;
-                    let (root, compositor, metrics, bar) = (
-                        self.root.clone(),
-                        self.compositor.clone(),
-                        self.metrics,
-                        self.bar,
-                    );
-                    Task::perform(load(root, compositor, metrics, bar), move |result| {
-                        Message::Spread(SpreadMessage::Loaded(generation, result))
-                    })
-                }
+                // Floating and tiled desktops both spread (windows are only
+                // made transparent while their pictures stand in); the
+                // spread loads the windows itself.
+                Phase::Idle => self.load_spread(None),
                 Phase::Loading => {
                     self.spread = Spread {
                         generation: generation + 1,
@@ -258,6 +301,21 @@ impl Shell {
                 }
                 _ => self.close_spread(None),
             },
+            SpreadMessage::Overview(band) if self.spread.phase == Phase::Idle => {
+                self.load_spread(Some(band))
+            }
+            SpreadMessage::Overview(_) => Task::none(),
+            SpreadMessage::Desktop(id)
+                if self.desktops.as_ref().is_some_and(|d| d.active == id) =>
+            {
+                self.close_spread(None)
+            }
+            SpreadMessage::Desktop(id) => {
+                // The other desktop's windows slide in as the view goes.
+                let search = self.overview_leaving_desktop();
+                let close = self.abort_spread();
+                Task::batch([search, close, self.update(Message::SelectDesktop(id))])
+            }
             SpreadMessage::Loaded(sent, result)
                 if sent == generation && self.spread.phase == Phase::Loading =>
             {
@@ -267,6 +325,7 @@ impl Shell {
                         self.spread.rounding = loaded.rounding;
                         self.spread.area = loaded.area;
                         self.spread.entries = loaded.entries;
+                        self.spread.strip = loaded.strip;
                         self.open_spread_window()
                     }
                     Err(error) => {
@@ -275,6 +334,8 @@ impl Shell {
                             ..Spread::default()
                         };
                         eprintln!("enzui-shell spread: {error}");
+                        // Search, opened with it, stays on its own.
+                        self.overview_spread_failed();
                         Task::none()
                     }
                 }
@@ -378,6 +439,22 @@ impl Shell {
         }
     }
 
+    fn load_spread(&mut self, overview: Option<OverviewBand>) -> Task<Message> {
+        self.spread.generation += 1;
+        self.spread.phase = Phase::Loading;
+        let generation = self.spread.generation;
+        let (root, compositor, metrics, bar) = (
+            self.root.clone(),
+            self.compositor.clone(),
+            self.metrics,
+            self.bar,
+        );
+        Task::perform(
+            load(root, compositor, metrics, bar, overview),
+            move |result| Message::Spread(SpreadMessage::Loaded(generation, result)),
+        )
+    }
+
     fn open_spread_window(&mut self) -> Task<Message> {
         let area = self.spread.area;
         let (id, open) = window::open(window_settings("dev.enzui.WindowSpread", area[2], area[3]));
@@ -409,6 +486,14 @@ impl Shell {
             .filter_map(|entry| entry.picture.clone())
             .map(|picture| image::allocate_in(id, picture))
             .collect();
+        // An empty batch never reports: the overview of an empty desktop has
+        // nothing to upload.
+        if uploads.is_empty() {
+            return Task::done(Message::Spread(SpreadMessage::Allocated(
+                generation,
+                Vec::new(),
+            )));
+        }
         Task::batch(uploads).collect().map(move |results| {
             Message::Spread(SpreadMessage::Allocated(
                 generation,
@@ -462,7 +547,8 @@ impl Shell {
     }
 
     pub(crate) fn close_spread(&mut self, chosen: Option<usize>) -> Task<Message> {
-        match self.spread.phase {
+        let search = self.overview_spread_closing();
+        let spread = match self.spread.phase {
             Phase::Opening | Phase::Open => {
                 let now = Instant::now();
                 self.spread.closing_from = self.spread.progress(self.spread.sampled_at(now));
@@ -481,7 +567,8 @@ impl Shell {
                 Task::none()
             }
             Phase::Idle | Phase::Closing => Task::none(),
-        }
+        };
+        Task::batch([search, spread])
     }
 
     fn end_spread(&mut self) -> Task<Message> {
@@ -519,11 +606,17 @@ impl Shell {
     }
 
     pub(crate) fn abort_spread(&mut self) -> Task<Message> {
-        if self.spread.active() {
+        let search = self.overview_spread_closing();
+        let spread = if self.spread.active() {
             self.end_spread()
         } else {
             Task::none()
-        }
+        };
+        Task::batch([search, spread])
+    }
+
+    pub(crate) fn spread_active(&self) -> bool {
+        self.spread.active()
     }
 
     fn spread_key(&mut self, key: iced::keyboard::key::Named) -> Task<Message> {
@@ -627,6 +720,113 @@ impl Shell {
         Subscription::batch([keys, frames, presented])
     }
 
+    // The desktops beside Search: each one's preview, the current one ringed,
+    // and the empty one at the end as a small add button.
+    fn overview_strip(
+        &self,
+        strip: Rect,
+        palette: &enzui_theme::Palette,
+    ) -> Element<'_, Message> {
+        let p = palette.clone();
+        let aspect = (self.spread.area[2] / self.spread.area[3].max(1.0)).clamp(0.5, 4.0);
+        let height = (strip.height - 6.0).max(1.0);
+        let width = height * aspect;
+        let mut cards = iced::widget::row![]
+            .spacing(14)
+            .align_y(iced::Alignment::Center);
+        if let Some(desktops) = &self.desktops {
+            let count = desktops.entries.len();
+            for (index, desktop) in desktops.entries.iter().enumerate() {
+                let active = desktop.id == desktops.active;
+                let spare = !active && desktop.windows == 0 && index + 1 == count && index > 0;
+                let preview = self
+                    .previews
+                    .iter()
+                    .find(|preview| preview.desktop == desktop.id);
+                let size = if spare {
+                    iced::Size::new((width * 0.45).max(44.0), height)
+                } else {
+                    iced::Size::new(width, height)
+                };
+                let picture: Element<'_, Message> = if spare {
+                    container(enz_icon("plus").size(20.0).tint(p.text_muted).into_element())
+                        .center_x(size.width)
+                        .center_y(size.height)
+                        .style(move |_| container::Style {
+                            background: Some(iced::Color { a: 0.08, ..p.text }.into()),
+                            border: iced::Border {
+                                radius: 8.0.into(),
+                                width: 1.0,
+                                color: iced::Color { a: 0.22, ..p.text },
+                            },
+                            ..Default::default()
+                        })
+                        .into()
+                } else if let Some(preview) = preview {
+                    enzui_widgets::image::enz_image_handle(preview.image.clone())
+                        .fit(enzui_widgets::image::EnzImageFit::Cover)
+                        .width(Length::Fixed(size.width))
+                        .height(Length::Fixed(size.height))
+                        .radius(8.0)
+                        .into_element()
+                } else {
+                    container(enz_icon("monitor").size(22.0).into_element())
+                        .center_x(size.width)
+                        .center_y(size.height)
+                        .style(move |_| container::Style {
+                            background: Some(p.surface_alt.into()),
+                            border: iced::Border {
+                                radius: 8.0.into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        })
+                        .into()
+                };
+                let mut tokens = enzui_widgets::clickable::ClickableTokens::from_palette(&p);
+                tokens.background = iced::Color::TRANSPARENT;
+                tokens.border = if active {
+                    p.accent
+                } else {
+                    iced::Color::TRANSPARENT
+                };
+                cards = cards.push(
+                    enzui_widgets::clickable::enz_clickable(
+                        picture,
+                        Message::Spread(SpreadMessage::Desktop(desktop.id)),
+                    )
+                    .aria_label(enzui_shell::tr!("workspace-caption", "number" => index + 1, "windows" => desktop.windows, "current" => if active { "yes" } else { "no" }))
+                    .description(tr("shell-select-desktop"))
+                    .id(format!("overview-desktop-{}", desktop.id).into())
+                    .tokens(tokens)
+                    .width(size.width + 6.0)
+                    .height(size.height + 6.0)
+                    .padding(3)
+                    .radius(11.0)
+                    .border_width(2.0)
+                    .into_element(),
+                );
+            }
+        }
+        let from = if self.bar == enzui_shell::settings::BarEdge::Bottom {
+            12.0
+        } else {
+            -12.0
+        };
+        let shown = enzui_widgets::motion::animated(
+            container(cards)
+                .center_x(strip.width)
+                .height(strip.height),
+        )
+        .enters_from(iced::Vector::new(0.0, from), 0.0)
+        .opacity(if self.spread.phase == Phase::Closing {
+            0.0
+        } else {
+            1.0
+        });
+        pin(shown).x(strip.x).y(strip.y).into()
+    }
+
     pub(crate) fn spread_view(&self, id: window::Id) -> Option<Element<'_, Message>> {
         if !self.spread.owns(id) {
             return None;
@@ -659,6 +859,9 @@ impl Shell {
                     .height(Length::Fill)
                     .into(),
             );
+        }
+        if let Some(strip) = self.spread.strip {
+            layers.push(self.overview_strip(strip, &palette));
         }
         // Captions of similar-height windows share one line per row; a much
         // shorter window keeps its caption under itself.
@@ -889,6 +1092,7 @@ mod tests {
                     to: place,
                     picture: Some(image::Handle::from_rgba(1, 1, vec![0; 4])),
                 }],
+                strip: None,
             }),
         ));
         let id = shell
@@ -925,6 +1129,20 @@ mod tests {
         let _ = shell.spread_message(SpreadMessage::Dismiss);
         assert!(shell.spread.phase == Phase::Closing);
         assert_eq!(shell.redraw_only, Some(id));
+    }
+
+    #[test]
+    fn the_overview_strip_sits_between_search_and_the_windows_on_the_bar_side() {
+        let area = [0.0, 0.0, 1440.0, 900.0];
+        let band = OverviewBand { search: 216.0 };
+        let (strip, bands) = overview_bands(area, (52.0, 0.0), band, false);
+        assert_eq!(strip.y, 52.0 + 216.0 + STRIP_GAP);
+        assert_eq!(strip.height, 90.0);
+        assert_eq!(bands, (strip.y + strip.height, 0.0));
+
+        let (strip, bands) = overview_bands(area, (0.0, 52.0), band, true);
+        assert_eq!(strip.y + strip.height, 900.0 - 52.0 - 216.0 - STRIP_GAP);
+        assert_eq!(bands, (0.0, 900.0 - strip.y));
     }
 
     #[test]

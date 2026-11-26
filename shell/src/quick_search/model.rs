@@ -44,6 +44,9 @@ pub(crate) struct FileKey {
 pub(crate) struct State {
     pub window: Option<window::Id>,
     pub showing: bool,
+    /// Shown as the overview's search: centred under the bar, over the
+    /// overview's own backdrop rather than dimming the screen.
+    pub overview: bool,
     pub visible: bool,
     pub started: bool,
     pub configured: bool,

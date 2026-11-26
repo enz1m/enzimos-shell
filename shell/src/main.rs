@@ -1,5 +1,6 @@
 //! Desktop main executable.
 use enzui_shell::i18n::{self, tr};
+mod activities;
 mod assistant;
 mod control_center;
 #[path = "plugin_applications/hover.rs"]
@@ -81,6 +82,8 @@ struct Shell {
     media: shell_media::Media,
     switcher: shell_switcher::Switcher,
     spread: window_spread::Spread,
+    // The overview Super opens: Search and the spread, shown together.
+    activities: bool,
     emoji: shell_emoji::EmojiPicker,
     capture: shell_capture::Capture,
     osk: shell_osk::Osk,
@@ -348,6 +351,7 @@ impl Shell {
             media: Default::default(),
             switcher: Default::default(),
             spread: Default::default(),
+            activities: false,
             emoji: Default::default(),
             capture: Default::default(),
             osk: Default::default(),

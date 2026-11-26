@@ -63,6 +63,32 @@ hl.bind("SUPER + code:60", command("emoji-picker"))
 hl.bind("SUPER + H", hl.dsp.exec_cmd("enzimos-dictation press"))
 hl.bind("SUPER + H", hl.dsp.exec_cmd("enzimos-dictation release"), { release = true })
 hl.bind("SUPER + W", command("window-spread"))
+-- Super pressed and released with no other key, button or wheel between opens
+-- the overview; Super+key shortcuts and Super+drag do not. A press runs no
+-- bind, so the Super key still reaches apps.
+enzui_super_tap = enzui_super_tap or { pointer = 0 }
+local tap = enzui_super_tap
+if hl.on and not tap.listener then
+    tap.listener = hl.on("input.keyboard.key", function(code, _, state)
+        if state == 1 then
+            tap.pressed, tap.pointer_at_press = code, tap.pointer
+        else
+            tap.released = code
+        end
+    end)
+end
+for _, input in ipairs({ "mouse:272", "mouse:273", "mouse:274", "mouse_up", "mouse_down", "mouse_left", "mouse_right" }) do
+    hl.bind(input, function() tap.pointer = tap.pointer + 1 end, { non_consuming = true, ignore_mods = true })
+end
+local function super_released()
+    -- The key event precedes its binds: the released key is the one pressed last.
+    if tap.released == nil or tap.released ~= tap.pressed or tap.pointer ~= tap.pointer_at_press then return end
+    local desktop = hl.get_active_workspace and hl.get_active_workspace()
+    local spread = not enzui_desktop_fullscreen() and not enzui_desktop_tiling_at(desktop and desktop.id)
+    hl.dispatch(hl.dsp.event("enzui-command:" .. (spread and "activities" or "activities-search")))
+end
+hl.bind("SUPER + Super_L", super_released, { release = true })
+hl.bind("SUPER + Super_R", super_released, { release = true })
 -- Locking goes through the shell, which supervises the lock client.
 hl.bind("SUPER + L", command("lock"))
 hl.bind("CTRL + ALT + SHIFT + R", command("record"))

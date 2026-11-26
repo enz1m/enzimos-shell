@@ -728,6 +728,7 @@ impl Compositor {
         &self,
         metrics: crate::settings::Metrics,
         bar: crate::settings::BarEdge,
+        take_focus: bool,
     ) -> Result<([f32; 4], f32, f32), String> {
         let output = self.desktop_output().await?;
         let name = output["name"]
@@ -760,9 +761,10 @@ impl Compositor {
         ];
         let size = serde_json::json!(format!("{width} {height}"));
         let lua = format!(
-            "hl.window_rule({{name='desktop-overlay-windowspread',match={{class='^dev[.]enzui[.]WindowSpread$'}},float=true,pin=true,monitor={},move={},size={size},min_size={size},max_size={size},border_size=0,rounding=0,decorate=false,no_anim=true,no_shadow=true,no_blur=true,no_xdg_drags=true}});for _,w in ipairs(hl.get_windows()) do if w.mapped and w.pid=={} and w.class=='dev.enzui.WindowSpread' then hl.dispatch(hl.dsp.window.resize({{window=w,x={width},y={height}}})) hl.dispatch(hl.dsp.window.move({{window=w,x={},y={}}})) end end",
+            "hl.window_rule({{name='desktop-overlay-windowspread',match={{class='^dev[.]enzui[.]WindowSpread$'}},float=true,pin=true,monitor={},move={},size={size},min_size={size},max_size={size},border_size=0,rounding=0,decorate=false,no_anim=true,no_shadow=true,no_blur=true,no_xdg_drags=true,no_initial_focus={}}});for _,w in ipairs(hl.get_windows()) do if w.mapped and w.pid=={} and w.class=='dev.enzui.WindowSpread' then hl.dispatch(hl.dsp.window.resize({{window=w,x={width},y={height}}})) hl.dispatch(hl.dsp.window.move({{window=w,x={},y={}}})) end end",
             serde_json::to_string(name).expect("serializing a string cannot fail"),
             serde_json::json!("0 0"),
+            !take_focus,
             std::process::id(),
             origin[0],
             origin[1],

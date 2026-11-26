@@ -640,6 +640,22 @@ impl SettingsApp {
                     })
                     .collect(),
             )
+        } else if key == OptionKey::SuperKey {
+            use enzui_shell::desktop_preferences::SuperKey;
+            self.choice_setting(
+                entry.route,
+                SuperKey::from_value(value).label(),
+                SuperKey::ALL
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, choice)| {
+                        (
+                            choice.label().into(),
+                            Message::Change(Change::Compositor(key, index as i32)),
+                        )
+                    })
+                    .collect(),
+            )
         } else if key == OptionKey::LayoutSwitch {
             use enzui_shell::desktop_preferences::LayoutSwitch;
             self.choice_setting(

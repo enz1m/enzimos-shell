@@ -17,6 +17,8 @@ pub struct IslandPlacement {
     pub attachment: crate::reveal::Attachment,
     /// Joined to the frame's bar rather than floating by the islands.
     pub frame: bool,
+    /// The card dims the rest of the screen.
+    pub dim: bool,
 }
 impl IslandPlacement {
     fn lua(self) -> String {
@@ -33,8 +35,7 @@ impl IslandPlacement {
             m.top,
             m.right,
             m.bottom,
-            // A panel joined to the bar stays one surface with it, undimmed.
-            matches!(self.attachment, crate::reveal::Attachment::Island { .. }),
+            self.dim,
             self.frame
         )
     }
@@ -654,6 +655,8 @@ impl Compositor {
                     bottom: bar == crate::settings::BarEdge::Bottom,
                     attachment,
                     frame: false,
+                    // A panel joined to the bar stays one surface with it, undimmed.
+                    dim: matches!(attachment, crate::reveal::Attachment::Island { .. }),
                 }),
             });
         }
@@ -698,6 +701,7 @@ impl Compositor {
                 bottom: bar == crate::settings::BarEdge::Bottom,
                 attachment,
                 frame: true,
+                dim: matches!(attachment, crate::reveal::Attachment::Island { .. }),
             }),
         })
     }

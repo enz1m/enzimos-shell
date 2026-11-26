@@ -269,6 +269,7 @@ fn row_note(key: &str) -> Option<&'static str> {
         "shell/material" => tr("shell-material-description"),
         "shell/chrome_color" => tr("shell-chrome-color-note"),
         "windows/focus_pointer" => tr("shell-moving-the-pointer-over-a-window-focuses-it"),
+        "windows/super_key" => tr("shell-super-key-note"),
         "windows/restore_apps" => {
             tr("shell-reopens-the-apps-that-were-open-when-you-last-logged-out-or-shut-down-each-o")
         }

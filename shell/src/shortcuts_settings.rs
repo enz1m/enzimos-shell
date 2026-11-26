@@ -482,7 +482,13 @@ impl SettingsApp {
                 .into_element(),
         );
         let reference = self.mark_setting("keyboard/shortcut-reference", reference);
-        let mut groups = column![self.mark_setting("keyboard/shortcuts", reference)].spacing(20);
+        let mut groups = column![
+            self.mark_setting("keyboard/shortcuts", reference),
+            super::sections::group_card(
+                self.compositor_row(enzui_shell::desktop_preferences::OptionKey::SuperKey)
+            ),
+        ]
+        .spacing(20);
         let mut custom = column![
             settings_row(tr("shell-shortcuts-custom"))
                 .control(button(

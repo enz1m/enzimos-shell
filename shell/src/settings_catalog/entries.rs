@@ -1369,6 +1369,13 @@ pub static ENTRIES: &[Entry] = &[
     ),
     entry!(
         Keyboard,
+        "windows/super_key",
+        "shell-super-key",
+        "shell-shortcuts",
+        "shell-super-key-keywords"
+    ),
+    entry!(
+        Keyboard,
         "keyboard/shortcuts",
         "shell-keyboard-shortcuts",
         "shell-shortcuts",

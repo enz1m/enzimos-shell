@@ -31,9 +31,10 @@ pub enum OptionKey {
     Gestures,
     Zoom,
     CursorSize,
+    SuperKey,
 }
 impl OptionKey {
-    pub const ALL: [Self; 26] = [
+    pub const ALL: [Self; 27] = [
         Self::InnerGap,
         Self::OuterGap,
         Self::Border,
@@ -60,6 +61,7 @@ impl OptionKey {
         Self::Gestures,
         Self::Zoom,
         Self::CursorSize,
+        Self::SuperKey,
     ];
     pub fn key(self) -> &'static str {
         match self {
@@ -89,6 +91,7 @@ impl OptionKey {
             Self::Gestures => "gestures",
             Self::Zoom => "zoom",
             Self::CursorSize => "cursor_size",
+            Self::SuperKey => "super_key",
         }
     }
     pub fn bounds(self) -> (i32, i32) {
@@ -110,6 +113,7 @@ impl OptionKey {
             Self::LayoutSwitch => (0, LayoutSwitch::ALL.len() as i32 - 1),
             Self::Zoom => (ZOOM_MIN, ZOOM_MAX),
             Self::CursorSize => (16, 96),
+            Self::SuperKey => (0, SuperKey::ALL.len() as i32 - 1),
             _ => (0, 1),
         }
     }
@@ -202,6 +206,33 @@ impl CapsLock {
     }
 }
 
+/// What pressing and releasing Super on its own opens with the Island bar.
+/// The framed bar keeps Super for shortcuts only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SuperKey {
+    /// Search, desktops and the current desktop's windows together; Search
+    /// alone on a tiling desktop or over a fullscreen app.
+    Overview,
+    Search,
+    Nothing,
+}
+impl SuperKey {
+    pub const ALL: [Self; 3] = [Self::Overview, Self::Search, Self::Nothing];
+    pub fn from_value(value: i32) -> Self {
+        usize::try_from(value)
+            .ok()
+            .and_then(|index| Self::ALL.get(index).copied())
+            .unwrap_or(Self::Overview)
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Overview => tr("shell-super-key-overview"),
+            Self::Search => tr("shell-super-key-search"),
+            Self::Nothing => tr("shell-super-key-nothing"),
+        }
+    }
+}
+
 /// The key combination that moves to the next keyboard layout. Super +
 /// Space is not offered: the shell uses it for Quick Search.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -286,6 +317,8 @@ pub struct CompositorPreferences {
     /// action not listed keeps its default.
     pub shortcuts: std::collections::BTreeMap<String, String>,
     pub custom_shortcuts: std::collections::BTreeMap<String, crate::shortcut_map::CustomShortcut>,
+    /// What a lone Super press opens (`SuperKey`).
+    pub super_key: u8,
 }
 impl Default for CompositorPreferences {
     fn default() -> Self {
@@ -322,6 +355,7 @@ impl Default for CompositorPreferences {
             color_modes: std::collections::BTreeMap::new(),
             shortcuts: std::collections::BTreeMap::new(),
             custom_shortcuts: std::collections::BTreeMap::new(),
+            super_key: 0,
         }
     }
 }
@@ -384,6 +418,7 @@ impl CompositorPreferences {
             OptionKey::Gestures => self.gestures.into(),
             OptionKey::Zoom => self.zoom.into(),
             OptionKey::CursorSize => self.cursor_size.into(),
+            OptionKey::SuperKey => self.super_key.into(),
         }
     }
     pub fn set(&mut self, key: OptionKey, value: i32) -> Result<(), String> {
@@ -420,6 +455,7 @@ impl CompositorPreferences {
             OptionKey::Gestures => self.gestures = value != 0,
             OptionKey::Zoom => self.zoom = value as u16,
             OptionKey::CursorSize => self.cursor_size = value as u16,
+            OptionKey::SuperKey => self.super_key = value as u8,
         }
         Ok(())
     }

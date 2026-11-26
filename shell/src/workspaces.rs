@@ -292,6 +292,7 @@ const SHELL_CLASSES: &[&[u8]] = &[
     b"dev.enzui.ControlCenter",
     b"dev.enzui.Dock",
     b"dev.enzui.Desktop",
+    b"dev.enzui.WritingTools",
     b"dev.enzui.EmojiPicker",
     b"dev.enzui.Keyboard",
     b"dev.enzui.Launcher",

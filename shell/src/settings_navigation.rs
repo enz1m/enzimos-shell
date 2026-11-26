@@ -459,6 +459,11 @@ const SECTIONS: &[Section] = &[
     },
     Section {
         category: Category::Agents,
+        label: "writing-tools",
+        route: "agents/writing-tools",
+    },
+    Section {
+        category: Category::Agents,
         label: "shell-on-device-ai",
         route: "agents/local-ai",
     },

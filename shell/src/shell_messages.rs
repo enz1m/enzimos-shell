@@ -39,6 +39,7 @@ pub(super) enum Message {
     Switcher(shell_switcher::SwitcherMessage),
     Spread(window_spread::SpreadMessage),
     Emoji(shell_emoji::EmojiMessage),
+    Writing(shell_writing::WritingMessage),
     Capture(shell_capture::CaptureMessage),
     Osk(shell_osk::OskMessage),
     Clock(shell_clock::ClockMessage),

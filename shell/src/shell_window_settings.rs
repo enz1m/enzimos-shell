@@ -39,6 +39,7 @@ pub(super) fn window_settings(app_id: &str, width: f32, height: f32) -> window::
                 | "dev.enzui.Capture"
                 | "dev.enzui.WindowSpread"
                 | "dev.enzui.Shortcuts"
+                | "dev.enzui.WritingTools"
                 | "dev.enzui.EmojiPicker"
                 | "dev.enzui.Keyboard"
                 | "dev.enzui.PluginPanel"

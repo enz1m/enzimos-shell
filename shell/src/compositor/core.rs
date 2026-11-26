@@ -134,6 +134,18 @@ impl Compositor {
         String::from_utf8(output.stdout).map_err(|_| tr("shell-invalid-compositor-response").into())
     }
 
+    pub async fn writing_request(&self, command: &str) -> Result<String, String> {
+        let socket = self
+            .request_socket()
+            .ok_or_else(|| tr("writing-selection-unavailable"))?;
+        tokio::time::timeout(
+            Duration::from_millis(600),
+            request_socket(&socket, &["enzuiwriting", command]),
+        )
+        .await
+        .map_err(|_| tr("writing-selection-unavailable").to_owned())?
+    }
+
     fn request_socket(&self) -> Option<std::path::PathBuf> {
         use std::os::unix::fs::{FileTypeExt, MetadataExt};
         let socket = std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?)

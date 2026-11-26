@@ -70,6 +70,16 @@ registered shell or an uninjected executable installed in the same directory
 as `ENZUI_SHELL_EXE`, and otherwise leaves the window without an application
 id. X11 windows never keep one.
 
+## Writing Tools
+
+The compositor accepts Writing Tools requests from the registered Shell
+process. It issues a single-use replacement token for a selection reported
+by the focused Wayland text input. Replacement requires the same surface and
+text input with fresh matching surrounding text and selection offsets.
+The command declines password, PIN and sensitive fields. Locking clears any
+pending replacement. A read-only primary selection is accepted from the
+focused client and checked again after transfer.
+
 ## Supervisor contract
 
 The per-user supervisor derives its own PID and `/proc/self/stat` field-22 start

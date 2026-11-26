@@ -37,6 +37,9 @@ impl Shell {
                 self.dock_save(enzui_shell::dock::Change::Enabled(false))
             }
 
+            Message::Window(id, event) if self.writing.owns(id) => self.writing_window(&event),
+            Message::Escape(id) if self.writing.owns(id) => self.close_writing_tools(),
+            Message::Opened(id) if self.writing.owns(id) => self.bind_transient_glass(id),
             Message::Window(id, event) if self.emoji.owns(id) => self.emoji_window(&event),
             Message::Window(id, event) if self.osk.owns(id) => self.osk_window(&event),
             Message::Escape(id) if self.emoji.owns(id) => self.close_emoji_picker(),

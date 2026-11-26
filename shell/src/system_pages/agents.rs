@@ -134,6 +134,7 @@ impl SettingsApp {
                 .into_element(),
         );
         body = body.push(self.assistant_section());
+        body = body.push(self.writing_tools_section());
         body = self.local_ai_sections(body);
 
         // Enrolled identities: the agents and apps allowed to connect.

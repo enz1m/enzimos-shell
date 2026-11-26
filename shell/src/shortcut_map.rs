@@ -39,6 +39,7 @@ pub const ACTIONS: &[Action] = actions![
     "notifications", "Show notifications", "System", "SUPER + N";
     "settings", "Open Settings", "System", "SUPER + code:59";
     "emoji", "Emoji picker", "System", "SUPER + code:60";
+    "writing-tools", "Writing Tools", "System", "SUPER + SHIFT + code:25";
     "sidebar", "Show the sidebar", "System", "SUPER + SHIFT + B";
     "brightness-up", "Increase brightness", "System", "XF86MonBrightnessUp";
     "brightness-down", "Decrease brightness", "System", "XF86MonBrightnessDown";

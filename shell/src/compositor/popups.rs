@@ -649,6 +649,7 @@ impl Compositor {
             "dev.enzui.Osd"
                 | "dev.enzui.Switcher"
                 | "dev.enzui.EmojiPicker"
+                | "dev.enzui.WritingTools"
                 | "dev.enzui.Keyboard"
                 | "dev.enzui.Capture"
         ) {
@@ -657,7 +658,7 @@ impl Compositor {
         // Hyprland denies pointer input to no-focus windows; the keyboard instead skips focus
         // on mapping.
         let focus = match class {
-            "dev.enzui.EmojiPicker" | "dev.enzui.Capture" => "",
+            "dev.enzui.EmojiPicker" | "dev.enzui.Capture" | "dev.enzui.WritingTools" => "",
             "dev.enzui.Keyboard" => "no_initial_focus=true,",
             _ => "no_initial_focus=true,no_focus=true,",
         };
@@ -668,7 +669,39 @@ impl Compositor {
         {
             return Err(tr("shell-invalid-overlay-geometry").into());
         }
-        let output = self.desktop_output().await?;
+        let pointer = if class == "dev.enzui.WritingTools" {
+            let reply = self.request(&["-j", "cursorpos"]).await?;
+            let cursor: serde_json::Value =
+                serde_json::from_str(&reply).map_err(|_| tr("shell-invalid-overlay-geometry"))?;
+            cursor["x"].as_f64().zip(cursor["y"].as_f64())
+        } else {
+            None
+        };
+        let mut output = self.desktop_output().await?;
+        if let Some((x, y)) = pointer {
+            let monitors = self.request(&["-j", "monitors"]).await?;
+            if let Ok(monitors) = serde_json::from_str::<Vec<serde_json::Value>>(&monitors)
+                && let Some(monitor) = monitors.into_iter().find_map(|mut output| {
+                    if output["transform"]
+                        .as_i64()
+                        .is_some_and(|transform| transform % 2 == 1)
+                    {
+                        let (width, height) = (output["width"].take(), output["height"].take());
+                        output["width"] = height;
+                        output["height"] = width;
+                    }
+                    let (ox, oy) = (output["x"].as_f64()?, output["y"].as_f64()?);
+                    let scale = output["scale"].as_f64()?;
+                    let (w, h) = (
+                        output["width"].as_f64()? / scale,
+                        output["height"].as_f64()? / scale,
+                    );
+                    (x >= ox && x < ox + w && y >= oy && y < oy + h).then_some(output)
+                })
+            {
+                output = monitor;
+            }
+        }
         control_geometry(&output)?;
         let name = output["name"]
             .as_str()
@@ -696,8 +729,27 @@ impl Compositor {
         } else {
             (screen_height - bottom - height).max(0.0).round()
         };
-        let absolute_x = x + output["x"].as_f64().ok_or("Missing output origin")? as f32;
-        let absolute_y = y + output["y"].as_f64().ok_or("Missing output origin")? as f32;
+        let ox = output["x"].as_f64().ok_or("Missing output origin")? as f32;
+        let oy = output["y"].as_f64().ok_or("Missing output origin")? as f32;
+        let (x, y) = if let Some((px, py)) = pointer {
+            let inset = f32::from(metrics.bar_band());
+            let px = px as f32 - ox;
+            let py = py as f32 - oy;
+            let below = py + 14.0;
+            let y = if below + height <= screen_height - inset {
+                below
+            } else {
+                py - height - 14.0
+            };
+            (
+                (px + 12.0).clamp(0.0, (screen_width - width).max(0.0)),
+                y.clamp(inset, (screen_height - height - inset).max(inset)),
+            )
+        } else {
+            (x, y)
+        };
+        let absolute_x = x + ox;
+        let absolute_y = y + oy;
         let size = serde_json::json!(format!("{width} {height}"));
         let rule = class
             .replace("dev.enzui.", "desktop-overlay-")

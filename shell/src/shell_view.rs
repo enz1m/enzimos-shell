@@ -453,6 +453,9 @@ impl Shell {
         if let Some(view) = self.spread_view(id) {
             return view;
         }
+        if let Some(view) = self.writing_view(id) {
+            return view;
+        }
         if let Some(view) = self.emoji_view(id) {
             return view;
         }
@@ -788,6 +791,7 @@ impl Shell {
                 if self.owns_osd(id)
                     || self.owns_switcher(id)
                     || self.emoji.owns(id)
+                    || self.writing.owns(id)
                     || self.osk.owns(id) =>
             {
                 self.surface_globals.get_or_insert_with(|| input.globals());

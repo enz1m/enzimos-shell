@@ -1789,6 +1789,20 @@ pub static ENTRIES: &[Entry] = &[
     ),
     entry!(
         Agents,
+        "agents/writing-tools",
+        "writing-tools",
+        "writing-enabled",
+        "writing-search-keywords"
+    ),
+    entry!(
+        Agents,
+        "agents/writing-model",
+        "writing-model",
+        "writing-tools",
+        "writing-model-keywords"
+    ),
+    entry!(
+        Agents,
         "agents/local-ai",
         "shell-on-device-ai",
         "shell-on-device-ai",

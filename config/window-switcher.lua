@@ -7,7 +7,7 @@ local shell_classes = {
     ["dev.enzui.PluginPanel"]=true, ["dev.enzui.WindowSpread"]=true, ["dev.enzui.Switcher"]=true,
     ["dev.enzui.AssistantPanel"]=true, ["dev.enzui.AssistantTrigger"]=true,
     ["dev.enzui.NotificationCenter"]=true, ["dev.enzui.NotificationToasts"]=true,
-    ["dev.enzui.EmojiPicker"]=true, ["dev.enzui.Keyboard"]=true, ["dev.enzui.Shortcuts"]=true, ["dev.enzui.Osd"]=true, ["dev.enzui.Capture"]=true,
+    ["dev.enzui.WritingTools"]=true, ["dev.enzui.EmojiPicker"]=true, ["dev.enzui.Keyboard"]=true, ["dev.enzui.Shortcuts"]=true, ["dev.enzui.Osd"]=true, ["dev.enzui.Capture"]=true,
 }
 local function eligible(window, workspace, output)
     return window and window.mapped and not window.hidden and window.accepts_input ~= false

@@ -21,6 +21,7 @@ impl Message {
             Self::Switcher(..) => "Switcher",
             Self::Spread(..) => "Spread",
             Self::Emoji(..) => "Emoji",
+            Self::Writing(..) => "Writing",
             Self::Capture(..) => "Capture",
             Self::Osk(..) => "Osk",
             Self::Clock(..) => "Clock",

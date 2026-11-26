@@ -37,7 +37,7 @@ impl Service {
     }
 }
 
-fn exchange(
+pub(crate) fn exchange(
     service: Service,
     method: &str,
     path: &str,
@@ -51,15 +51,41 @@ fn exchange(
     )
 }
 
+pub(crate) fn exchange_with_timeout(
+    service: Service,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+    timeout: Duration,
+) -> Result<(u16, Value), Failure> {
+    exchange_at_with_timeout(
+        &service.socket().ok_or(Failure::Unavailable)?,
+        method,
+        path,
+        body,
+        timeout,
+    )
+}
+
 fn exchange_at(
     socket: &std::path::Path,
     method: &str,
     path: &str,
     body: Option<&Value>,
 ) -> Result<(u16, Value), Failure> {
+    exchange_at_with_timeout(socket, method, path, body, Duration::from_secs(10))
+}
+
+fn exchange_at_with_timeout(
+    socket: &std::path::Path,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+    timeout: Duration,
+) -> Result<(u16, Value), Failure> {
     let mut stream =
         crate::agent_harness::private_socket(socket).map_err(|_| Failure::Unavailable)?;
-    stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
+    stream.set_read_timeout(Some(timeout)).ok();
     stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
     let payload = body
         .map(|b| serde_json::to_vec(b).unwrap_or_default())

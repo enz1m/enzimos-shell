@@ -4,7 +4,7 @@ use enzui_shell::local_ai::{
     self, Change, ChatGpt, Failure, Gateway, Inference, ModelOffer, Online, PRESETS, ProviderEdit,
     Service,
 };
-use enzui_shell::tr;
+use enzui_shell::{tr, writing_tools};
 use enzui_widgets::button::{ButtonKind, enz_button};
 use enzui_widgets::combo_box::enz_combo_box;
 use enzui_widgets::text_field::enz_text_field_owned;
@@ -24,6 +24,8 @@ pub(super) struct State {
     downloads: Vec<model_downloads::Reading>,
     advanced: bool,
     enabled: bool,
+    writing: writing_tools::Preferences,
+    writing_error: Option<String>,
     /// The provider being added: preset (past the presets: another), name, address, key.
     preset: usize,
     name: String,
@@ -39,6 +41,7 @@ type Readings = (
     Vec<ModelOffer>,
     Vec<model_downloads::Reading>,
     bool,
+    writing_tools::Preferences,
 );
 
 #[derive(Clone, Debug)]
@@ -67,6 +70,8 @@ pub(super) enum Message {
     RefreshStatus,
     ToggleAdvanced,
     SetEnabled(bool),
+    WritingEnabled(bool),
+    WritingModel(Option<String>),
     Enabled(Result<(), String>),
     /// The model tool's answer to a choice or a download.
     ToolDone(Result<String, String>),
@@ -141,17 +146,21 @@ fn read() -> Task<ParentMessage> {
                     catalog,
                     downloads,
                     local_ai::enabled(),
+                    writing_tools::Preferences::load(),
                 )
             })
             .await
-            .unwrap_or((
-                Err(Failure::Unavailable),
-                Err(Failure::Unavailable),
-                None,
-                Vec::new(),
-                Vec::new(),
-                false,
-            ))
+            .unwrap_or_else(|_| {
+                (
+                    Err(Failure::Unavailable),
+                    Err(Failure::Unavailable),
+                    None,
+                    Vec::new(),
+                    Vec::new(),
+                    false,
+                    Default::default(),
+                )
+            })
         },
         |readings| send(Message::Read(Box::new(readings))),
     )
@@ -271,7 +280,7 @@ impl SettingsApp {
         let state = &mut self.local_ai;
         match message {
             Message::Read(readings) => {
-                let (inference, gateway, chatgpt, offers, downloads, enabled) = *readings;
+                let (inference, gateway, chatgpt, offers, downloads, enabled, writing) = *readings;
                 state.reading = false;
                 if state.inference.as_ref() == Some(&inference)
                     && state.gateway.as_ref() == Some(&gateway)
@@ -279,15 +288,32 @@ impl SettingsApp {
                     && state.offers == offers
                     && state.downloads == downloads
                     && state.enabled == enabled
+                    && state.writing == writing
                 {
                     return iced::window::invalidate(iced::window::Invalidation::none());
                 }
+                state.writing = writing;
                 state.downloads = downloads;
                 state.enabled = enabled;
                 state.offers = offers;
                 state.inference = Some(inference);
                 state.gateway = Some(gateway);
                 state.chatgpt = chatgpt;
+            }
+            Message::WritingEnabled(_) | Message::WritingModel(_) => {
+                if !live {
+                    return Task::none();
+                }
+                let mut preferences = writing_tools::Preferences::load();
+                match message {
+                    Message::WritingEnabled(enabled) => preferences.enabled = enabled,
+                    Message::WritingModel(model) => preferences.model = model,
+                    _ => return Task::none(),
+                }
+                state.writing_error = preferences.save().err();
+                if state.writing_error.is_none() {
+                    state.writing = preferences;
+                }
             }
             Message::RefreshStatus => {
                 let task = if live && !state.reading && state.busy.is_none() {
@@ -940,6 +966,81 @@ impl SettingsApp {
             rows = rows.push(row.into_element());
         }
         rows
+    }
+
+    pub(super) fn writing_tools_section(&self) -> Element<'_, ParentMessage> {
+        use crate::settings_app::settings_row;
+        let state = &self.local_ai;
+        let mut models = vec![None];
+        if let Some(Ok(inference)) = &state.inference {
+            models.extend(inference.models.iter().cloned().map(Some));
+        }
+        if let Some(preferred) = &state.writing.model
+            && !models.iter().any(|model| model.as_ref() == Some(preferred))
+        {
+            models.push(Some(preferred.clone()));
+        }
+        let selected = models
+            .iter()
+            .position(|model| *model == state.writing.model);
+        let names = models
+            .iter()
+            .map(|model| {
+                model
+                    .as_deref()
+                    .map_or_else(|| tr("writing-automatic"), |id| self.model_title(id))
+                    .to_owned()
+            })
+            .collect();
+        let model = enz_combo_box("", names, None, |_| ParentMessage::Noop)
+            .aria_label(tr("writing-model"))
+            .on_select_index(move |index| {
+                models.get(index).map_or(ParentMessage::Noop, |id| {
+                    send(Message::WritingModel(id.clone()))
+                })
+            })
+            .selected_index(selected)
+            .enabled(self.controls_live() && state.writing.enabled)
+            .width(240)
+            .id("writing-model".into())
+            .into_element();
+        let mut rows = column![
+            self.mark_setting(
+                "agents/writing-tools",
+                settings_row(tr("writing-enabled"))
+                    .switch(state.writing.enabled, |enabled| send(
+                        Message::WritingEnabled(enabled)
+                    ))
+                    .enabled(self.controls_live())
+                    .into_element()
+            ),
+            self.mark_setting(
+                "agents/writing-model",
+                settings_row(tr("writing-model"))
+                    .control(model)
+                    .into_element()
+            ),
+            settings_row(tr("writing-shortcut"))
+                .control(
+                    enz_button(
+                        tr("writing-shortcut-edit"),
+                        ParentMessage::Section("keyboard/shortcut-writing-tools")
+                    )
+                    .kind(ButtonKind::Secondary)
+                    .enabled(self.controls_live())
+                    .id("writing-shortcut-edit".into())
+                    .into_element()
+                )
+                .into_element(),
+        ]
+        .spacing(2);
+        if let Some(error) = &state.writing_error {
+            rows = rows.push(self.caption_row_text(error.clone()));
+        }
+        self.section_card_for("agents/writing-tools", rows)
+            .title(tr("writing-tools"))
+            .description(tr("writing-settings-description"))
+            .into_element()
     }
 
     pub(super) fn local_ai_sections<'a>(

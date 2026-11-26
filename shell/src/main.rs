@@ -42,6 +42,7 @@ mod shell_trace;
 mod shell_view;
 mod shell_window_settings;
 mod shell_windows;
+mod shell_writing;
 mod shortcut_overlay;
 mod sidebar_view;
 mod theme_cache;
@@ -87,6 +88,7 @@ struct Shell {
     // A desktop chosen in the overview is coming up; the overview follows it.
     activities_following: bool,
     emoji: shell_emoji::EmojiPicker,
+    writing: shell_writing::WritingTools,
     capture: shell_capture::Capture,
     osk: shell_osk::Osk,
     clock_panel: shell_clock::ClockPanel,
@@ -356,6 +358,7 @@ impl Shell {
             activities: false,
             activities_following: false,
             emoji: Default::default(),
+            writing: Default::default(),
             capture: Default::default(),
             osk: Default::default(),
             clock_panel: Default::default(),
@@ -766,6 +769,7 @@ impl Shell {
             Message::Media(message) => self.media_message(message),
             Message::Switcher(message) => self.switcher_message(message),
             Message::Spread(message) => self.spread_message(message),
+            Message::Writing(message) => self.writing_message(message),
             Message::Emoji(message) => self.emoji_message(message),
             Message::Capture(message) => self.capture_message(message),
             Message::Osk(message) => self.osk_message(message),

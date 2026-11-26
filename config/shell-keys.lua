@@ -59,6 +59,7 @@ hl.bind("SUPER + SHIFT + D", command("dock"))
 hl.bind("SUPER + D", command("overview"))
 hl.bind("SUPER + ALT + K", command("keyboard"))
 hl.bind("SUPER + code:60", command("emoji-picker"))
+hl.bind("SUPER + SHIFT + code:25", command("writing-tools"))
 -- Dictation: hold to talk, or tap for hands-free; the daemon tells them apart.
 hl.bind("SUPER + H", hl.dsp.exec_cmd("enzimos-dictation press"))
 hl.bind("SUPER + H", hl.dsp.exec_cmd("enzimos-dictation release"), { release = true })

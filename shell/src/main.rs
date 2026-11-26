@@ -934,13 +934,21 @@ impl Shell {
                 Task::none()
             }
             Message::Privacy(usage) => {
-                if usage.output.is_some() {
+                let watched = usage.audio_devices.is_some()
+                    || usage.output.is_some()
+                    || usage.input.is_some();
+                if watched || self.audio_watched {
                     self.system.audio = usage.output;
                     self.system.microphone = usage.input;
-                    self.audio_watched = true;
+                    self.audio_watched = watched;
                 }
+                let devices_changed = self.privacy.audio_devices != usage.audio_devices;
                 self.privacy = usage;
-                Task::none()
+                if devices_changed {
+                    Task::done(Message::RefreshAudioDevices)
+                } else {
+                    Task::none()
+                }
             }
             Message::InputMethodApplied(result) => {
                 if let Err(error) = result {

@@ -1082,6 +1082,10 @@ impl Shell {
                 let controls = self.controls.clone();
                 self.audio_request = self.audio_request.wrapping_add(1);
                 let epoch = self.audio_request;
+                if let Some(devices) = &self.privacy.audio_devices {
+                    self.audio_devices = Some(Ok(devices.clone()));
+                    return Task::none();
+                }
                 self.audio_devices = None;
                 Task::perform(
                     async move { controls.audio_devices().await },

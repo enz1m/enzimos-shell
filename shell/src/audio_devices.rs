@@ -61,6 +61,12 @@ pub fn parse_dump(text: &str) -> Result<Vec<Device>, String> {
     let nodes = data
         .as_array()
         .ok_or_else(|| tr("shell-invalid-audio-device-list"))?;
+    parse_nodes(nodes)
+}
+
+pub(crate) fn parse_nodes<'a>(
+    nodes: impl IntoIterator<Item = &'a Value>,
+) -> Result<Vec<Device>, String> {
     let mut devices = Vec::new();
     for node in nodes {
         if node["type"] != "PipeWire:Interface:Node" {

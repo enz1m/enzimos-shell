@@ -1,7 +1,9 @@
 //! PipeWire capture indicators for running microphone, camera and screen streams.
 
+use crate::audio_devices::{self, Devices, Kind};
 use enzui_shell::i18n::tr;
 use enzui_shell::tr;
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -15,6 +17,8 @@ pub struct Usage {
     pub output: Option<crate::system_controls::Audio>,
     /// The default input's.
     pub input: Option<crate::system_controls::Audio>,
+    /// The current device picker state when a PipeWire graph is available.
+    pub audio_devices: Option<Devices>,
 }
 
 impl Usage {
@@ -41,50 +45,58 @@ impl Usage {
 
 type Objects = BTreeMap<u64, serde_json::Value>;
 
-/// Applies one `pw-dump` array: changed objects replace, `"info": null`
-/// removes. Metadata objects carry their entries instead of `info`.
-pub fn merge(objects: &mut Objects, update: &serde_json::Value) {
+const DEFAULT_SINK: &str = "default.audio.sink";
+const DEFAULT_SOURCE: &str = "default.audio.source";
+
+/// Applies one monitoring batch from `pw-dump`.
+pub fn merge(objects: &mut Objects, update: &Value) {
     for object in update.as_array().into_iter().flatten() {
-        let Some(id) = object.get("id").and_then(serde_json::Value::as_u64) else {
+        let Some(id) = object.get("id").and_then(Value::as_u64) else {
             continue;
         };
-        let info = object.get("info");
-        if info.is_some_and(|info| !info.is_null())
-            || (info.is_none() && object.get("metadata").is_some())
-        {
+        if object.get("info").is_some_and(|info| !info.is_null()) {
             objects.insert(id, object.clone());
+        } else if object["props"]["metadata.name"] == "default"
+            && let Some(updates) = object["metadata"].as_array()
+        {
+            // pw-dump --monitor emits only changed metadata entries.
+            let mut entries = objects
+                .get(&id)
+                .and_then(|previous| previous["metadata"].as_array())
+                .cloned()
+                .unwrap_or_default();
+            for entry in updates.iter().filter(|entry| {
+                entry["subject"].as_u64() == Some(0)
+                    && matches!(entry["key"].as_str(), Some(DEFAULT_SINK | DEFAULT_SOURCE))
+            }) {
+                entries.retain(|old| old["key"] != entry["key"]);
+                if entry["value"]["name"].is_string() {
+                    entries.push(entry.clone());
+                }
+            }
+            let mut object = object.clone();
+            object["metadata"] = entries.into();
+            objects.insert(id, object);
         } else {
             objects.remove(&id);
         }
     }
 }
 
-/// The level and mute of the default node `key` names
-/// (`default.audio.sink`, `default.audio.source`): the cube root of its mean
-/// channel volume, as `wpctl get-volume` shows it.
-fn default_level(objects: &Objects, key: &str) -> Option<crate::system_controls::Audio> {
-    use serde_json::Value;
-    let name = objects
+fn default_name<'a>(objects: &'a Objects, key: &str) -> Option<&'a str> {
+    objects
         .values()
-        .filter(|o| {
-            o.get("type").and_then(Value::as_str) == Some("PipeWire:Interface:Metadata")
-                && o.get("props")
-                    .and_then(|p| p.get("metadata.name"))
-                    .and_then(Value::as_str)
-                    == Some("default")
-        })
-        .flat_map(|o| {
-            o.get("metadata")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-        })
-        .find(|entry| entry.get("key").and_then(Value::as_str) == Some(key))?
-        .get("value")?
-        .get("name")?
-        .as_str()?;
+        .filter(|o| o["props"]["metadata.name"] == "default")
+        .flat_map(|o| o["metadata"].as_array().into_iter().flatten())
+        .find(|entry| entry["key"] == key)?["value"]["name"]
+        .as_str()
+}
+
+/// The cube root of the default node's mean channel volume, as shown by wpctl.
+fn default_level(objects: &Objects, name: Option<&str>) -> Option<crate::system_controls::Audio> {
+    let name = name?;
     let node = objects.values().find(|o| {
-        o.get("type").and_then(Value::as_str) == Some("PipeWire:Interface:Node")
+        o["type"] == "PipeWire:Interface:Node"
             && props(o).and_then(|p| text(p, "node.name")) == Some(name)
     })?;
     let params = node.get("info")?.get("params")?.get("Props")?.as_array()?;
@@ -133,9 +145,30 @@ fn app_name(props: &serde_json::Map<String, serde_json::Value>) -> String {
 /// Which apps are capturing what, from the merged graph.
 #[must_use]
 pub fn usage(objects: &Objects) -> Usage {
+    let output = default_name(objects, DEFAULT_SINK);
+    let input = default_name(objects, DEFAULT_SOURCE);
+    let audio_devices = objects
+        .values()
+        .any(|o| o["type"] == "PipeWire:Interface:Core")
+        .then(|| audio_devices::parse_nodes(objects.values()).ok())
+        .flatten()
+        .map(|nodes| {
+            let serial = |name, kind| {
+                nodes
+                    .iter()
+                    .find(|device| device.kind == kind && Some(device.name.as_str()) == name)
+                    .map(|device| device.serial)
+            };
+            Devices {
+                output: serial(output, Kind::Output),
+                input: serial(input, Kind::Input),
+                nodes,
+            }
+        });
     let mut found = Usage {
-        output: default_level(objects, "default.audio.sink"),
-        input: default_level(objects, "default.audio.source"),
+        output: default_level(objects, output),
+        input: default_level(objects, input),
+        audio_devices,
         ..Usage::default()
     };
     let nodes: BTreeMap<u64, &serde_json::Value> = objects
@@ -232,7 +265,7 @@ fn stream() -> impl iced::futures::Stream<Item = Usage> {
                 }
                 drop(observer);
                 // PipeWire went away: nothing is capturing through it.
-                if last.any() && output.send(Usage::default()).await.is_err() {
+                if last != Usage::default() && output.send(Usage::default()).await.is_err() {
                     return;
                 }
             }
@@ -334,34 +367,31 @@ mod tests {
                 "the child was reaped"
             );
         }
-        // The default output's and input's levels come from the graph as
-        // `wpctl` shows them: the cube root of the mean channel volume, with
-        // mute. Metadata objects, which carry no `info`, are kept until removed.
-        //
-        // Sabotage: drop objects without `info` in `merge` -- no default is
-        // named; take the mean without the cube root -- 70 % reads as 34 %.
         {
             let mut objects = Objects::new();
-            let sink = |id: u64, name: &str, volumes: serde_json::Value, mute: bool| {
+            let device = |id: u64, class: &str, name: &str, volumes: Value, mute: bool| {
                 json!({"id": id, "type": "PipeWire:Interface:Node", "info": {"state": "idle",
-                    "props": {"node.name": name, "media.class": "Audio/Sink"},
+                    "props": {"node.name": name, "media.class": class, "object.serial": id + 100},
                     "params": {"Props": [{"volume": 1.0}, {"channelVolumes": volumes, "mute": mute}]}}})
             };
-            let defaults = |sink: &str| {
-                json!({"id": 9, "type": "PipeWire:Interface:Metadata", "props": {"metadata.name": "default"},
-                "metadata": [
-                    {"subject": 0, "key": "default.audio.sink", "type": "Spa:String:JSON", "value": {"name": sink}},
-                    {"subject": 0, "key": "default.audio.source", "type": "Spa:String:JSON", "value": {"name": "mic"}}
-                ]})
+            let metadata = |entries: Value| {
+                json!({"id": 9, "type": "PipeWire:Interface:Metadata",
+                    "props": {"metadata.name": "default"}, "metadata": entries})
             };
+            let default =
+                |key: &str, name: &str| json!({"subject": 0, "key": key, "value": {"name": name}});
             merge(
                 &mut objects,
                 &json!([
-                    defaults("speakers"),
-                    sink(40, "speakers", json!([0.344006, 0.344006]), false),
-                    sink(41, "headset", json!([0.125]), false),
-                    sink(42, "mic", json!([0.156326]), true),
+                    {"id": 0, "type": "PipeWire:Interface:Core", "info": {}},
+                    metadata(json!([default(DEFAULT_SINK, "speakers")])),
+                    device(40, "Audio/Sink", "speakers", json!([0.344006, 0.344006]), false),
+                    device(42, "Audio/Source", "mic", json!([0.156326]), true),
                 ]),
+            );
+            merge(
+                &mut objects,
+                &json!([metadata(json!([default(DEFAULT_SOURCE, "mic")]))]),
             );
             let found = usage(&objects);
             assert_eq!(
@@ -369,14 +399,32 @@ mod tests {
                 Some((70, false))
             );
             assert_eq!(found.input.map(|a| (a.percent, a.muted)), Some((54, true)));
-            merge(&mut objects, &json!([defaults("headset")]));
-            assert_eq!(
-                usage(&objects).output.map(|a| a.percent),
-                Some(50),
-                "a new default output"
+            assert_eq!(found.audio_devices.unwrap().output, Some(140));
+
+            merge(
+                &mut objects,
+                &json!([
+                    metadata(json!([default(DEFAULT_SINK, "headset")])),
+                    device(41, "Audio/Sink", "headset", json!([0.125]), false),
+                ]),
             );
+            merge(&mut objects, &json!([metadata(json!([]))]));
+            let found = usage(&objects);
+            let devices = found.audio_devices.unwrap();
+            assert_eq!(devices.output, Some(141));
+            assert_eq!(devices.input, Some(142));
+            assert_eq!(devices.nodes.len(), 3);
+            assert_eq!(found.output.map(|a| a.percent), Some(50));
+
+            merge(&mut objects, &json!([{"id": 41, "info": null}]));
+            let found = usage(&objects);
+            let devices = found.audio_devices.unwrap();
+            assert_eq!(devices.output, None);
+            assert_eq!(devices.input, Some(142));
+            assert_eq!(devices.nodes.len(), 2);
+            assert_eq!(found.output, None);
             merge(&mut objects, &json!([{"id": 9, "info": null}]));
-            assert_eq!(usage(&objects).output, None, "no default named");
+            assert_eq!(usage(&objects).input, None);
         }
         // Camera and screen sources name their readers.
         {

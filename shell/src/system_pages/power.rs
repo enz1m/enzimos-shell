@@ -659,7 +659,13 @@ impl SettingsApp {
                         (critical_label(action).to_owned(), message)
                     })
                     .collect();
-                self.choice_setting(route, critical_label(&critical.configured), choices)
+                let configured = critical_label(&critical.configured);
+                let selected = if critical.supported.contains(&critical.configured) {
+                    configured.to_owned()
+                } else {
+                    tr!("shell-configured-power-action-is-unavailable", "arg0" => configured.to_owned())
+                };
+                self.choice_setting(route, selected, choices)
             }
         };
         (content, true)

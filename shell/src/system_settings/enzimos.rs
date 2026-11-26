@@ -403,13 +403,9 @@ pub fn critical_battery(value: &Value) -> Option<super::CriticalBattery> {
         .and_then(Value::as_str)
         .filter(|a| known(a))?
         .to_owned();
-    let mut supported = list("supported_actions");
-    if !supported.contains(&configured) {
-        supported.insert(0, configured.clone());
-    }
     Some(super::CriticalBattery {
         configured,
-        supported,
+        supported: list("supported_actions"),
         risky: list("risk_acknowledgement_required"),
     })
 }
@@ -874,6 +870,13 @@ mod tests {
                 ["auto", "hibernate", "power-off", "ignore"]
             );
             assert_eq!(policy.risky, ["suspend", "ignore"]);
+            let policy = critical_battery(&json!({
+                "configured_action": "hibernate",
+                "supported_actions": ["auto", "power-off"]
+            }))
+            .unwrap();
+            assert_eq!(policy.configured, "hibernate");
+            assert_eq!(policy.supported, ["auto", "power-off"]);
             assert!(critical_battery(&json!({"configured_action": "explode"})).is_none());
             let body: Value = serde_json::from_str(&operation_body(
                 28,

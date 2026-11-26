@@ -1346,11 +1346,21 @@ impl Shell {
                 };
                 let warning = self
                     .battery_warnings
-                    .step(self.system.battery.as_ref())
+                    .step(
+                        self.system.battery.as_ref(),
+                        self.system.battery_warning_level,
+                    )
                     .map_or_else(Task::none, |warning| {
                         Task::perform(
                             async move {
-                                let action = enzui_shell::battery_warnings::critical_action().await;
+                                let action = if matches!(
+                                    warning,
+                                    enzui_shell::battery_warnings::Warning::Critical(_)
+                                ) {
+                                    enzui_shell::battery_warnings::critical_action().await
+                                } else {
+                                    None
+                                };
                                 let (summary, body, urgent) =
                                     enzui_shell::battery_warnings::message(warning, action);
                                 enzui_shell::battery_warnings::notify(summary, body, urgent).await

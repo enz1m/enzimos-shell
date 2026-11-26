@@ -63,6 +63,8 @@ pub struct SystemSnapshot {
     pub phone: Option<crate::phone_link::Presence>,
     pub brightness: Option<Brightness>,
     pub battery: Option<Battery>,
+    /// The aggregate battery warning reported by UPower, when available.
+    pub battery_warning_level: Option<u32>,
     pub screenshot: bool,
     /// Whether voice typing (`enzimos-dictation`) is installed.
     pub dictation: bool,
@@ -469,6 +471,14 @@ impl SystemControls {
             .await
             .ok()
             .flatten();
+        let (battery, battery_warning_level) = match if self.bus && self.allow_power {
+            crate::battery_warnings::reading().await
+        } else {
+            None
+        } {
+            Some((battery, level)) => (Some(battery), Some(level)),
+            None => (self.battery().await, None),
+        };
         SystemSnapshot {
             phone,
             platform,
@@ -482,7 +492,8 @@ impl SystemControls {
             network,
             bluetooth: bluetooth.ok().and_then(|s| parse_bluetooth(&s)),
             brightness: self.brightness().await,
-            battery: self.battery().await,
+            battery,
+            battery_warning_level,
             screenshot: self.tool("grim").is_some(),
             dictation: self.tool("enzimos-dictation").is_some(),
             lock: crate::session_lock::command().is_some() || self.tool("swaylock").is_some(),

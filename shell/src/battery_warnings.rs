@@ -19,16 +19,25 @@ pub struct Warnings {
 
 impl Warnings {
     /// The warning a new reading calls for, if any.
-    pub fn step(&mut self, battery: Option<&Battery>) -> Option<Warning> {
+    pub fn step(
+        &mut self,
+        battery: Option<&Battery>,
+        upower_level: Option<u32>,
+    ) -> Option<Warning> {
         let battery = battery?;
-        if battery.charging || battery.percent > 15 {
+        if battery.external_power || battery.charging {
             self.given = 0;
             return None;
         }
-        let (level, warning) = match battery.percent {
-            0..=3 => (3, Warning::Critical(battery.percent)),
-            4..=5 => (2, Warning::VeryLow(battery.percent)),
-            6..=10 => (1, Warning::Low(battery.percent)),
+        let percent = battery.percent;
+        let (level, warning) = match (upower_level, percent) {
+            (Some(5), _) => (3, Warning::Critical(percent)),
+            (Some(4), _) | (_, 0..=5) => (2, Warning::VeryLow(percent)),
+            (Some(3), _) | (_, 6..=10) => (1, Warning::Low(percent)),
+            (_, 16..=100) => {
+                self.given = 0;
+                return None;
+            }
             _ => return None,
         };
         (level > self.given).then(|| {
@@ -38,33 +47,82 @@ impl Warnings {
     }
 }
 
-/// What UPower does at the critical level, in words.
-pub async fn critical_action() -> &'static str {
+/// The aggregate power source and warning level used by UPower.
+pub(crate) async fn reading() -> Option<(Battery, u32)> {
+    crate::bus::bounded(async {
+        let system = crate::bus::system().await?;
+        let upower = manager(&system).await?;
+        let device = zbus::fdo::PropertiesProxy::builder(&system)
+            .destination("org.freedesktop.UPower")
+            .ok()?
+            .path("/org/freedesktop/UPower/devices/DisplayDevice")
+            .ok()?
+            .build()
+            .await
+            .ok()?;
+        let (properties, on_battery) = tokio::join!(
+            device.get_all("org.freedesktop.UPower.Device".try_into().ok()?),
+            upower.get_property::<bool>("OnBattery"),
+        );
+        let properties = properties.ok()?;
+        if !bool::try_from(properties.get("IsPresent")?).ok()? {
+            return None;
+        }
+        let level = u32::try_from(properties.get("WarningLevel")?).ok()?;
+        let percent = f64::try_from(properties.get("Percentage")?).ok()?;
+        let state = u32::try_from(properties.get("State")?).ok()?;
+        if !(0.0..=100.0).contains(&percent) {
+            return None;
+        }
+        Some((
+            Battery {
+                percent: percent.round() as u8,
+                charging: state == 1,
+                external_power: !on_battery.ok()?,
+            },
+            level,
+        ))
+    })
+    .await
+    .flatten()
+}
+
+async fn manager(system: &zbus::Connection) -> Option<zbus::Proxy<'static>> {
+    zbus::Proxy::new_owned(
+        system.clone(),
+        "org.freedesktop.UPower",
+        "/org/freedesktop/UPower",
+        "org.freedesktop.UPower",
+    )
+    .await
+    .ok()
+}
+
+/// The effective action reported by UPower, if it will take one.
+pub async fn critical_action() -> Option<&'static str> {
     let action: Option<String> = crate::bus::bounded(async {
         let system = crate::bus::system().await?;
-        let upower = zbus::Proxy::new(
-            &system,
-            "org.freedesktop.UPower",
-            "/org/freedesktop/UPower",
-            "org.freedesktop.UPower",
-        )
-        .await
-        .ok()?;
+        let upower = manager(&system).await?;
         upower.call("GetCriticalAction", &()).await.ok()
     })
     .await
     .flatten();
-    match action.as_deref() {
-        Some("HybridSleep" | "Hibernate") => "hibernate",
-        Some("Suspend") => "suspend",
-        Some("PowerOff") => tr("shell-power-off"),
-        _ => tr("shell-shut-down"),
-    }
+    action_label(action.as_deref())
+}
+
+fn action_label(action: Option<&str>) -> Option<&'static str> {
+    Some(match action? {
+        "HybridSleep" => tr("shell-enter-hybrid-sleep"),
+        "Hibernate" => tr("shell-hibernate-action"),
+        "Suspend" => tr("shell-suspend-action"),
+        "PowerOff" => tr("shell-power-off"),
+        _ => return None,
+    })
 }
 
 /// The notification for `warning`: summary, body and whether it is urgent.
 #[must_use]
-pub fn message(warning: Warning, action: &str) -> (String, String, bool) {
+pub fn message(warning: Warning, action: Option<&str>) -> (String, String, bool) {
     match warning {
         Warning::Low(percent) => (
             tr!("shell-battery-low-2", "arg0" => format!("{:}", percent)),
@@ -78,7 +136,10 @@ pub fn message(warning: Warning, action: &str) -> (String, String, bool) {
         ),
         Warning::Critical(percent) => (
             tr!("shell-battery-critical-2", "arg0" => format!("{:}", percent)),
-            tr!("shell-the-computer-will-very-soon-unless-it-is-plugged-in-save-your-work", "arg0" => action.to_owned()),
+            action.map_or_else(
+                || tr("shell-plug-in-the-charger-and-save-your-work").into(),
+                |action| tr!("shell-the-computer-will-very-soon-unless-it-is-plugged-in-save-your-work", "arg0" => action.to_owned()),
+            ),
             true,
         ),
     }
@@ -121,4 +182,51 @@ pub async fn notify(summary: String, body: String, urgent: bool) -> Result<(), S
         .await
         .map_err(|_| tr("shell-the-notification-was-not-accepted"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn warning_follows_upower_and_resets_when_external_power_connects() {
+        let mut warnings = Warnings::default();
+        let mut battery = Battery {
+            percent: 28,
+            charging: false,
+            external_power: false,
+        };
+        assert_eq!(
+            warnings.step(Some(&battery), Some(3)),
+            Some(Warning::Low(28))
+        );
+        assert_eq!(
+            warnings.step(Some(&battery), Some(4)),
+            Some(Warning::VeryLow(28))
+        );
+        assert_eq!(
+            warnings.step(Some(&battery), Some(5)),
+            Some(Warning::Critical(28))
+        );
+        assert_eq!(warnings.step(Some(&battery), Some(5)), None);
+        battery.external_power = true;
+        battery.percent = 2;
+        assert_eq!(warnings.step(Some(&battery), None), None);
+        battery.external_power = false;
+        assert_eq!(
+            warnings.step(Some(&battery), None),
+            Some(Warning::VeryLow(2))
+        );
+        assert_eq!(
+            warnings.step(Some(&battery), Some(5)),
+            Some(Warning::Critical(2))
+        );
+    }
+
+    #[test]
+    fn missing_or_ignored_action_does_not_promise_shutdown() {
+        assert_eq!(action_label(None), None);
+        assert_eq!(action_label(Some("Ignore")), None);
+        assert!(action_label(Some("PowerOff")).is_some());
+    }
 }

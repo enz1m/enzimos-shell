@@ -323,6 +323,9 @@ impl Dispatch<wl_seat::WlSeat, ()> for State {
             } else if let Some(keyboard) = state.wl_keyboard.take() {
                 keyboard.release();
                 state.held = None;
+                if let Some(keyboard) = &mut state.keyboard {
+                    keyboard.reset_compose();
+                }
             }
             if caps.contains(wl_seat::Capability::Pointer) {
                 if state.pointer.is_none() {
@@ -384,13 +387,14 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
                 state: WEnum::Value(key_state),
                 ..
             } => {
-                let Some(keyboard) = state.keyboard.as_ref() else {
+                let Some(keyboard) = state.keyboard.as_mut() else {
                     return;
                 };
                 if key_state == wl_keyboard::KeyState::Pressed {
-                    state.keys.push(keyboard.key(key));
+                    let (key_press, repeats) = keyboard.press(key);
+                    state.keys.push(key_press);
                     state.input = true;
-                    state.held = keyboard.repeats(key).then(|| {
+                    state.held = repeats.then(|| {
                         (
                             key,
                             Instant::now() + Duration::from_millis(state.repeat.1.max(1) as u64),
@@ -401,7 +405,12 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
                 }
             }
             wl_keyboard::Event::RepeatInfo { rate, delay } => state.repeat = (rate, delay),
-            wl_keyboard::Event::Leave { .. } => state.held = None,
+            wl_keyboard::Event::Leave { .. } => {
+                state.held = None;
+                if let Some(keyboard) = &mut state.keyboard {
+                    keyboard.reset_compose();
+                }
+            }
             _ => {}
         }
     }

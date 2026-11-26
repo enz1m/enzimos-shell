@@ -1090,7 +1090,7 @@ impl Welcome {
     fn ai_page(&self) -> Element<'_, Message> {
         let enable = enz_preferences_row(tr("welcome-ai-enable"))
             .subtitle(tr("welcome-ai-enable-description"))
-            .icon("sparkles")
+            .icon("ai.assistant")
             .switch(self.ai, Message::AiEnabled)
             .enabled(!self.finishing)
             .id_prefix("welcome-ai")

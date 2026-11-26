@@ -713,8 +713,8 @@ impl SettingsApp {
             .padding([4, 10]),
         );
         rows = rows.push(match &state.found {
-            _ if !state.running => crate::settings_app::settings_row(tr("shell-skills")).subtitle(tr("shell-start-the-assistant-to-see-and-create-its-skills")).subtitle_wrap(true).icon("sparkles").into_element(),
-            None => crate::settings_app::settings_row(tr("shell-skills")).subtitle(tr("shell-reading")).icon("sparkles").into_element(),
+            _ if !state.running => crate::settings_app::settings_row(tr("shell-skills")).subtitle(tr("shell-start-the-assistant-to-see-and-create-its-skills")).subtitle_wrap(true).icon("ai.assistant").into_element(),
+            None => crate::settings_app::settings_row(tr("shell-skills")).subtitle(tr("shell-reading")).icon("ai.assistant").into_element(),
             Some(Err(error)) => crate::settings_app::settings_row(tr("shell-skills-are-unavailable")).subtitle(error.clone()).subtitle_wrap(true).icon("triangle-alert").into_element(),
             Some(Ok(found)) => crate::settings_app::settings_row(match found.len() {
                 0 => tr("shell-no-skills-yet").to_owned(),
@@ -723,7 +723,7 @@ impl SettingsApp {
             })
             .subtitle(tr("shell-instructions-you-can-add-to-a-message-in-the-assistant-they-never-grant-file"))
             .subtitle_wrap(true)
-            .icon("sparkles")
+            .icon("ai.assistant")
             .action(tr("shell-new-skill"), ParentMessage::Assistant(Message::OpenSkill))
             .enabled(live && !summary.writable_skills.is_empty())
             .into_element(),

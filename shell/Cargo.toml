@@ -17,14 +17,14 @@ enzimos-phone-client = { path = "../vendor/phone-link/crates/host-client" }
 evdev = { version = "=0.13.2", features = ["tokio"] }
 iced = { git = "https://github.com/enz1m/enzim-iced.git", rev = "838066d2e7373e87cfb42e62cca5a1dc9625b5f9", features = ["wgpu", "tiny-skia", "crisp", "web-colors", "thread-pool", "linux-theme-detection", "wayland", "tokio", "advanced", "svg", "a11y", "sysinfo"], default-features = false }
 iced_runtime = { git = "https://github.com/enz1m/enzim-iced.git", rev = "838066d2e7373e87cfb42e62cca5a1dc9625b5f9" }
-enzui-security = { git = "https://github.com/enz1m/enzui.git", rev = "46f267ecf6642423a7d716488200a5ceb8726655" }
-enzui-core = { features = ["accesskit", "activation-native-iced"], git = "https://github.com/enz1m/enzui.git", rev = "46f267ecf6642423a7d716488200a5ceb8726655" }
-enzui-theme = { git = "https://github.com/enz1m/enzui.git", rev = "46f267ecf6642423a7d716488200a5ceb8726655" }
-enzui-icons = { git = "https://github.com/enz1m/enzui.git", rev = "46f267ecf6642423a7d716488200a5ceb8726655" }
-enzui-widgets = { features = ["portal-dbus"], git = "https://github.com/enz1m/enzui.git", rev = "46f267ecf6642423a7d716488200a5ceb8726655" }
-enzui-agent = { features = ["iced-consumer"], git = "https://github.com/enz1m/enzui.git", rev = "46f267ecf6642423a7d716488200a5ceb8726655" }
-enzui-activity = { git = "https://github.com/enz1m/enzui.git", rev = "46f267ecf6642423a7d716488200a5ceb8726655" }
-enzui-agent-app = { git = "https://github.com/enz1m/enzui.git", rev = "46f267ecf6642423a7d716488200a5ceb8726655" }
+enzui-security = { git = "https://github.com/enz1m/enzui.git", rev = "4f951251c8f31a649dd862e274f81260690a9b98" }
+enzui-core = { features = ["accesskit", "activation-native-iced"], git = "https://github.com/enz1m/enzui.git", rev = "4f951251c8f31a649dd862e274f81260690a9b98" }
+enzui-theme = { git = "https://github.com/enz1m/enzui.git", rev = "4f951251c8f31a649dd862e274f81260690a9b98" }
+enzui-icons = { git = "https://github.com/enz1m/enzui.git", rev = "4f951251c8f31a649dd862e274f81260690a9b98" }
+enzui-widgets = { features = ["portal-dbus"], git = "https://github.com/enz1m/enzui.git", rev = "4f951251c8f31a649dd862e274f81260690a9b98" }
+enzui-agent = { features = ["iced-consumer"], git = "https://github.com/enz1m/enzui.git", rev = "4f951251c8f31a649dd862e274f81260690a9b98" }
+enzui-activity = { git = "https://github.com/enz1m/enzui.git", rev = "4f951251c8f31a649dd862e274f81260690a9b98" }
+enzui-agent-app = { git = "https://github.com/enz1m/enzui.git", rev = "4f951251c8f31a649dd862e274f81260690a9b98" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 ttf-parser = "=0.25.1"
 serde_json = "1"

@@ -151,7 +151,7 @@ pub fn icon(route: &str) -> Option<&'static str> {
         "shell/sidebar" => "arrow-left-right",
         "shell/sidebar_pin_scope" => "pin",
         "appearance/islands_sidebar_behavior" => "eye",
-        "shell/assistant_enabled" => "sparkles",
+        "shell/assistant_enabled" | "agents/assistant" => "ai.assistant",
         "shell/assistant_corner" => "corner-down-right",
         "windows/gaps_inner" => "columns-2",
         "windows/gaps_outer" => "square-dashed",

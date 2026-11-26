@@ -325,7 +325,12 @@ impl Shell {
                     entry.title(),
                     tr!("shell-settings-3", "arg0" => entry.category().title().to_owned(), "arg1" => entry.section().to_owned()),
                     tr("shell-open"),
-                    entry.category().icon(),
+                    match entry.route {
+                        "shell/assistant_enabled" | "agents/assistant" => {
+                            enzui_shell::settings_catalog::icon(entry.route).unwrap_or_else(|| entry.category().icon())
+                        }
+                        _ => entry.category().icon(),
+                    },
                     Some(Target::Settings(entry.route)),
                 )
                 .search_terms(entry.keywords()),

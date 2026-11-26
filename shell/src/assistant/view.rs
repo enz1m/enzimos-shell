@@ -123,7 +123,7 @@ impl Shell {
         let filled = !layout.joined && !on_glass;
         let accent = palette.accent;
         let luminance = 0.2126 * accent.r + 0.7152 * accent.g + 0.0722 * accent.b;
-        let icon = enz_icon("sparkles")
+        let icon = enz_icon("ai.assistant")
             .size(if layout.joined { 18.0 } else { 20.0 })
             .tint(if !filled {
                 accent
@@ -446,7 +446,7 @@ impl Shell {
             Some(Ok(())) => None,
         };
         let mut body = column![
-            enz_icon("sparkles")
+            enz_icon("ai.assistant")
                 .size(28.0)
                 .tint(palette.accent)
                 .into_element(),
@@ -503,7 +503,7 @@ impl Shell {
                 chip(
                     tr("shell-suggest-ideas"),
                     tr("shell-suggest-ideas-prompt"),
-                    "sparkles"
+                    "ai.assistant"
                 )
             ]
             .spacing(6),

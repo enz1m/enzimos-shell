@@ -699,7 +699,8 @@ class PlatformTests(unittest.TestCase):
             service = (data / "dbus-1/services/org.freedesktop.impl.portal.desktop.enzui.service").read_text()
             self.assertIn(f"Exec={portal.resolve()}", service)
             self.assertIn("FileChooser", (data / "xdg-desktop-portal/portals/enzui.portal").read_text())
-            self.assertIn("FileChooser=enzui", (data / "xdg-desktop-portal/enzui-portals.conf").read_text())
+            self.assertIn("org.freedesktop.impl.portal.FileChooser=enzui;gtk;",
+                          (data / "xdg-desktop-portal/enzui-portals.conf").read_text().splitlines())
             self.assertEqual(oct(data.stat().st_mode & 0o777), "0o700")
             self.assertFalse((data / "dbus-1/services/org.freedesktop.impl.portal.desktop.hyprland.service").exists())
             hyprland = binaries / "xdg-desktop-portal-enzui-remote"
@@ -710,8 +711,13 @@ class PlatformTests(unittest.TestCase):
             service = (data / "dbus-1/services/org.freedesktop.impl.portal.desktop.hyprland.service").read_text()
             self.assertIn("Name=org.freedesktop.impl.portal.desktop.hyprland\n", service)
             self.assertIn(f"Exec={hyprland.resolve()}\n", service)
-            self.assertIn(str(hyprland.resolve()), platform.privileged_clients(binaries)["ENZUI_PORTAL_EXES"].split(":"))
-            self.assertIn("org.freedesktop.impl.portal.Screenshot", (data / "xdg-desktop-portal/portals/hyprland.portal").read_text())
+            descriptor = (data / "xdg-desktop-portal/portals/hyprland.portal").read_text()
+            self.assertIn("DBusName=org.freedesktop.impl.portal.desktop.hyprland\n", descriptor)
+            routes = (data / "xdg-desktop-portal/enzui-portals.conf").read_text().splitlines()
+            for interface in ("Screenshot", "ScreenCast", "GlobalShortcuts", "InputCapture"):
+                name = f"org.freedesktop.impl.portal.{interface}"
+                self.assertIn(f"{name};", descriptor)
+                self.assertIn(f"{name}=hyprland;", routes)
 
     def test_privileged_clients_name_the_shell_and_only_explicit_dev_tools(self):
         values = platform.privileged_clients(self.root)

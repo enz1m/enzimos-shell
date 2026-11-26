@@ -776,14 +776,7 @@ def privileged_clients(binaries, dev_tools=None):
     return values
 
 def portal_registration(runtime, binaries):
-    """A preview's own registration of the enzUI portal backend (file
-    chooser, Access, Settings, Background) for its private session bus: the
-    portal file, the routing for XDG_CURRENT_DESKTOP=enzUI and a D-Bus
-    service that starts this preview's enzui-portal. A prepared
-    xdg-desktop-portal-enzui-remote beside it, the pinned Hyprland portal
-    build, also serves the hyprland backend (Screenshot, ScreenCast), so the
-    preview needs no system xdg-desktop-portal-hyprland. Returns the data
-    directory to put first on XDG_DATA_DIRS, or None without enzui-portal."""
+    """Stage the built portal backends and routing for a preview's private bus."""
     portal = (binaries / "enzui-portal").resolve()
     if not portal.is_file() or not os.access(portal, os.X_OK):
         return None
@@ -791,15 +784,21 @@ def portal_registration(runtime, binaries):
     (data / "xdg-desktop-portal/portals").mkdir(parents=True, mode=0o700)
     (data / "dbus-1/services").mkdir(parents=True, mode=0o700)
     (data / "xdg-desktop-portal/portals/enzui.portal").write_bytes((ROOT / "config/portal/enzui.portal").read_bytes())
-    (data / "xdg-desktop-portal/enzui-portals.conf").write_bytes((ROOT / "config/portal/enzui-portals.conf").read_bytes())
+    routes = (ROOT / "config/portal/enzui-portals.conf").read_text()
     (data / "dbus-1/services/org.freedesktop.impl.portal.desktop.enzui.service").write_text(
         f"[D-BUS Service]\nName=org.freedesktop.impl.portal.desktop.enzui\nExec={portal}\n")
     hyprland = (binaries / "xdg-desktop-portal-enzui-remote").resolve()
-    description = ROOT / "vendor/xdg-desktop-portal-hyprland/hyprland.portal"
-    if hyprland.is_file() and os.access(hyprland, os.X_OK) and description.is_file():
-        (data / "xdg-desktop-portal/portals/hyprland.portal").write_bytes(description.read_bytes())
-        (data / "dbus-1/services/org.freedesktop.impl.portal.desktop.hyprland.service").write_text(
-            f"[D-BUS Service]\nName=org.freedesktop.impl.portal.desktop.hyprland\nExec={hyprland}\n")
+    if hyprland.is_file() and os.access(hyprland, os.X_OK):
+        name = "org.freedesktop.impl.portal.desktop.hyprland"
+        interfaces = tuple("org.freedesktop.impl.portal." + interface for interface in
+                           ("Screenshot", "ScreenCast", "GlobalShortcuts", "InputCapture"))
+        (data / "xdg-desktop-portal/portals/hyprland.portal").write_text(
+            f"[portal]\nDBusName={name}\nInterfaces={';'.join(interfaces)};\nUseIn=enzUI;Hyprland;\n")
+        (data / f"dbus-1/services/{name}.service").write_text(
+            f"[D-BUS Service]\nName={name}\nExec={hyprland}\n")
+        for interface in interfaces:
+            routes = routes.replace(f"{interface}=enzui-remote;", f"{interface}=hyprland;")
+    (data / "xdg-desktop-portal/enzui-portals.conf").write_text(routes)
     return data
 
 def preview_data_dirs(portal_data):

@@ -36,7 +36,7 @@
   },
   "remote_desktop_portal": {
     "url": "https://github.com/enz1m/enzim-xdg-desktop-portal-hyprland.git",
-    "revision": "c1960a3a79308f86ea4e1482753da865009e5f67",
+    "revision": "d18af0c5d80831f9f858286cda55b5ccfa2bd28a",
     "upstream_revision": "0e832b50ecc49d4bae01a29845c1b3fafc5c5c99",
     "destination": "vendor/xdg-desktop-portal-hyprland"
   },

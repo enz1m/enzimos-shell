@@ -18,7 +18,10 @@ env = {**os.environ, "XDG_RUNTIME_DIR": config["xdg_runtime"],
        "WAYLAND_DISPLAY": ready["display"]}
 env.pop("LD_LIBRARY_PATH", None)
 ctl_env = {**env, "LD_LIBRARY_PATH": config["build"] + "/prefix/lib"}
-ctl = [config["build"] + "/hyprland-current-build/hyprctl/hyprctl", "-i", ready["instance"]]
+control = Path(config["build"]) / "hyprland-current-build/hyprctl/enz-hyprctl"
+if not control.is_file():
+    control = control.with_name("hyprctl")
+ctl = [str(control), "-i", ready["instance"]]
 artifacts = ROOT / ".build/sidebar-pinned-qa" / RUNTIME.name
 artifacts.mkdir(parents=True, exist_ok=True)
 

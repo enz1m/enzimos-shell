@@ -11,13 +11,12 @@ control=hyprctl
 launcher_pidfd=false
 extra_cmake=()
 case $variant in
-    desktop) compositor=enz-hyprland; control=enz-hyprctl; launcher_pidfd=true ;;
-    desktop-unrenamed) hyprland=desktop-unrenamed; launcher_pidfd=true ;;
+    desktop|remote-session) compositor=enz-hyprland; control=enz-hyprctl; launcher_pidfd=true ;;
     scoped-eis) hyprland=scoped-eis ;;
     shared-desktop) hyprland=shared-desktop; extra_cmake=(-DENZREMOTE_SOURCE_DIR="$ROOT/compositor") ;;
-    remote-session) hyprland=desktop-unrenamed; aquamarine=headless-render-node; launcher_pidfd=true ;;
     *) echo "Unknown compositor variant: $variant" >&2; exit 2 ;;
 esac
+if [[ $variant == remote-session ]]; then aquamarine=headless-render-node; fi
 BUILDROOT=${ENZUI_HYPR_BUILDROOT:?set ENZUI_HYPR_BUILDROOT to an absolute build directory}
 [[ "$BUILDROOT" = /* ]] || { echo 'ENZUI_HYPR_BUILDROOT must be absolute.' >&2; exit 1; }
 "$ROOT/scripts/setup-sources"

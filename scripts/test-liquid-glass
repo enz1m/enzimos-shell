@@ -53,7 +53,10 @@ try:
     instance = (run / "instance").read_text().strip()
     xdg = next(p.parent.parent for p in Path(f"/run/user/{os.getuid()}").glob(f"*/hypr/{instance}"))
     env = dict(os.environ, XDG_RUNTIME_DIR=str(xdg), WAYLAND_DISPLAY=(run / "wayland-display").read_text().strip())
-    hyprctl = [str(build / "hyprland-current-build/hyprctl/hyprctl"), "-i", instance]
+    control = build / "hyprland-current-build/hyprctl/enz-hyprctl"
+    if not control.is_file():
+        control = control.with_name("hyprctl")
+    hyprctl = [str(control), "-i", instance]
     henv = dict(env, LD_LIBRARY_PATH=str(build / "prefix/lib"))
 
     def hypr(*command):

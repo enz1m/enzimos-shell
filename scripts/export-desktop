@@ -22,7 +22,7 @@ stage (then recorded in the manifest). Layout:
 
   PREFIX/share/enzui/          desktop root (ENZUI_DESKTOP_ROOT): config, scripts,
                                assets, live wallpaper scenes, installed.json
-  PREFIX/lib/enzui/compositor/ pinned Hyprland, hyprctl, private libraries, plugin
+  PREFIX/lib/enzui/compositor/ pinned enz-hyprland, enz-hyprctl, private libraries, plugin
   PREFIX/lib/enzui/bin/        shell, Settings, lock, greeter, polkit agent, helpers
   PREFIX/bin/enzui-session     the login session command
   PREFIX/share/wayland-sessions/enzui.desktop
@@ -93,9 +93,7 @@ def die(message):
 
 
 def compositor_source(compositor, executable, control, pins, problems):
-    variants = {"enz-hyprland": ("desktop", pins["hyprland"]["revision"]),
-                "Hyprland": ("desktop-unrenamed", pins["hyprland"]["variants"]["desktop-unrenamed"])}
-    variant, revision = variants[executable.name]
+    variant, revision = "desktop", pins["hyprland"]["revision"]
     descriptor = compositor / "desktop-compositor.json"
     try:
         record = json.loads(descriptor.read_text())
@@ -221,9 +219,8 @@ def main():
         die("DESTDIR must be empty; exports never overwrite an existing stage")
     compositor = Path(args.compositor).resolve()
     bin_dir = Path(args.bin_dir).resolve()
-    # enz-hyprland and enz-hyprctl; compositor roots from before the rename hold Hyprland and hyprctl.
-    compositor_name = "enz-hyprland" if (compositor / "hyprland-current-build/enz-hyprland").exists() else "Hyprland"
-    control_name = "enz-hyprctl" if compositor_name == "enz-hyprland" else "hyprctl"
+    compositor_name = "enz-hyprland"
+    control_name = "enz-hyprctl"
     for required in [compositor / "hyprland-current-build" / compositor_name, compositor / "hyprland-current-build/hyprctl" / control_name,
                      compositor / "build-revisions", compositor / "shell-plugins/enzui-pointer-events.so"]:
         if not required.exists():

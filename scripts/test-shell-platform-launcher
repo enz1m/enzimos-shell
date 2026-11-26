@@ -387,7 +387,12 @@ class PlatformTests(unittest.TestCase):
         (runtime / "session-bus").write_text("unix:path=/owned-bus")
         peer = {"pid": 41, "start": 9}
         platform.publish(runtime / "session-bus-peer.json", peer)
-        config = {"runtime": str(runtime), "unit": "owned.service", "xdg_runtime": str(self.root)}
+        build = self.root / "build"
+        control = build / "hyprland-current-build/hyprctl/enz-hyprctl"
+        control.parent.mkdir(parents=True)
+        control.touch()
+        config = {"runtime": str(runtime), "unit": "owned.service", "xdg_runtime": str(self.root),
+                  "build": str(build)}
         identity = {"pid": 42, "start": 10, "display": "wayland-19", "instance": "owned-instance"}
         with mock.patch.dict(os.environ, {"DBUS_SESSION_BUS_ADDRESS": "unix:path=/owned-bus", "WAYLAND_DISPLAY": "/parent-wayland"}, clear=True), mock.patch.object(platform, "private_bus", return_value=peer), mock.patch.object(platform, "compositor", return_value=identity), mock.patch.object(platform, "command") as command:
             platform.bind_activation_environment(config, identity)
@@ -399,6 +404,7 @@ class PlatformTests(unittest.TestCase):
             self.assertIn("DISPLAY=", args)
             self.assertIn("GDK_BACKEND=wayland", args)
             self.assertIn("GIO_USE_VFS=local", args)
+            self.assertIn(f"ENZUI_HYPR_CONTROL_BIN={control}", args)
             self.assertFalse(any(arg.startswith("ENZUI_DESKTOP_SESSION=") for arg in args), "a preview never relabels the user manager")
             self.assertEqual(os.environ["DBUS_SESSION_BUS_ADDRESS"], "unix:path=/owned-bus")
             self.assertEqual(os.environ["WAYLAND_DISPLAY"], "wayland-19")

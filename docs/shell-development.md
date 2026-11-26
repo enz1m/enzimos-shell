@@ -22,9 +22,14 @@ scripts/setup-sources
 | --- | --- | --- |
 | Installed desktop | `enzim` | `nested-wayland` |
 | Input preview | `scoped-eis` | `nested-wayland` |
-| Unrenamed desktop | `desktop-unrenamed` | `nested-wayland` |
 | Shared desktop | `shared-desktop` | `nested-wayland` |
-| Remote session | `desktop-unrenamed` | `headless-render-node` |
+| Remote session | `enzim` | `headless-render-node` |
+
+Installed and remote-session builds produce `enz-hyprland` and `enz-hyprctl`.
+The historical `desktop-unrenamed` branch is frozen. Its title-bar changes and
+follow-ups are already on `enzim`. The `enzim` line also adds trusted Wayland
+activation, preserves closing window contents for animation, and locates
+plugin hook memory using the renamed executable.
 
 Use a fresh build root when changing compositor pins. For local builds set
 `CMAKE_BUILD_PARALLEL_LEVEL` to the number of concurrent compiler jobs the

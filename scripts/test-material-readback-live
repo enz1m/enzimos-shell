@@ -36,8 +36,11 @@ try:
     instance = (run / 'instance').read_text().strip()
     env = dict(os.environ, XDG_RUNTIME_DIR=config['xdg_runtime'], WAYLAND_DISPLAY=(run / 'wayland-display').read_text().strip())
     henv = dict(env, LD_LIBRARY_PATH=str(build / 'prefix/lib'))
+    control = build / 'hyprland-current-build/hyprctl/enz-hyprctl'
+    if not control.is_file():
+        control = control.with_name('hyprctl')
     def hypr(*args):
-        result = subprocess.run([str(build / 'hyprland-current-build/hyprctl/hyprctl'), '-i', instance, *args], env=henv, capture_output=True, text=True, timeout=10)
+        result = subprocess.run([str(control), '-i', instance, *args], env=henv, capture_output=True, text=True, timeout=10)
         assert result.returncode == 0, result.stderr
         return result.stdout
     cg = Path(f'/sys/fs/cgroup/user.slice/user-{os.getuid()}.slice/user@{os.getuid()}.service/app.slice/{unit}')

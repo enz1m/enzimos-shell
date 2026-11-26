@@ -5,7 +5,6 @@
     "destination": "vendor/Hyprland",
     "variants": {
       "scoped-eis": "173de69ebc7dc3fd3743257482bc416d0e2d8caf",
-      "desktop-unrenamed": "4c9005d72d3456ea43514cd032b8ae3a851ba4b6",
       "shared-desktop": "6e1fd309a3b9eae93f8f931fb2041e0c460331ad"
     }
   },
@@ -37,7 +36,7 @@
   },
   "remote_desktop_portal": {
     "url": "https://github.com/enz1m/enzim-xdg-desktop-portal-hyprland.git",
-    "revision": "588bbbee2317eccbc942f5fbe9bbdb21f3af59b9",
+    "revision": "1c7a5a154eb77b36c4f8164ca5e49e86416baa51",
     "upstream_revision": "0e832b50ecc49d4bae01a29845c1b3fafc5c5c99",
     "destination": "vendor/xdg-desktop-portal-hyprland"
   },

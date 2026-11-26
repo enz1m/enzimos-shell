@@ -15,7 +15,10 @@ ready = json.loads((RUNTIME / "ready.json").read_text())
 unit = "enzui-gesture-qa-" + secrets.token_hex(5) + ".service"
 env = {**os.environ, "XDG_RUNTIME_DIR": config["xdg_runtime"],
        "LD_LIBRARY_PATH": config["build"] + "/prefix/lib"}
-ctl = [config["build"] + "/hyprland-current-build/hyprctl/hyprctl", "-i", ready["instance"]]
+control = Path(config["build"]) / "hyprland-current-build/hyprctl/enz-hyprctl"
+if not control.is_file():
+    control = control.with_name("hyprctl")
+ctl = [str(control), "-i", ready["instance"]]
 
 def run(*args, environment=None):
     return subprocess.check_output(args, env=environment, text=True, timeout=12).strip()

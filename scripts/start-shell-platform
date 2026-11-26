@@ -369,13 +369,13 @@ def bind_activation_environment(config, identity):
               "HYPRLAND_INSTANCE_SIGNATURE": identity["instance"], "ENZUI_DESKTOP_ROOT": str(ROOT),
               "XDG_CURRENT_DESKTOP": "Hyprland", "XDG_SESSION_DESKTOP": "Hyprland", "XDG_SESSION_TYPE": "wayland",
               "GDK_BACKEND": "wayland", "QT_QPA_PLATFORM": "wayland", "WINIT_UNIX_BACKEND": "wayland",
-              "DISPLAY": "", "GIO_USE_VFS": "local"}
+              "DISPLAY": "", "GIO_USE_VFS": "local", "ENZUI_HYPR_CONTROL_BIN": str(control_binary(config))}
     if config.get("portal_data"):
         values.update({"XDG_CURRENT_DESKTOP": "enzUI:Hyprland", "XDG_DATA_DIRS": preview_data_dirs(config["portal_data"])})
     if config.get("installed"):
         values.update({"XDG_CURRENT_DESKTOP": "enzUI:Hyprland", "XDG_SESSION_DESKTOP": "enzUI"})
         # Publish the desktop environment for D-Bus-activated Settings.
-        values.update({"ENZUI_DESKTOP_SESSION": "installed", "ENZUI_PLUGIN_ISOLATION": "delegated", "ENZUI_ALLOW_SYSTEM_POWER": "1", "ENZUI_HYPR_CONTROL_BIN": str(control_binary(config)),
+        values.update({"ENZUI_DESKTOP_SESSION": "installed", "ENZUI_PLUGIN_ISOLATION": "delegated", "ENZUI_ALLOW_SYSTEM_POWER": "1",
                        "ENZUI_HYPR_RUNROOT": str(runtime), "ENZUI_SHELL_SETTINGS": config["settings"],
                        "ENZUI_SHELL_BIN_DIR": config["shell_bin_dir"]})
         display = control(config, identity, "repl", 'return os.getenv("DISPLAY") or ""').strip()

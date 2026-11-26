@@ -216,7 +216,7 @@ impl SettingsApp {
                     server: join.server_check(),
                 });
                 let request = Request::WifiJoin {
-                    ssid: join.ssid.trim().to_owned(),
+                    ssid: join.ssid.clone(),
                     password,
                     hidden: join.hidden,
                     enterprise,

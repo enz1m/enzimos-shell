@@ -1332,6 +1332,23 @@ mod job_tests {
     }
 
     #[test]
+    fn joining_a_hidden_network_preserves_the_entered_ssid() {
+        use forms::Form;
+
+        let (mut app, _directory) = app();
+        app.page = Category::Network;
+        app.system.backend.writes_allowed = true;
+        let _ = app.system_message(Message::Form(Form::Join(Some((String::new(), true)))));
+        let _ = app.system_message(Message::Form(Form::JoinSsid(" Office Café ".into())));
+        let _ = app.system_message(Message::Form(Form::JoinSubmit));
+
+        assert!(matches!(
+            app.system.current,
+            Some(Request::WifiJoin { ssid, hidden: true, .. }) if ssid == " Office Café "
+        ));
+    }
+
+    #[test]
     fn system_pages_behaviour() {
         // Off enzimOS a page whose backend is missing is not listed, found or
         // opened, a page a launch opened before detection finished is left,

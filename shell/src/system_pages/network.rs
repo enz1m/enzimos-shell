@@ -383,7 +383,7 @@ impl SettingsApp {
         if let Some(error) = &join.error {
             password = password.error(error.clone());
         }
-        let ready = !join.ssid.trim().is_empty()
+        let ready = (1..=32).contains(&join.ssid.len())
             && !joining
             && if join.enterprise {
                 !join.identity.trim().is_empty() && !join.password.is_empty() && join.server_named()

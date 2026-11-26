@@ -164,6 +164,12 @@ corner.at = { x = 620, y = 290 }; blocker.at = { x = 620, y = 290 }
 windows = { blocker, corner }
 enzui_desktop_cascade(corner)
 assert(corner.at.x == 20 and corner.at.y == 56, "past the screen the steps start again at its corner")
+local game = window('0x49'); game.workspace = { id = 1 }; game.monitor = screen
+game.at = { x = 0, y = 0 }; game.size = { x = 1440, y = 900 }; game.borderless_fullscreen = true
+blocker.at = { x = 0, y = 0 }; blocker.size = { x = 1440, y = 900 }
+windows = { blocker, game }
+enzui_desktop_cascade(game)
+assert(game.at.x == 0 and game.at.y == 0, "an output-covering game keeps its placement")
 assert(enzui_set_desktop_modes(false, { [1] = true }) == "ok")
 local tiled = window('0x46'); tiled.workspace = { id = 1 }; tiled.monitor = screen; tiled.at = { x = 620, y = 290 }
 windows = { blocker, tiled }

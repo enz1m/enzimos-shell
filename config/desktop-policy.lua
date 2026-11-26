@@ -230,7 +230,7 @@ end
 -- past the monitor's usable area the steps start again from its corner.
 local CASCADE = 40
 function enzui_desktop_cascade(window)
-    if not (window and regular(window) and window.floating and window.at and window.size) then return end
+    if not (window and regular(window) and window.floating and not window.borderless_fullscreen and window.at and window.size) then return end
     local id = workspace_of(window)
     if id == nil or enzui_desktop_tiling_at(id) then return end
     local others = {}

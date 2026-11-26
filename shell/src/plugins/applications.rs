@@ -27,6 +27,12 @@ pub fn valid_pins(value: &Value) -> bool {
                 == pins.len()
     })
 }
+pub(super) fn valid_folders(value: &Value) -> bool {
+    value.as_array().is_some_and(|uris| {
+        let values = uris.iter().filter_map(Value::as_str);
+        values.clone().count() == uris.len() && crate::dock::valid_folders(values)
+    })
+}
 pub fn preferences(manifest: &Manifest, config: &Value) -> Result<Preferences, String> {
     manifest.validate_config(config)?;
     let fields = [
@@ -69,6 +75,9 @@ pub fn preferences(manifest: &Manifest, config: &Value) -> Result<Preferences, S
         .ok_or_else(|| tr("shell-invalid-plugin-configuration"))?
         .remove("enabled");
     value["enabled"] = value["visible"].clone();
+    if value.get("hover_previews").is_none() {
+        value["hover_previews"] = true.into();
+    }
     Preferences::from_json(Some(&value))
 }
 pub fn edit(manifest: &Manifest, config: &Value, change: &Change) -> Result<Value, String> {
@@ -82,7 +91,11 @@ pub fn edit(manifest: &Manifest, config: &Value, change: &Change) -> Result<Valu
         .ok_or_else(|| tr("shell-invalid-serialized-application-preferences"))?
     {
         let key = if key == "enabled" { "visible" } else { key };
-        result[key] = value.clone();
+        if manifest.settings.iter().any(|spec| spec.key == key) {
+            result[key] = value.clone();
+        } else if key == "folders" && value != &serde_json::json!([]) {
+            return Err(tr("shell-dock-invalid-folders").into());
+        }
     }
     manifest.validate_config(&result)?;
     Ok(result)

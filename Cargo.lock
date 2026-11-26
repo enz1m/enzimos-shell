@@ -1182,6 +1182,7 @@ dependencies = [
  "enzui-activity",
  "enzui-agent",
  "enzui-agent-app",
+ "enzui-clipboard",
  "enzui-core",
  "enzui-icons",
  "enzui-security",

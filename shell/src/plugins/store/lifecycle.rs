@@ -20,7 +20,8 @@ impl Store {
         self.locked(|| {
             let clipboard = self.initialize_clipboard_locked()?;
             let dock = self.initialize_applications_locked()?;
-            Ok(clipboard || dock)
+            let dock_upgraded = self.upgrade_applications_locked()?;
+            Ok(clipboard || dock || dock_upgraded)
         })
     }
     fn initialize_clipboard_locked(&self) -> Result<bool, String> {

@@ -18,7 +18,7 @@ macro_rules! choice {
     }
 }
 choice!(Position, Bottom, [Bar => ("bar",tr("shell-in-the-bar")), Top => ("top",tr("shell-top")), Bottom => ("bottom",tr("shell-bottom")), Left => ("left",tr("shell-left")), Right => ("right",tr("shell-right"))]);
-choice!(Style, Island, [Island => ("island",tr("shell-island")), Panel => ("panel",tr("shell-edge-panel")), Minimal => ("minimal",tr("shell-icons-only"))]);
+choice!(Style, Desktop, [Desktop => ("desktop",tr("shell-dock-match-desktop")), Island => ("island",tr("shell-island")), Panel => ("panel",tr("shell-edge-panel")), Minimal => ("minimal",tr("shell-icons-only"))]);
 choice!(Visibility, Never, [Never => ("never",tr("shell-always-visible")), Always => ("always",tr("shell-autohide")), Overlap => ("overlap",tr("shell-hide-when-windows-overlap")), Fullscreen => ("fullscreen",tr("shell-hide-for-fullscreen-apps"))]);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,13 +36,18 @@ pub struct Preferences {
     pub show_running: bool,
     pub current_desktop: bool,
     pub pins: Vec<String>,
+    pub folders: Vec<String>,
+    pub hover_previews: bool,
+    pub overview: bool,
+    pub applications: bool,
+    pub downloads: bool,
 }
 impl Default for Preferences {
     fn default() -> Self {
         Self {
             enabled: false,
             position: Position::Bottom,
-            style: Style::Island,
+            style: Style::Desktop,
             visibility: Visibility::Never,
             icon_size: 24,
             spacing: 4,
@@ -52,6 +57,11 @@ impl Default for Preferences {
             show_running: true,
             current_desktop: false,
             pins: Vec::new(),
+            folders: Vec::new(),
+            hover_previews: false,
+            overview: false,
+            applications: false,
+            downloads: false,
         }
     }
 }
@@ -70,9 +80,18 @@ pub enum Change {
     CurrentDesktop(bool),
     Pin(String, bool),
     EnableAndPin(String),
+    PinFolders(Vec<String>),
+    UnpinFolder(String),
     Move(String, i8),
 }
 impl Preferences {
+    pub fn icon_spacing(&self, metrics: crate::settings::Metrics) -> u16 {
+        metrics
+            .islands
+            .filter(|_| self.style == Style::Desktop)
+            .map_or(self.spacing, |style| style.gap)
+    }
+
     pub fn in_bar(&self, bar: crate::settings::BarEdge) -> bool {
         self.position == Position::Bar
             || matches!(
@@ -118,6 +137,9 @@ impl Preferences {
                 tr("shell-dock-pins-must-be-unique-application-identities-at-most-32").into(),
             );
         }
+        if !valid_folders(self.folders.iter().map(String::as_str)) {
+            return Err(tr("shell-dock-invalid-folders").into());
+        }
         Ok(())
     }
     pub fn apply(&mut self, change: &Change) -> Result<(), String> {
@@ -146,6 +168,14 @@ impl Preferences {
                 }
             }
             Change::Pin(id, false) => next.pins.retain(|known| known != id),
+            Change::PinFolders(uris) => {
+                for uri in uris {
+                    if next.folders.len() < MAX_FOLDERS && !next.folders.contains(uri) {
+                        next.folders.push(uri.clone());
+                    }
+                }
+            }
+            Change::UnpinFolder(uri) => next.folders.retain(|known| known != uri),
             Change::Move(id, step) => {
                 if let Some(index) = next.pins.iter().position(|known| known == id) {
                     let to = (index as isize + isize::from(*step))
@@ -196,6 +226,63 @@ pub fn valid_app_id(id: &str) -> bool {
             .unwrap_or_default()
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+}
+
+pub const MAX_FOLDERS: usize = 16;
+
+pub fn folder_path(uri: &str) -> Option<std::path::PathBuf> {
+    if uri.len() > 1536 || !uri.starts_with("file:///") {
+        return None;
+    }
+    let path = enzui_clipboard::validate_file_uri(uri).ok()?;
+    (crate::desktop_portal::uri(&path) == uri).then_some(path)
+}
+
+pub(crate) fn valid_folders<'a>(uris: impl IntoIterator<Item = &'a str>) -> bool {
+    let mut seen = BTreeSet::new();
+    uris.into_iter()
+        .all(|uri| seen.len() < MAX_FOLDERS && folder_path(uri).is_some() && seen.insert(uri))
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Action {
+    Overview,
+    Applications,
+    Downloads,
+}
+
+#[derive(Clone, Debug)]
+pub enum Builtin {
+    Action(Action),
+    Folder(String),
+}
+
+impl Builtin {
+    pub fn title(&self) -> String {
+        match self {
+            Self::Action(Action::Overview) => tr("shell-dock-window-overview").into(),
+            Self::Action(Action::Applications) => tr("shell-dock-app-launcher").into(),
+            Self::Action(Action::Downloads) => tr("shell-dock-downloads").into(),
+            Self::Folder(uri) => folder_path(uri).map_or_else(String::new, |path| {
+                crate::search::catalogue::display_text(
+                    &path
+                        .file_name()
+                        .unwrap_or(path.as_os_str())
+                        .to_string_lossy(),
+                    120,
+                )
+            }),
+        }
+    }
+
+    pub fn icon(&self) -> &'static str {
+        match self {
+            Self::Action(Action::Overview) => "panels-top-left",
+            Self::Action(Action::Applications) => "grid-2x2",
+            Self::Action(Action::Downloads) => "folder-down",
+            Self::Folder(_) => "folder",
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -350,6 +437,7 @@ pub struct Group {
     pub image: Option<std::path::PathBuf>,
     pub app: Option<AppTarget>,
     pub pinned: bool,
+    pub builtin: Option<Builtin>,
     pub windows: Vec<Window>,
 }
 fn stable_window_order(left: &Window, right: &Window) -> std::cmp::Ordering {
@@ -431,7 +519,41 @@ pub fn groups(
                 }),
             app: target,
             pinned: preferences.pins.contains(&id),
+            builtin: None,
             windows: own,
+        });
+    }
+    let builtins = preferences
+        .folders
+        .iter()
+        .cloned()
+        .map(Builtin::Folder)
+        .chain(
+            [
+                (preferences.overview, Action::Overview),
+                (preferences.applications, Action::Applications),
+                (preferences.downloads, Action::Downloads),
+            ]
+            .into_iter()
+            .filter(|(enabled, _)| *enabled)
+            .map(|(_, action)| Builtin::Action(action)),
+        );
+    for builtin in builtins {
+        let id = match &builtin {
+            Builtin::Folder(uri) => format!("folder:{uri}"),
+            Builtin::Action(Action::Overview) => "dock:overview".into(),
+            Builtin::Action(Action::Applications) => "dock:apps".into(),
+            Builtin::Action(Action::Downloads) => "dock:downloads".into(),
+        };
+        result.push(Group {
+            id,
+            title: builtin.title(),
+            icon: builtin.icon().into(),
+            image: None,
+            app: None,
+            pinned: matches!(builtin, Builtin::Folder(_)),
+            builtin: Some(builtin),
+            windows: Vec::new(),
         });
     }
     result
@@ -442,6 +564,10 @@ pub struct Geometry {
     pub body: Rectangle,
     pub sensor: Rectangle,
     pub vertical: bool,
+    pub padding: [f32; 2],
+    pub radius: f32,
+    pub framed: bool,
+    pub reserve: f32,
     pub output: String,
     pub output_id: i64,
     pub desktop: i64,
@@ -451,24 +577,53 @@ pub fn geometry(
     count: usize,
     screen: Size,
     bar: crate::settings::BarEdge,
-    bar_band: f32,
-    sidebar: Option<crate::settings::SidebarEdge>,
-    sidebar_band: f32,
+    metrics: crate::settings::Metrics,
+    edges: (u32, u32),
 ) -> Geometry {
     let vertical = matches!(p.position, Position::Left | Position::Right);
-    let inset = f32::from(p.margin);
+    let framed = p.style == Style::Desktop && metrics.islands.is_none();
+    let island = metrics.islands.filter(|_| p.style == Style::Desktop);
+    let inset = island.map_or_else(
+        || if framed { 0.0 } else { f32::from(p.margin) },
+        |style| {
+            f32::from(if vertical {
+                style.side_gap
+            } else {
+                style.edge_gap
+            })
+        },
+    );
     let slot = f32::from(p.icon_size) + 6.0;
-    let thickness = f32::from(p.icon_size) + 22.0;
-    let left = if sidebar == Some(crate::settings::SidebarEdge::Left) {
-        sidebar_band
+    let thickness = (slot + 16.0).max(island.map_or(0.0, |style| f32::from(style.height)));
+    let cross_padding = ((thickness - slot - 4.0) / 2.0).floor();
+    let axis_padding = island.map_or(6.0, |style| f32::from(style.padding));
+    let padding = if vertical {
+        [axis_padding, cross_padding]
     } else {
-        0.0
+        [cross_padding, axis_padding]
     };
-    let right = if sidebar == Some(crate::settings::SidebarEdge::Right) {
-        sidebar_band
+    let (edge_left, edge_right) = (edges.0 as f32, edges.1 as f32);
+    let frame = f32::from(metrics.frame);
+    let usable_edge = |edge: f32| {
+        if island.is_some() {
+            (edge - inset).max(0.0)
+        } else if framed && edge == frame {
+            0.0
+        } else {
+            edge
+        }
+    };
+    let left = if vertical {
+        usable_edge(edge_left)
     } else {
-        0.0
+        edge_left
     };
+    let right = if vertical {
+        usable_edge(edge_right)
+    } else {
+        edge_right
+    };
+    let bar_band = f32::from(metrics.bar_band());
     let top = if bar == crate::settings::BarEdge::Top {
         bar_band
     } else {
@@ -484,11 +639,11 @@ pub fn geometry(
     } else {
         screen.width - left - right - 2.0 * inset
     };
-    let span = if p.style == Style::Panel {
+    let spacing = f32::from(p.icon_spacing(metrics));
+    let span = if p.style == Style::Panel || island.is_some_and(|style| style.joined_bar) {
         available
     } else {
-        (count.max(1) as f32 * (slot + f32::from(p.spacing)) - f32::from(p.spacing) + 12.0)
-            .min(available)
+        (count.max(1) as f32 * (slot + spacing) - spacing + 2.0 * axis_padding).min(available)
     }
     .max(1.0);
     let body = match p.position {
@@ -543,11 +698,32 @@ pub fn geometry(
             height: 3.0,
         },
     };
+    let covered = match p.position {
+        Position::Left => edge_left - left,
+        Position::Right => edge_right - right,
+        Position::Top | Position::Bottom if framed => frame,
+        _ => 0.0,
+    };
+    let radius = if framed {
+        f32::from(metrics.radius)
+    } else if let Some(style) = island {
+        if style.radius >= style.height / 2 {
+            thickness / 2.0
+        } else {
+            f32::from(style.radius)
+        }
+    } else {
+        f32::from(p.radius)
+    };
     Geometry {
         screen,
         body,
         sensor,
         vertical,
+        padding,
+        radius,
+        framed,
+        reserve: (inset + thickness - covered).max(0.0),
         output: String::new(),
         output_id: 0,
         desktop: 1,
@@ -575,10 +751,10 @@ pub fn input_regions(
             regions.push((geometry.sensor, 0.0));
         }
         if !hidden {
-            let radius = if preferences.style == Style::Minimal {
+            let radius = if preferences.style == Style::Minimal || geometry.framed {
                 0.0
             } else {
-                f32::from(preferences.radius)
+                geometry.radius
             };
             regions.push((geometry.body, radius));
         }
@@ -739,6 +915,27 @@ impl crate::compositor::Compositor {
             _ => Err(tr("shell-dock-placement-rejected").into()),
         }
     }
+    pub async fn dock_capture_target(&self, target: &WindowTarget) -> bool {
+        let start = tokio::fs::read_to_string(format!("/proc/{}/stat", target.pid))
+            .await
+            .ok()
+            .as_deref()
+            .and_then(crate::window_feed::start_ticks);
+        if start != Some(target.start) || target.pid == std::process::id() {
+            return false;
+        }
+        let lua = format!(
+            "{}\nlocal w=enzui_dock_target({}, {}, {}); return w~=nil and not w.hidden and w.workspace and w.workspace.id>0",
+            include_str!("../../../../config/dock-policy.lua"),
+            serde_json::to_string(&target.address).expect("serializing a string cannot fail"),
+            target.pid,
+            serde_json::to_string(&target.stable_id).expect("serializing a string cannot fail"),
+        );
+        self.request(&["repl", &lua])
+            .await
+            .is_ok_and(|value| value.trim() == "true")
+    }
+
     pub async fn dock_window_action(
         &self,
         target: WindowTarget,
@@ -838,11 +1035,7 @@ impl crate::compositor::Compositor {
             && preferences.position != Position::Bar
             && preferences.visibility == Visibility::Never
         {
-            (if geometry.vertical {
-                geometry.body.width
-            } else {
-                geometry.body.height
-            }) + f32::from(preferences.margin)
+            geometry.reserve
         } else {
             0.0
         };
@@ -1030,9 +1223,12 @@ mod tests {
                                 64,
                                 Size::new(640.0, 480.0),
                                 crate::settings::BarEdge::Bottom,
-                                48.0,
-                                Some(crate::settings::SidebarEdge::Left),
-                                50.0,
+                                crate::settings::Metrics {
+                                    bar: 48,
+                                    islands: None,
+                                    ..Default::default()
+                                },
+                                (50, 8),
                             );
                             assert!(
                                 g.body.x >= 0.0

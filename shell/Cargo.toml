@@ -20,6 +20,7 @@ iced_runtime = { git = "https://github.com/enz1m/enzim-iced.git", rev = "838066d
 enzui-security = { git = "https://github.com/enz1m/enzui.git", rev = "4f951251c8f31a649dd862e274f81260690a9b98" }
 enzui-core = { features = ["accesskit", "activation-native-iced"], git = "https://github.com/enz1m/enzui.git", rev = "4f951251c8f31a649dd862e274f81260690a9b98" }
 enzui-theme = { git = "https://github.com/enz1m/enzui.git", rev = "4f951251c8f31a649dd862e274f81260690a9b98" }
+enzui-clipboard = { git = "https://github.com/enz1m/enzui.git", rev = "4f951251c8f31a649dd862e274f81260690a9b98" }
 enzui-icons = { git = "https://github.com/enz1m/enzui.git", rev = "4f951251c8f31a649dd862e274f81260690a9b98" }
 enzui-widgets = { features = ["portal-dbus"], git = "https://github.com/enz1m/enzui.git", rev = "4f951251c8f31a649dd862e274f81260690a9b98" }
 enzui-agent = { features = ["iced-consumer"], git = "https://github.com/enz1m/enzui.git", rev = "4f951251c8f31a649dd862e274f81260690a9b98" }

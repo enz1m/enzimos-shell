@@ -3,6 +3,7 @@ set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 app=${1:-}
 case "$app" in files-app|text-app|terminal-emulator|task-manager-app) ;; *) echo 'Unknown app' >&2; exit 2;; esac
+shift
 : "${XDG_RUNTIME_DIR:?}"
 : "${WAYLAND_DISPLAY:?Launch from the nested desktop}"
 : "${HYPRLAND_INSTANCE_SIGNATURE:?Launch from the nested desktop}"
@@ -36,4 +37,4 @@ if [[ -n $center_id && $shared_config == /* && -f "$shared_config/enzui/apps/$ce
   export ENZUI_CENTER_CREDENTIAL="$shared_config/enzui/apps/$center_id.credential.json"
 fi
 unset DISPLAY ENZUI_TEST_FRAME
-exec "$apps/$app" >> "$state/$app.log" 2>&1
+exec "$apps/$app" "$@" >> "$state/$app.log" 2>&1

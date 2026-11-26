@@ -17,7 +17,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[derive(Clone, Debug)]
@@ -27,18 +27,22 @@ pub(crate) enum Event {
     Dwell(u64),
     Bounds(u64, Origin, Option<Rectangle>),
     Point(u64, Result<iced::Point, String>),
-    Pictures(u64, Vec<(WindowTarget, Option<image::Handle>)>),
+    Refresh(u64),
+    Picture(u64, WindowTarget, Option<image::Handle>),
     Hold(bool),
     Dismiss(u64),
     Focus(WindowTarget),
-    Cycle(String, f32),
+    Cycle(String, iced::mouse::ScrollDelta),
 }
 pub(crate) struct Preview {
     pub serial: u64,
-    pub loaded: bool,
+    next: usize,
     pub bounds: Rectangle,
     pub windows: Vec<Window>,
-    pub pictures: Vec<(WindowTarget, Option<image::Handle>)>,
+    id: String,
+    body: Rectangle,
+    point: iced::Point,
+    position: Position,
 }
 #[derive(Default)]
 pub(crate) struct State {
@@ -48,9 +52,136 @@ pub(crate) struct State {
     pub held: bool,
     pub busy: bool,
     pub cancel: Option<Arc<AtomicBool>>,
-    pub cycle: Option<(String, String, std::time::Instant)>,
+    cycle: Option<(String, String, Instant)>,
+    gesture: Gesture,
+    pictures: std::collections::VecDeque<Picture>,
+}
+
+struct Picture {
+    target: WindowTarget,
+    handle: Option<image::Handle>,
+    time: Instant,
+}
+
+#[derive(Default)]
+struct Gesture {
+    app: String,
+    last: Option<Instant>,
+    distance: f32,
+    stepped: bool,
+}
+
+impl Gesture {
+    fn step(&mut self, id: &str, delta: iced::mouse::ScrollDelta, now: Instant) -> Option<f32> {
+        use iced::mouse::ScrollDelta::{Lines, Pixels};
+        let (x, y) = match delta {
+            Lines { x, y } | Pixels { x, y } => (x, y),
+        };
+        let distance = if y.abs() >= x.abs() { -y } else { -x };
+        if !distance.is_finite() || distance == 0.0 {
+            return None;
+        }
+        if matches!(delta, Lines { .. }) {
+            return Some(distance);
+        }
+        if self.app != id
+            || self
+                .last
+                .is_none_or(|last| now - last >= Duration::from_millis(230))
+        {
+            self.app = id.into();
+            self.distance = 0.0;
+            self.stepped = false;
+        }
+        self.last = Some(now);
+        self.distance += distance;
+        if !self.stepped && self.distance.abs() >= 14.0 {
+            self.stepped = true;
+            return Some(self.distance);
+        }
+        None
+    }
 }
 impl State {
+    fn picture(&self, target: &WindowTarget) -> Option<&Picture> {
+        self.pictures.iter().find(|p| p.target == *target)
+    }
+
+    fn cache(&mut self, target: WindowTarget, picture: Option<image::Handle>) -> bool {
+        let old = self
+            .pictures
+            .iter()
+            .position(|p| p.target == target)
+            .and_then(|index| self.pictures.remove(index));
+        let unchanged = old
+            .as_ref()
+            .is_some_and(|old| match (&old.handle, &picture) {
+                (None, None) => true,
+                (
+                    Some(image::Handle::Rgba {
+                        width,
+                        height,
+                        pixels,
+                        ..
+                    }),
+                    Some(image::Handle::Rgba {
+                        width: new_width,
+                        height: new_height,
+                        pixels: new_pixels,
+                        ..
+                    }),
+                ) => (width, height, pixels) == (new_width, new_height, new_pixels),
+                _ => false,
+            });
+        let handle = if unchanged {
+            old.and_then(|old| old.handle)
+        } else {
+            picture
+        };
+        self.pictures.push_front(Picture {
+            target,
+            handle,
+            time: Instant::now(),
+        });
+        self.pictures.truncate(24);
+        !unchanged
+    }
+
+    pub(crate) fn update_windows(&mut self, entries: &[dock_ui::Entry], screen: iced::Size) {
+        let Some(preview) = self.preview.as_mut() else {
+            return;
+        };
+        let Some(entry) = entries.iter().find(|entry| entry.group.id == preview.id) else {
+            self.clear();
+            return;
+        };
+        let windows = entry
+            .group
+            .windows
+            .iter()
+            .take(16)
+            .cloned()
+            .collect::<Vec<_>>();
+        if windows.is_empty() {
+            self.clear();
+        } else {
+            if preview.windows.len() != windows.len() {
+                preview.bounds = place(
+                    screen,
+                    preview.body,
+                    preview.point,
+                    preview.position,
+                    windows.len(),
+                );
+            }
+            preview.windows = windows;
+        }
+    }
+
+    pub(crate) fn clear_cache(&mut self) {
+        self.pictures.clear();
+    }
+
     pub(crate) fn clear(&mut self) {
         self.serial = self.serial.wrapping_add(1);
         self.preview = None;
@@ -86,7 +217,12 @@ pub(crate) fn place(
     position: Position,
     count: usize,
 ) -> Rectangle {
-    let width = (count.clamp(1, 6) as f32 * 176.0 + 12.0).min((screen.width - 24.0).max(1.0));
+    let inward = match position {
+        Position::Left => screen.width - body.x - body.width - 18.0,
+        Position::Right => body.x - 18.0,
+        _ => screen.width - 24.0,
+    };
+    let width = (count.clamp(1, 6) as f32 * 176.0 + 12.0).min(inward.max(1.0));
     let height = 148.0_f32.min((screen.height - 24.0).max(1.0));
     let (x, y) = match position {
         Position::Left => (body.x + body.width + 6.0, point.y - height / 2.0),
@@ -137,7 +273,8 @@ impl Shell {
         }
         match event {
             Event::Enter(id, origin) => {
-                if self.dock.menu.is_some()
+                if !self.dock.preferences.hover_previews
+                    || self.dock.menu.is_some()
                     || self
                         .dock
                         .entries
@@ -232,34 +369,43 @@ impl Shell {
                 };
                 self.dock.preview.preview = Some(Preview {
                     serial,
-                    loaded: false,
+                    next: 0,
                     bounds: place(g.screen, body, point, position, windows.len()),
                     windows,
-                    pictures: Vec::new(),
+                    id,
+                    body,
+                    point,
+                    position,
                 });
                 self.dock.hidden = false;
                 self.dock_capture_previews(serial)
             }
-            Event::Pictures(serial, pictures) => {
+            Event::Refresh(serial) => {
+                self.quiet = true;
+                self.dock_capture_previews(serial)
+            }
+            Event::Picture(serial, target, picture) => {
                 self.dock.preview.busy = false;
-                if self
-                    .dock
-                    .preview
-                    .preview
-                    .as_ref()
-                    .is_some_and(|p| p.serial == serial)
-                {
-                    if let Some(preview) = self.dock.preview.preview.as_mut() {
-                        preview.pictures = pictures;
-                        preview.loaded = true;
-                    }
-                    Task::none()
-                } else if self.dock.preview.hovered.is_some() && self.dock.preview.preview.is_some()
-                {
-                    self.dock_capture_previews(self.dock.preview.serial)
-                } else {
-                    Task::none()
+                let current = self.dock.preview.preview.as_ref().map(|p| p.serial);
+                if current != Some(serial) {
+                    self.quiet = true;
+                    return current
+                        .map_or_else(Task::none, |serial| self.dock_capture_previews(serial));
                 }
+                if self.dock.preview.cache(target, picture) {
+                    self.redraw_only = self.dock.window;
+                } else {
+                    self.quiet = true;
+                }
+                let initializing =
+                    self.dock.preview.preview.as_ref().is_some_and(|p| {
+                        p.next < p.windows.iter().filter(|w| !w.minimized).count()
+                    });
+                let interval = Duration::from_millis(if initializing { 80 } else { 320 });
+                Task::perform(
+                    async move { tokio::time::sleep(interval).await },
+                    move |()| message(Event::Refresh(serial)),
+                )
             }
             Event::Hold(held) => {
                 self.dock.preview.held = held;
@@ -280,23 +426,21 @@ impl Shell {
             }
             Event::Focus(target) => {
                 self.dock.preview.clear();
+                self.dock_rebuild();
                 self.dock_windows(vec![target], "focus")
             }
             Event::Cycle(id, delta) => {
                 let Some(entry) = self.dock.entries.iter().find(|e| e.group.id == id) else {
                     return Task::none();
                 };
-                if self
-                    .dock
-                    .preview
-                    .cycle
-                    .as_ref()
-                    .is_some_and(|(app, _, at)| {
-                        *app == id && at.elapsed() < Duration::from_millis(80)
-                    })
-                {
+                let now = Instant::now();
+                if entry.group.windows.len() < 2 {
                     return Task::none();
                 }
+                let Some(delta) = self.dock.preview.gesture.step(&id, delta, now) else {
+                    self.quiet = true;
+                    return Task::none();
+                };
                 let previous = self
                     .dock
                     .preview
@@ -307,22 +451,10 @@ impl Shell {
                 let Some(target) = cycle_target(&entry.group.windows, previous, delta) else {
                     return Task::none();
                 };
-                self.dock.preview.cycle = Some((
-                    id.clone(),
-                    target.stable_id.clone(),
-                    std::time::Instant::now(),
-                ));
+                self.dock.preview.cycle = Some((id, target.stable_id.clone(), now));
                 self.dock.preview.clear();
-                let origin = if self.dock.preferences.position == Position::Bar {
-                    Origin::Bar
-                } else {
-                    Origin::Dock
-                };
-                self.dock.preview.hovered = Some((id, origin));
-                Task::batch([
-                    self.dock_windows(vec![target], "focus"),
-                    delay(self.dock.preview.serial, true),
-                ])
+                self.dock_rebuild();
+                self.dock_windows(vec![target], "focus")
             }
             _ => Task::none(),
         }
@@ -331,34 +463,50 @@ impl Shell {
         if self.dock.preview.busy {
             return Task::none();
         }
-        let Some(preview) = self.dock.preview.preview.as_ref() else {
+        let Some(preview) = self
+            .dock
+            .preview
+            .preview
+            .as_mut()
+            .filter(|p| p.serial == serial)
+        else {
             return Task::none();
         };
-        let windows = preview.windows.clone();
+        let visible = preview
+            .windows
+            .iter()
+            .filter(|w| !w.minimized)
+            .collect::<Vec<_>>();
+        if visible.is_empty() {
+            return Task::none();
+        }
+        let target = visible[preview.next % visible.len()].target.clone();
+        let first = preview.next < visible.len();
+        preview.next = preview.next.wrapping_add(1);
+        if first
+            && self
+                .dock
+                .preview
+                .picture(&target)
+                .is_some_and(|p| p.time.elapsed() < Duration::from_millis(320))
+        {
+            return Task::done(message(Event::Refresh(serial)));
+        }
         let root = self.root.clone();
         let compositor = self.compositor.clone();
         let cancel = Arc::new(AtomicBool::new(false));
-        self.dock.preview.cancel = Some(std::sync::Arc::clone(&cancel));
+        self.dock.preview.cancel = Some(Arc::clone(&cancel));
         self.dock.preview.busy = true;
         Task::perform(
             async move {
-                let mut pictures = Vec::new();
-                let deadline = std::time::Instant::now() + Duration::from_secs(3);
-                let before = compositor.dock_snapshot(&[]).await.ok();
-                for window in windows.into_iter().take(16) {
-                    if cancel.load(Ordering::Relaxed) || std::time::Instant::now() >= deadline {
-                        break;
-                    }
-                    if before.as_ref().is_none_or(|snapshot| {
-                        !snapshot.windows.iter().any(|w| w.target == window.target)
-                    }) {
-                        continue;
-                    }
-                    let picture = tokio::time::timeout(
+                let mut picture = None;
+                if compositor.dock_capture_target(&target).await && !cancel.load(Ordering::Relaxed)
+                {
+                    picture = tokio::time::timeout(
                         Duration::from_millis(650),
                         enzui_shell::previews::capture_window(
-                            root.clone(),
-                            window.target.address.clone(),
+                            root,
+                            target.address.clone(),
                             160,
                             106,
                         ),
@@ -366,24 +514,16 @@ impl Shell {
                     .await
                     .ok()
                     .and_then(Result::ok);
-                    if cancel.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    pictures.push((window.target, picture));
                 }
-                let after = compositor.dock_snapshot(&[]).await.ok();
-                pictures.retain(|(target, _)| {
-                    let initial = before
-                        .as_ref()
-                        .and_then(|s| s.windows.iter().find(|w| w.target == *target));
-                    let final_window = after
-                        .as_ref()
-                        .and_then(|s| s.windows.iter().find(|w| w.target == *target));
-                    initial.is_some() && initial == final_window
-                });
-                pictures
+                if picture.is_some()
+                    && (cancel.load(Ordering::Relaxed)
+                        || !compositor.dock_capture_target(&target).await)
+                {
+                    picture = None;
+                }
+                (target, picture)
             },
-            move |pictures| message(Event::Pictures(serial, pictures)),
+            move |(target, picture)| message(Event::Picture(serial, target, picture)),
         )
     }
     pub(crate) fn dock_preview_view(&self) -> Option<Element<'_, Message>> {
@@ -393,11 +533,10 @@ impl Shell {
             .windows
             .iter()
             .map(|w| {
-                let picture = preview
-                    .pictures
-                    .iter()
-                    .find(|(target, _)| *target == w.target)
-                    .and_then(|(_, picture)| picture.as_ref());
+                let cached = self.dock.preview.picture(&w.target);
+                let picture = cached
+                    .and_then(|p| p.handle.as_ref())
+                    .filter(|_| !w.minimized);
                 let content: Element<'_, Message> = if let Some(picture) = picture {
                     container(
                         image(picture.clone())
@@ -411,7 +550,7 @@ impl Shell {
                     container(
                         enzui_widgets::text::enz_text(if w.minimized {
                             tr("shell-minimized")
-                        } else if !preview.loaded {
+                        } else if cached.is_none() {
                             tr("shell-loading-preview")
                         } else {
                             tr("shell-preview-unavailable")
@@ -470,5 +609,41 @@ impl Shell {
             .padding(iced::Padding::ZERO.left(bounds.x).top(bounds.y))
             .into(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iced::mouse::ScrollDelta;
+
+    #[test]
+    fn one_smooth_swipe_advances_once_including_momentum() {
+        let mut gesture = Gesture::default();
+        let start = Instant::now();
+        let pixels = |y| ScrollDelta::Pixels { x: 0.0, y };
+        assert!(gesture.step("app", pixels(-5.0), start).is_none());
+        assert!(
+            gesture
+                .step("app", pixels(-10.0), start + Duration::from_millis(20))
+                .unwrap()
+                > 0.0
+        );
+        for after in [70, 130, 200, 270] {
+            assert!(
+                gesture
+                    .step("app", pixels(-30.0), start + Duration::from_millis(after))
+                    .is_none()
+            );
+        }
+        assert!(
+            gesture
+                .step("app", pixels(30.0), start + Duration::from_millis(530))
+                .unwrap()
+                < 0.0
+        );
+        let wheel = ScrollDelta::Lines { x: 0.0, y: -1.0 };
+        assert!(gesture.step("app", wheel, start).unwrap() > 0.0);
+        assert!(gesture.step("app", wheel, start).unwrap() > 0.0);
     }
 }

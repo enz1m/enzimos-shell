@@ -898,22 +898,61 @@ impl Compositor {
                 return Err(tr("shell-this-action-belongs-to-the-desktop-frontend").into());
             }
         }
-        let mut child = command
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(false)
-            .spawn()
-            .map_err(|_| tr("shell-application-could-not-be-started"))?;
-        let mut exited = tokio::spawn(async move { child.wait().await });
-        match tokio::time::timeout(std::time::Duration::from_millis(300), &mut exited).await {
-            Ok(Ok(Ok(status))) if status.success() => Ok(()),
-            Ok(_) => Err(tr(
-                "shell-application-exited-before-opening-check-its-installation-or-default-app",
-            )
-            .into()),
-            Err(_) => Ok(()),
+        spawn_desktop_application(command).await
+    }
+
+    pub async fn open_dock_folder(&self, root: &Path, path: &Path) -> Result<(), String> {
+        drop(session::Target::from_environment()?.connect()?);
+        if !path.is_absolute()
+            || !tokio::fs::metadata(path)
+                .await
+                .is_ok_and(|meta| meta.is_dir())
+        {
+            return Err(tr("shell-dock-folder-unavailable").into());
         }
+        let desktop_id = crate::catalog::desktop_id("files-app").expect("registered Files app");
+        let executable = crate::catalog::executable(root, "files-app");
+        let mut command = if executable.is_file() {
+            if !crate::parental::program_allowed(&executable) {
+                return Err(tr("shell-this-app-is-not-allowed-on-this-account").into());
+            }
+            let mut command = scoped(
+                desktop_id,
+                root.join("scripts/launch-desktop-app").as_os_str(),
+            );
+            command.arg("files-app");
+            command
+        } else {
+            let entry = super::catalogue::installed_entry(desktop_id)
+                .ok_or_else(|| tr("shell-application-is-no-longer-installed"))?;
+            if !crate::parental::entry_allowed(&entry) {
+                return Err(tr("shell-this-app-is-not-allowed-on-this-account").into());
+            }
+            let mut command = scoped(desktop_id, std::ffi::OsStr::new("/usr/bin/gio"));
+            command.args(["launch", "--"]).arg(entry);
+            command
+        };
+        command.arg(crate::desktop_portal::uri(path));
+        spawn_desktop_application(command).await
+    }
+}
+
+async fn spawn_desktop_application(mut command: tokio::process::Command) -> Result<(), String> {
+    let mut child = command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(false)
+        .spawn()
+        .map_err(|_| tr("shell-application-could-not-be-started"))?;
+    let mut exited = tokio::spawn(async move { child.wait().await });
+    match tokio::time::timeout(std::time::Duration::from_millis(300), &mut exited).await {
+        Ok(Ok(Ok(status))) if status.success() => Ok(()),
+        Ok(_) => Err(tr(
+            "shell-application-exited-before-opening-check-its-installation-or-default-app",
+        )
+        .into()),
+        Err(_) => Ok(()),
     }
 }
 

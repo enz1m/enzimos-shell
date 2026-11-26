@@ -589,6 +589,12 @@ impl Shell {
 
     // The material of window `id`'s glass, where islands use it.
     pub(crate) fn glass_style(&self, id: window::Id) -> Option<enzui_theme::MaterialStyle> {
+        if Some(id) == self.dock.window {
+            return (self.metrics.islands.is_some()
+                && self.dock.preferences.style == enzui_shell::dock::Style::Desktop)
+                .then(|| self.chrome_glass())
+                .flatten();
+        }
         let chrome = id == self.panel
             || Some(id) == self.sidebar_rail
             || self.assistant.owns_trigger(id)
@@ -985,7 +991,7 @@ impl Shell {
                     .min(f32::from(self.metrics.bar) - 16.0)
                     .max(12.0);
                 let wanted = self.dock.entries.len().max(1) as f32
-                    * (icon + 6.0 + f32::from(self.dock.preferences.spacing));
+                    * (icon + 6.0 + f32::from(self.dock.preferences.icon_spacing(self.metrics)));
                 Some(
                     enzui_widgets::scroll_view::enz_scroll_view(
                         self.dock_icons(crate::dock_ui::Origin::Bar, false),

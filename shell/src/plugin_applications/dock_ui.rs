@@ -6,11 +6,14 @@ use enzui_core::{
 use enzui_shell::i18n::tr;
 use enzui_shell::tr;
 use enzui_shell::{
-    dock::{self, App, Change, Geometry, Group, Position, Snapshot, Style},
+    dock::{self, Action, App, Builtin, Change, Geometry, Group, Position, Snapshot, Style},
     search::{AppTarget, Target, WindowTarget},
     settings::QuickAction,
 };
-use enzui_widgets::context_menu_host::FocusRestoreTarget;
+use enzui_widgets::{
+    context_menu_host::FocusRestoreTarget,
+    file_drop::{FileDrop, enz_file_drop_target_with_receipt},
+};
 use enzui_widgets::{
     context_menu_host::{
         ContextMenuEvent, ContextMenuState, apply_event_restoring, apply_event_restoring_with,
@@ -41,6 +44,8 @@ pub(crate) enum Event {
     Hover(bool, bool),
     Hide(u64),
     Click(String),
+    DropFolders(FileDrop),
+    Folders(enzui_shell::plugins::service::Owner, FileDrop, Vec<String>),
     Invoke(String, Origin, ContextMenuEvent),
     Menu(ContextMenuEvent),
     Anchor(u64, Result<iced::Point, String>),
@@ -104,7 +109,11 @@ pub(crate) struct State {
         bool,
         Option<iced::Rectangle>,
     )>,
-    layout: Option<(enzui_shell::settings::BarEdge, u16, (u32, u32))>,
+    layout: Option<(
+        enzui_shell::settings::BarEdge,
+        enzui_shell::settings::Metrics,
+        (u32, u32),
+    )>,
     pub search_item: Option<enzui_shell::search::Item>,
     pub search_state: ContextMenuState,
 }
@@ -157,11 +166,22 @@ impl Default for State {
     }
 }
 fn model(group: &Group, p: &dock::Preferences) -> MenuModel {
+    if let Some(builtin) = &group.builtin {
+        let mut rows = vec![MenuEntryModel::command("open", &group.title)];
+        if matches!(builtin, Builtin::Folder(_)) {
+            rows.push(MenuEntryModel::command("pin", tr("shell-remove-from-dock")));
+        }
+        rows.push(MenuEntryModel::command(
+            "settings",
+            tr("shell-plugin-settings"),
+        ));
+        return MenuModel::new(rows);
+    }
     let mut rows = vec![
         MenuEntryModel::command(
             "open",
             if group.windows.is_empty() {
-                "Open"
+                tr("shell-open")
             } else {
                 tr("shell-show-windows")
             },
@@ -227,6 +247,18 @@ fn model(group: &Group, p: &dock::Preferences) -> MenuModel {
     MenuModel::new(rows)
 }
 impl Shell {
+    fn dock_folder_target<'a>(&self, content: Element<'a, Message>) -> Element<'a, Message> {
+        if self.dock_owner().is_none_or(|claim| {
+            claim.owner.id != enzui_shell::plugins::applications::DOCK_PLUGIN
+                || self.dock.preferences.folders.len() == dock::MAX_FOLDERS
+        }) {
+            return content;
+        }
+        enz_file_drop_target_with_receipt(content, |drop| message(Event::DropFolders(drop)))
+            .copy_only(true)
+            .into()
+    }
+
     pub(crate) fn dock_sync(&mut self) -> Task<Message> {
         if self.dock.search_item.as_ref().is_some_and(|item| {
             !self.search.showing
@@ -257,10 +289,11 @@ impl Shell {
                 .dock_owner()
                 .map(|claim| (claim.owner.clone(), claim.element.clone()));
         }
-        let layout = (self.bar, self.metrics.bar_band(), self.desktop_edges());
+        let layout = (self.bar, self.metrics, self.desktop_edges());
         let layout_changed = self.dock.layout.replace(layout) != Some(layout);
         if !owner_changed && self.dock.preferences == desired {
             if layout_changed && self.dock.preferences.enabled {
+                self.dock.preview.clear();
                 self.dock_rebuild();
             }
             return Task::none();
@@ -282,6 +315,10 @@ impl Shell {
         self.dock.menu = None;
         self.dock.pending = None;
         self.dock.preview.clear();
+        if owner_changed || !self.dock.preferences.hover_previews || !self.dock.preferences.enabled
+        {
+            self.dock.preview.clear_cache();
+        }
         self.dock.hovered = false;
         self.dock.hover_body = false;
         self.dock.hover_sensor = false;
@@ -425,32 +462,16 @@ impl Shell {
                 group,
             })
             .collect();
-        if let Some(preview) = self.dock.preview.preview.as_mut() {
-            if let Some(entry) = self.dock.entries.iter().find(|e| {
-                e.group
-                    .windows
-                    .iter()
-                    .any(|w| preview.windows.iter().any(|old| old.target == w.target))
-            }) {
-                preview.windows = entry.group.windows.iter().take(16).cloned().collect();
-            } else {
-                self.dock.preview.clear();
-            }
-        }
+        self.dock
+            .preview
+            .update_windows(&self.dock.entries, snapshot.screen);
         let mut geometry = dock::geometry(
             p,
             self.dock.entries.len(),
             snapshot.screen,
             self.bar,
-            f32::from(self.metrics.bar_band()),
-            if self.desktop_edges().0 > self.desktop_edges().1 {
-                Some(enzui_shell::settings::SidebarEdge::Left)
-            } else if self.desktop_edges().1 > self.desktop_edges().0 {
-                Some(enzui_shell::settings::SidebarEdge::Right)
-            } else {
-                None
-            },
-            self.desktop_edges().0.abs_diff(self.desktop_edges().1) as f32,
+            self.metrics,
+            self.desktop_edges(),
         );
         geometry.output.clone_from(&snapshot.output);
         geometry.output_id = snapshot.output_id;
@@ -489,7 +510,11 @@ impl Shell {
         if !self.dock_active()
             && matches!(
                 &event,
-                Event::Click(_) | Event::Invoke(..) | Event::Search(..)
+                Event::Click(_)
+                    | Event::Invoke(..)
+                    | Event::Search(..)
+                    | Event::DropFolders(_)
+                    | Event::Folders(..)
             )
         {
             return Task::none();
@@ -614,11 +639,53 @@ impl Shell {
                 }
                 Task::none()
             }
+            Event::DropFolders(drop) => {
+                if drop.is_temporary() {
+                    return Task::none();
+                }
+                let Some(claim) = self.dock_owner().filter(|claim| {
+                    claim.owner.id == enzui_shell::plugins::applications::DOCK_PLUGIN
+                }) else {
+                    return Task::none();
+                };
+                let owner = claim.owner.clone();
+                Task::perform(
+                    async move {
+                        let paths = drop.paths().to_vec();
+                        let folders = tokio::task::spawn_blocking(move || {
+                            paths
+                                .into_iter()
+                                .take(dock::MAX_FOLDERS * 4)
+                                .filter_map(|path| path.canonicalize().ok())
+                                .filter(|path| path.is_dir())
+                                .map(|path| enzui_shell::desktop_portal::uri(&path))
+                                .filter(|uri| dock::folder_path(uri).is_some())
+                                .collect()
+                        })
+                        .await
+                        .unwrap_or_default();
+                        (drop, folders)
+                    },
+                    move |(drop, folders)| message(Event::Folders(owner, drop, folders)),
+                )
+            }
+            Event::Folders(owner, drop, folders) => {
+                if !folders.is_empty()
+                    && self.dock_owner().is_some_and(|claim| claim.owner == owner)
+                {
+                    drop.finish();
+                    return self.dock_save(Change::PinFolders(folders));
+                }
+                Task::none()
+            }
             Event::Click(id) => {
                 let Some(entry) = self.dock.entries.iter().find(|e| e.group.id == id) else {
                     return Task::none();
                 };
                 let group = entry.group.clone();
+                if let Some(builtin) = group.builtin {
+                    return self.dock_builtin(builtin);
+                }
                 if group.windows.len() > 1 {
                     let origin = if self.dock.preferences.position == Position::Bar {
                         Origin::Bar
@@ -785,6 +852,47 @@ impl Shell {
             move |point| message(Event::Anchor(serial, point)),
         )
     }
+    fn dock_builtin(&mut self, builtin: Builtin) -> Task<Message> {
+        let Some(authority) = self.dock_owner().map(|claim| Arc::clone(&claim.authority)) else {
+            return Task::none();
+        };
+        self.dock.preview.clear();
+        match builtin {
+            Builtin::Action(Action::Overview) => {
+                return self.spread_message(crate::window_spread::SpreadMessage::Toggle);
+            }
+            Builtin::Action(Action::Applications) => return Task::done(Message::ShowLauncher),
+            _ => {}
+        }
+        let compositor = self.compositor.clone();
+        let root = self.root.clone();
+        self.dock.action_serial = self.dock.action_serial.wrapping_add(1);
+        let serial = self.dock.action_serial;
+        Task::perform(
+            async move {
+                if !authority.load(std::sync::atomic::Ordering::Acquire) {
+                    return Err(tr("shell-plugin-authority-changed").into());
+                }
+                let path = match builtin {
+                    Builtin::Folder(uri) => dock::folder_path(&uri),
+                    Builtin::Action(Action::Downloads) => tokio::task::spawn_blocking(|| {
+                        enzui_shell::chooser_places::user_folders()
+                            .into_iter()
+                            .find(|place| place.icon == "download")
+                            .map(|place| place.path)
+                    })
+                    .await
+                    .ok()
+                    .flatten(),
+                    _ => None,
+                }
+                .ok_or_else(|| tr("shell-dock-folder-unavailable"))?;
+                compositor.open_dock_folder(&root, &path).await
+            },
+            move |result| message(Event::Done(serial, result)),
+        )
+    }
+
     fn dock_launch(&mut self, app: Option<AppTarget>) -> Task<Message> {
         let Some(authority) = self
             .dock_owner()
@@ -843,6 +951,14 @@ impl Shell {
             return Task::none();
         };
         let group = entry.group.clone();
+        if let Some(builtin) = group.builtin {
+            return match (action, builtin) {
+                ("open", item) => self.dock_builtin(item),
+                ("pin", Builtin::Folder(uri)) => self.dock_save(Change::UnpinFolder(uri)),
+                ("settings", _) => self.dock_plugin_settings(),
+                _ => Task::none(),
+            };
+        }
         match action {
             "pin" => self.dock_save(Change::Pin(group.id, !group.pinned)),
             "earlier" | "later" => self.dock_save(Change::Move(
@@ -885,7 +1001,12 @@ impl Shell {
         }
     }
     pub(crate) fn dock_icons(&self, origin: Origin, vertical: bool) -> Element<'_, Message> {
-        let palette = self.tokens().palette;
+        let palette = self
+            .window_tokens(match origin {
+                Origin::Bar => Some(self.panel),
+                Origin::Dock => self.dock.window,
+            })
+            .palette;
         let p = &self.dock.preferences;
         let size = if matches!(origin, Origin::Bar) {
             f32::from(p.icon_size)
@@ -961,17 +1082,25 @@ impl Shell {
                         .into(),
                 );
             }
+            let label = if group.builtin.is_some() {
+                group.title.clone()
+            } else {
+                tr!("shell-windows-2", "arg0" => group.title.clone(), "arg1" => format!("{:}", group.windows.len()), "arg2" => (if group.pinned { tr("shell-kept-in-dock") } else { "" }).to_owned(), "arg3" => (if badge.count_visible && badge.count > 0 {format!(" · {} unread",badge.count)} else {String::new()}).clone(), "arg4" => (if urgent {tr("shell-needs-attention")} else {""}).to_owned())
+            };
             let button = enzui_widgets::pressable::enz_pressable(
-                iced::widget::stack(layers).width(size+6.0).height(size+6.0).into(),
+                iced::widget::stack(layers)
+                    .width(size + 6.0)
+                    .height(size + 6.0)
+                    .into(),
                 message(Event::Click(id.clone())),
             )
             .style(enzui_widgets::pressable::PressableStyle::Plain)
             .padding(0)
             .radius(f32::from(p.highlight_radius))
             .selected(active)
-            .aria_label(tr!("shell-windows-2", "arg0" => group.title.clone(), "arg1" => format!("{:}", group.windows.len()), "arg2" => (if group.pinned { tr("shell-kept-in-dock") } else { "" }).to_owned(), "arg3" => (if badge.count_visible && badge.count > 0 {format!(" · {} unread",badge.count)} else {String::new()}).clone(), "arg4" => (if urgent {tr("shell-needs-attention")} else {""}).to_owned()))
+            .aria_label(label)
             .id(format!("dock-app-{id}").into())
-            .enabled(group.app.is_some() || running)
+            .enabled(group.builtin.is_some() || group.app.is_some() || running)
             .into_element();
             let dots = (0..if running {
                 group.windows.len().min(3)
@@ -1048,21 +1177,17 @@ impl Shell {
                 .on_exit(message(Event::Preview(crate::dock_hover::Event::Leave(
                     leave_id,
                 ))));
-            let button = if running {
+            let button = if group.windows.len() > 1 {
                 button.on_scroll(move |delta| {
-                    let (x, y) = match delta {
-                        iced::mouse::ScrollDelta::Lines { x, y }
-                        | iced::mouse::ScrollDelta::Pixels { x, y } => (x, y),
-                    };
                     message(Event::Preview(crate::dock_hover::Event::Cycle(
                         scroll_id.clone(),
-                        if y != 0.0 { -y } else { -x },
+                        delta,
                     )))
                 })
             } else {
                 button
             };
-            let button: Element<'_, Message> = if running {
+            let button: Element<'_, Message> = if running && p.hover_previews {
                 button.into()
             } else {
                 enzui_widgets::tooltip::enz_tooltip(
@@ -1086,10 +1211,16 @@ impl Shell {
                     .into_element(),
             );
         }
-        if vertical {
-            column(buttons).spacing(f32::from(p.spacing)).into()
+        let spacing = f32::from(p.icon_spacing(self.metrics));
+        let icons: Element<'_, Message> = if vertical {
+            column(buttons).spacing(spacing).into()
         } else {
-            row(buttons).spacing(f32::from(p.spacing)).into()
+            row(buttons).spacing(spacing).into()
+        };
+        if matches!(origin, Origin::Bar) {
+            self.dock_folder_target(icons)
+        } else {
+            icons
         }
     }
     pub(crate) fn dock_view(&self) -> Element<'_, Message> {
@@ -1097,8 +1228,13 @@ impl Shell {
             return space().into();
         };
         let p = &self.dock.preferences;
-        let palette = self.tokens().palette;
+        let palette = self.window_tokens(self.dock.window).palette;
         let input = self.dock.window.and_then(|id| self.surface_inputs.get(&id));
+        let glass = self.chrome_glass().filter(|_| {
+            p.style == Style::Desktop
+                && self.metrics.islands.is_some()
+                && input.is_some_and(enzui_shell::surface_input::SurfaceInput::glass_supported)
+        });
         let menu_open = self.dock.menu.is_some();
         if let Some(input) = input {
             if menu_open {
@@ -1130,31 +1266,47 @@ impl Shell {
         if p.position != Position::Bar {
             if !self.dock.hidden {
                 let icons = self.dock_icons(Origin::Dock, g.vertical);
-                let icons = if g.vertical {
-                    enzui_widgets::scroll_view::enz_scroll_view(icons)
-                        .width(g.body.width - 12.0)
-                        .height(g.body.height - 12.0)
-                        .into_element()
+                let width = (g.body.width - 2.0 * g.padding[1]).max(1.0);
+                let height = (g.body.height - 2.0 * g.padding[0]).max(1.0);
+                let mut scroll = enzui_widgets::scroll_view::enz_scroll_view(icons)
+                    .width(Length::Shrink.max(width))
+                    .height(Length::Shrink.max(height));
+                if !g.vertical {
+                    scroll = scroll.axis(enzui_widgets::scroll_view::Axis::Horizontal);
+                }
+                let radius = iced::border::Radius::new(g.radius);
+                let radius = if g.framed {
+                    match p.position {
+                        Position::Left => radius.left(0.0),
+                        Position::Right => radius.right(0.0),
+                        Position::Top => radius.top(0.0),
+                        _ => radius.bottom(0.0),
+                    }
                 } else {
-                    enzui_widgets::scroll_view::enz_scroll_view(icons)
-                        .axis(enzui_widgets::scroll_view::Axis::Horizontal)
-                        .width(g.body.width - 12.0)
-                        .height(g.body.height - 12.0)
-                        .into_element()
+                    radius
                 };
-                let body = container(icons)
-                    .padding(6)
-                    .width(g.body.width)
-                    .height(g.body.height)
-                    .style(move |_| container::Style {
-                        background: (p.style != Style::Minimal).then_some(palette.surface.into()),
-                        border: iced::Border {
-                            radius: f32::from(p.radius).into(),
-                            width: 0.0,
-                            color: palette.border,
-                        },
-                        ..Default::default()
-                    });
+                let rim = if self.light {
+                    iced::Color::from_rgba(0.0, 0.0, 0.0, 0.08)
+                } else {
+                    iced::Color::from_rgba(1.0, 1.0, 1.0, 0.06)
+                };
+                let body = self.dock_folder_target(
+                    container(scroll.into_element())
+                        .padding(g.padding)
+                        .center_x(g.body.width)
+                        .center_y(g.body.height)
+                        .style(move |_| container::Style {
+                            background: (p.style != Style::Minimal && glass.is_none())
+                                .then_some(palette.surface.into()),
+                            border: iced::Border {
+                                radius,
+                                width: f32::from(glass.is_some()),
+                                color: rim,
+                            },
+                            ..Default::default()
+                        })
+                        .into(),
+                );
                 layers.push(
                     container(
                         mouse_area(body)
@@ -1184,12 +1336,37 @@ impl Shell {
         let canvas = iced::widget::stack(layers)
             .width(Length::Fill)
             .height(Length::Fill);
-        enz_optional_point_context_menu_host(
+        let view = enz_optional_point_context_menu_host(
             canvas,
             self.dock.menu.as_ref().map(|m| (&m.model, &m.state)),
             |event| message(Event::Menu(event)),
         )
-        .into()
+        .into();
+        let Some(id) = self.dock.window else {
+            return view;
+        };
+        let regions = if glass.is_some() && p.position != Position::Bar && !self.dock.hidden {
+            vec![(g.body, g.radius)]
+        } else {
+            Vec::new()
+        };
+        enzui_shell::desktop_glass::fixed_glass(
+            view,
+            enzui_shell::desktop_glass::WindowGlass {
+                input: input.cloned(),
+                style: glass,
+                tint: self.glass_tint(id, self.tokens().palette.surface),
+                light_ink: self.window_ink(id),
+                reduced_motion: self.tokens().motion.reduced_motion,
+                shadow: enzui_shell::desktop_frame::bar_glass_shadow(
+                    self.desired_settings.bar_shadow,
+                    self.light,
+                    p.position == Position::Bottom,
+                ),
+                pending: false,
+            },
+            regions,
+        )
     }
     pub(crate) fn dock_search_host<'a>(
         &'a self,

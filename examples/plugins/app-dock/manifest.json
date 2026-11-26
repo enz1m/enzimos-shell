@@ -2,8 +2,8 @@
   "format": 1,
   "id": "app-dock",
   "name": "App dock",
-  "version": "1.0.0",
-  "description": "Optional application dock and grouped taskbar. Joins the bar on its edge. Hover for window snapshots; scroll an icon to cycle its windows. Disabled until you enable this plugin.",
+  "version": "1.1.0",
+  "description": "Optional application dock with grouped windows, folder favorites and desktop shortcuts.",
   "permissions": [
     "shell.bar",
     "applications.surface"
@@ -31,21 +31,24 @@
         "top",
         "bottom",
         "left",
-        "right"
+        "right",
+        "bar"
       ],
       "labels": {
         "top": "Top",
         "bottom": "Bottom",
         "left": "Left",
-        "right": "Right"
+        "right": "Right",
+        "bar": "In the bar"
       }
     },
     {
       "key": "style",
       "label": "Style",
       "kind": "choice",
-      "default": "island",
+      "default": "desktop",
       "choices": [
+        "desktop",
         "island",
         "panel",
         "minimal"
@@ -53,7 +56,8 @@
       "labels": {
         "island": "Island",
         "panel": "Edge panel",
-        "minimal": "Icons only"
+        "minimal": "Icons only",
+        "desktop": "Match desktop"
       }
     },
     {
@@ -130,6 +134,36 @@
       "key": "pins",
       "label": "Favorite applications",
       "kind": "applications",
+      "default": []
+    },
+    {
+      "key": "hover_previews",
+      "label": "Show live window previews",
+      "kind": "toggle",
+      "default": false
+    },
+    {
+      "key": "overview",
+      "label": "Window overview",
+      "kind": "toggle",
+      "default": false
+    },
+    {
+      "key": "applications",
+      "label": "Application launcher",
+      "kind": "toggle",
+      "default": false
+    },
+    {
+      "key": "downloads",
+      "label": "Downloads folder",
+      "kind": "toggle",
+      "default": false
+    },
+    {
+      "key": "folders",
+      "label": "Pinned folders",
+      "kind": "dock-folders",
       "default": []
     }
   ]

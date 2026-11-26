@@ -1002,7 +1002,53 @@ impl SettingsApp {
                 let current = self.plugins.config(record, &spec.key);
                 let plugin = id.clone();
                 let key = spec.key.clone();
+                let label = if id == enzui_shell::plugins::applications::DOCK_PLUGIN {
+                    match key.as_str() {
+                        "visible" => tr("shell-dock-show"),
+                        "position" => tr("shell-position"),
+                        "style" => tr("shell-style"),
+                        "visibility" => tr("shell-dock-visibility"),
+                        "icon_size" => tr("shell-icon-size"),
+                        "spacing" => tr("shell-dock-icon-spacing"),
+                        "radius" => tr("shell-dock-radius"),
+                        "highlight_radius" => tr("shell-dock-highlight-radius"),
+                        "margin" => tr("shell-dock-margin"),
+                        "show_running" => tr("shell-dock-show-running"),
+                        "current_desktop" => tr("shell-dock-current-desktop"),
+                        "pins" => tr("shell-dock-app-favorites"),
+                        "folders" => tr("shell-dock-folder-favorites"),
+                        "hover_previews" => tr("shell-dock-live-previews"),
+                        "overview" => tr("shell-dock-window-overview"),
+                        "applications" => tr("shell-dock-app-launcher"),
+                        "downloads" => tr("shell-dock-downloads"),
+                        _ => &spec.label,
+                    }
+                } else {
+                    &spec.label
+                };
                 let control: Element<'_, AppMessage> = match &spec.kind {
+                    SettingKind::DockFolders => {
+                        let folders = current.as_array().map(Vec::as_slice).unwrap_or_default();
+                        let mut pinned = column![enz_text(label).into_element()].spacing(4);
+                        if folders.is_empty() {
+                            pinned = pinned.push(
+                                enz_text(tr("shell-dock-drop-folder"))
+                                    .size(enzui_widgets::text::TextSize::Caption)
+                                    .into_element(),
+                            );
+                        }
+                        for path in folders.iter().filter_map(|folder| {
+                            folder.as_str().and_then(enzui_shell::dock::folder_path)
+                        }) {
+                            pinned = pinned.push(
+                                enz_text(path.to_string_lossy().into_owned())
+                                    .single_line_elided()
+                                    .muted_on(palette.surface)
+                                    .into_element(),
+                            );
+                        }
+                        pinned.padding([6, 10]).into()
+                    }
                     SettingKind::Applications { .. } => {
                         let ids = current
                             .as_array()
@@ -1014,12 +1060,12 @@ impl SettingsApp {
                                     .join(", ")
                             })
                             .unwrap_or_default();
-                        column![enz_text(&spec.label).into_element(),enz_text(if ids.is_empty() {tr("shell-no-favorites-yet").into()} else {ids}).muted_on(palette.surface).into_element(),enz_text(tr("shell-right-click-applications-in-search-or-the-dock-to-change-favorites")).size(enzui_widgets::text::TextSize::Caption).into_element()].spacing(4).padding([6, 10]).into()
+                        column![enz_text(label).into_element(),enz_text(if ids.is_empty() {tr("shell-no-favorites-yet").into()} else {ids}).muted_on(palette.surface).into_element(),enz_text(tr("shell-right-click-applications-in-search-or-the-dock-to-change-favorites")).size(enzui_widgets::text::TextSize::Caption).into_element()].spacing(4).padding([6, 10]).into()
                     }
                     // The same rows as every other preference: the name on
                     // the left, its control on the right. Labels above
                     // full-width fields read as a different app.
-                    SettingKind::Toggle { .. } => crate::settings_app::settings_row(&spec.label)
+                    SettingKind::Toggle { .. } => crate::settings_app::settings_row(label)
                         .id_prefix(format!("plugin-{id}-{}", spec.key))
                         .switch(current.as_bool().unwrap_or(false), move |v| {
                             message(Message::Config(plugin.clone(), key.clone(), json!(v)))
@@ -1027,12 +1073,12 @@ impl SettingsApp {
                         .enabled(enabled)
                         .into_element(),
                     SettingKind::Integer { min, max, .. } => {
-                        crate::settings_app::settings_row(&spec.label)
+                        crate::settings_app::settings_row(label)
                             .control(
                                 enz_stepper(current.as_i64().unwrap_or(*min) as i32, move |v| {
                                     message(Message::Config(plugin.clone(), key.clone(), json!(v)))
                                 })
-                                .aria_label(&spec.label)
+                                .aria_label(label)
                                 .min(*min as i32)
                                 .max(*max as i32)
                                 .id(format!("plugin-{id}-{}", spec.key))
@@ -1045,19 +1091,41 @@ impl SettingsApp {
                     SettingKind::Choice {
                         choices, labels, ..
                     } => {
+                        let choice_label = |value: &str| {
+                            use enzui_shell::dock::{Position, Style, Visibility};
+                            let translated =
+                                if id == enzui_shell::plugins::applications::DOCK_PLUGIN {
+                                    match key.as_str() {
+                                        "position" => Position::ALL
+                                            .iter()
+                                            .find(|p| p.key() == value)
+                                            .map(|p| p.label()),
+                                        "style" => Style::ALL
+                                            .iter()
+                                            .find(|s| s.key() == value)
+                                            .map(|s| s.label()),
+                                        "visibility" => Visibility::ALL
+                                            .iter()
+                                            .find(|v| v.key() == value)
+                                            .map(|v| v.label()),
+                                        _ => None,
+                                    }
+                                } else {
+                                    None
+                                };
+                            translated.map_or_else(
+                                || labels.get(value).map_or(value, String::as_str).to_owned(),
+                                str::to_owned,
+                            )
+                        };
                         let mapping = choices
                             .iter()
-                            .map(|v| (labels.get(v).unwrap_or(v).clone(), v.clone()))
+                            .map(|v| (choice_label(v), v.clone()))
                             .collect::<BTreeMap<_, _>>();
                         let field = enz_combo_box(
                             "",
-                            choices
-                                .iter()
-                                .map(|v| labels.get(v).unwrap_or(v).clone())
-                                .collect(),
-                            current
-                                .as_str()
-                                .map(|v| labels.get(v).map_or(v, String::as_str).to_owned()),
+                            choices.iter().map(|v| choice_label(v)).collect(),
+                            current.as_str().map(choice_label),
                             move |v| {
                                 message(Message::Config(
                                     plugin.clone(),
@@ -1066,12 +1134,12 @@ impl SettingsApp {
                                 ))
                             },
                         )
-                        .aria_label(&spec.label)
+                        .aria_label(label)
                         .id_prefix(format!("plugin-{id}-{}", spec.key))
                         .size(enzui_widgets::text_field::TextFieldSize::Sm)
                         .enabled(enabled)
                         .into_element();
-                        crate::settings_app::settings_row(&spec.label)
+                        crate::settings_app::settings_row(label)
                             .control(field)
                             .enabled(enabled)
                             .into_element()

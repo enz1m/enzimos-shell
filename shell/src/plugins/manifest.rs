@@ -7,7 +7,7 @@ use std::{collections::BTreeSet, sync::Arc};
 pub const MAX_PACKAGE_BYTES: usize = 1024 * 1024;
 pub const MAX_PROGRAM_BYTES: usize = 512 * 1024;
 pub const MAX_ELEMENTS: usize = 8;
-pub const MAX_SETTINGS: usize = 16;
+pub const MAX_SETTINGS: usize = 18;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Permission {
@@ -80,6 +80,7 @@ pub struct ElementSpec {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SettingKind {
+    DockFolders,
     Applications {
         default: Vec<String>,
     },
@@ -106,6 +107,7 @@ pub struct SettingSpec {
 impl SettingSpec {
     pub fn default_value(&self) -> Value {
         match &self.kind {
+            SettingKind::DockFolders => serde_json::json!([]),
             SettingKind::Applications { default } => serde_json::json!(default),
             SettingKind::Toggle { default } => (*default).into(),
             SettingKind::Integer { default, .. } => (*default).into(),
@@ -114,6 +116,7 @@ impl SettingSpec {
     }
     pub fn accepts(&self, value: &Value) -> bool {
         match &self.kind {
+            SettingKind::DockFolders => super::applications::valid_folders(value),
             SettingKind::Applications { .. } => super::applications::valid_pins(value),
             SettingKind::Toggle { .. } => value.is_boolean(),
             SettingKind::Integer { min, max, .. } => {
@@ -289,6 +292,13 @@ impl Package {
                         return Err(tr("shell-invalid-plugin-setting-range").into());
                     }
                     SettingKind::Integer { default, min, max }
+                }
+                Some("dock-folders") if id == super::applications::DOCK_PLUGIN => {
+                    fields(setting, &["key", "label", "kind", "default"])?;
+                    if setting["default"] != serde_json::json!([]) {
+                        return Err(tr("shell-dock-invalid-folders").into());
+                    }
+                    SettingKind::DockFolders
                 }
                 Some("applications") => {
                     fields(setting, &["key", "label", "kind", "default"])?;

@@ -5,6 +5,10 @@ pub(crate) fn activate(shell: &mut Shell, id: &str, run: u64) -> Owner {
     let bundled = applications::package().unwrap();
     let mut value: serde_json::Value = serde_json::from_slice(bundled.bytes()).unwrap();
     value["id"] = id.into();
+    value["settings"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|setting| setting["key"] != "folders");
     let package = Package::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
     let owner = Owner {
         id: id.into(),
@@ -84,6 +88,7 @@ fn plugin_applications_behaviour() {
         let mut shell = shell();
         activate(&mut shell, "fullscreen-launcher", 1);
         let _ = shell.dock_sync();
+        shell.dock.preferences.hover_previews = true;
         shell.dock.preferences.visibility = dock::Visibility::Never;
         shell.dock.preferences.position = dock::Position::Bottom;
         let movie = dock::Window {

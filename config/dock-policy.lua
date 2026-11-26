@@ -19,10 +19,14 @@ function enzui_dock_place(owner,output,width,height)
     checked(hl.dsp.window.alter_zorder({window=w,mode="top"}))
     return "ok"
 end
-function enzui_dock_action(address,pid,stable,action)
+function enzui_dock_target(address,pid,stable)
     local w=hl.get_window("address:"..address)
-    assert(w and w.mapped and w.pid==pid and w.stable_id==stable,"Dock window changed")
-    for _,tag in ipairs(w.tags or {}) do assert(not tag:match("^enzremote%-guard%-"),"Borrowed window unavailable") end
+    if not (w and w.mapped and w.pid==pid and w.stable_id==stable) then return nil end
+    for _,tag in ipairs(w.tags or {}) do if tag:match("^enzremote%-guard%-") then return nil end end
+    return w
+end
+function enzui_dock_action(address,pid,stable,action)
+    local w=assert(enzui_dock_target(address,pid,stable),"Dock window changed or unavailable")
     enzui_dock_minimized=enzui_dock_minimized or {}
     local previous=hl.get_config("cursor.no_warps")
     assert(type(previous)=="boolean","Missing cursor policy")

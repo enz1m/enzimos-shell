@@ -90,6 +90,56 @@ impl Store {
         self.persist(&marker, br#"{"version":1}"#)?;
         Ok(!exists)
     }
+    pub(super) fn upgrade_applications_locked(&self) -> Result<bool, String> {
+        const BUNDLED_V1: &str = "2e25a35e0f3048e5a6c8f10ee841f6b66b197f07df6b93d0d704b86346bae4d7";
+
+        let mut registry = self.registry()?;
+        let Some(record) = registry.entries.iter_mut().find(|record| {
+            record.id == applications::DOCK_PLUGIN && fingerprint(record.digest) == BUNDLED_V1
+        }) else {
+            return Ok(false);
+        };
+        let package = applications::package()?;
+        let mut config = package.manifest().defaults();
+        for spec in &package.manifest().settings {
+            if let Some(previous) = record.config.get(&spec.key).filter(|v| spec.accepts(v)) {
+                config[&spec.key] = previous.clone();
+            }
+        }
+        if config["style"] == "island"
+            && config["spacing"] == 4
+            && config["radius"] == 12
+            && config["margin"] == 8
+        {
+            config["style"] = "desktop".into();
+        }
+        config["hover_previews"] = true.into();
+        package.manifest().validate_config(&config)?;
+        registry.serial = registry
+            .serial
+            .checked_add(1)
+            .ok_or_else(|| tr("shell-plugin-state-revision-exhausted"))?;
+        record.digest = package.digest();
+        record.activation = registry.serial;
+        record.config_revision = registry.serial;
+        record.config = config;
+        record.fault = None;
+        let encoded = encode(&registry);
+        parse(&encoded)?;
+        let data = serde_json::to_vec(&encoded).map_err(error)?;
+        if data.len() > super::records::MAX_STATE_BYTES {
+            return Err(tr("shell-plugin-state-exceeds-its-size-limit").into());
+        }
+        let path = self.package_path(applications::DOCK_PLUGIN, package.digest());
+        private_directory(
+            path.parent()
+                .ok_or_else(|| tr("shell-package-destination-has-no-parent"))?,
+        )?;
+        self.persist(&path, package.bytes())?;
+        self.persist(&self.root.join("state.json"), &data)?;
+        Ok(true)
+    }
+
     // Broker edits bind to the active installation, so a revoked or replaced
     // worker cannot write late configuration over the next activation.
     pub fn configure_active(

@@ -1,4 +1,7 @@
-use super::super::{budget::MAX_WORKERS, manifest::Permission};
+use super::super::{
+    budget::MAX_WORKERS,
+    manifest::{MAX_SETTINGS, Permission},
+};
 use super::records::{MAX_INSTALLED, Record, Registry};
 use crate::bar_layout::Item;
 use enzui_shell::i18n::tr;
@@ -150,9 +153,12 @@ pub(super) fn parse(value: &Value) -> Result<Registry, String> {
         }
         let config = row["config"]
             .as_object()
-            .filter(|o| o.len() <= 16)
+            .filter(|o| o.len() <= MAX_SETTINGS)
             .ok_or_else(|| tr("shell-invalid-stored-plugin-settings"))?;
         if config.iter().any(|(k, v)| {
+            if k == "folders" && id == super::super::applications::DOCK_PLUGIN {
+                return !super::super::applications::valid_folders(v);
+            }
             k.len() > 32
                 || !(v.is_boolean()
                     || v.as_i64()

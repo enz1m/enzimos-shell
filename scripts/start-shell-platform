@@ -229,7 +229,7 @@ def launch_shell(config, identity, restore_displays=True):
     executable = Path(config["shell_bin_dir"]) / "enzui-shell"
     env = dict(os.environ, WAYLAND_DISPLAY=identity["display"], HYPRLAND_INSTANCE_SIGNATURE=identity["instance"],
                ENZUI_HYPR_CONTROL_BIN=str(control_binary(config)), ENZUI_DESKTOP_ROOT=str(ROOT),
-               MALLOC_ARENA_MAX="2", QT_QPA_PLATFORM="wayland", WINIT_UNIX_BACKEND="wayland")
+               MALLOC_ARENA_MAX="2", WINIT_UNIX_BACKEND="wayland")
     prefix = Path(config["build"]) / "prefix"
     env["PATH"] = str(prefix / "bin") + ":" + env.get("PATH", "/usr/bin:/bin")
     env["LD_LIBRARY_PATH"] = library_path(prefix / "lib", env.get("LD_LIBRARY_PATH"))
@@ -244,7 +244,9 @@ def launch_shell(config, identity, restore_displays=True):
         env.pop("ENZUI_KEEP_ACTIVE_DISPLAY_LAYOUT", None)
     else:
         env["ENZUI_KEEP_ACTIVE_DISPLAY_LAYOUT"] = "1"
-    env.pop("DISPLAY", None)
+    if not config.get("installed"):
+        env.pop("DISPLAY", None)
+        env["QT_QPA_PLATFORM"] = "wayland"
     env.pop("ENZUI_SHELL_LAUNCHER_FD", None)
     # Admission requires the direct supervisor/child relationship; detached wrappers lose
     # provenance.
@@ -373,6 +375,10 @@ def bind_activation_environment(config, identity):
         values.update({"ENZUI_DESKTOP_SESSION": "installed", "ENZUI_PLUGIN_ISOLATION": "delegated", "ENZUI_ALLOW_SYSTEM_POWER": "1", "ENZUI_HYPR_CONTROL_BIN": str(control_binary(config)),
                        "ENZUI_HYPR_RUNROOT": str(runtime), "ENZUI_SHELL_SETTINGS": config["settings"],
                        "ENZUI_SHELL_BIN_DIR": config["shell_bin_dir"]})
+        display = control(config, identity, "repl", 'return os.getenv("DISPLAY") or ""').strip()
+        values.update({"DISPLAY": display if re.fullmatch(r":[0-9]+", display) else "",
+                       "GDK_BACKEND": "wayland,x11", "QT_QPA_PLATFORM": "wayland;xcb",
+                       "_JAVA_AWT_WM_NONREPARENTING": "1"})
         values.pop("GIO_USE_VFS")
         values.update({key: os.environ[key] for key in (*INPUT_METHOD_ENVIRONMENT, "XDG_SESSION_ID") if os.environ.get(key)})
     systemd = ["--systemd"] if config.get("installed") else []
@@ -1002,7 +1008,7 @@ def installed(args):
                   "ENZUI_DESKTOP_SESSION": "installed", "ENZUI_PLUGIN_ISOLATION": "delegated", "ENZUI_ALLOW_SYSTEM_POWER": "1",
                   "ENZUI_HYPR_RUNROOT": str(runtime), "ENZUI_HYPR_BUILDROOT": str(build), "ENZUI_HYPR_CONFIG": str(runtime / "config/hyprland.lua"),
                   "ENZUI_SHELL_SETTINGS": config["settings"], "ENZUI_SHELL_BIN_DIR": str(binaries), "ENZUI_DESKTOP_ROOT": str(ROOT),
-                  "GDK_BACKEND": "wayland", **privileged_clients(binaries)})
+                  **privileged_clients(binaries)})
     if (build / "prefix/lib").is_dir():
         clean["LD_LIBRARY_PATH"] = str(build / "prefix/lib")
     # Keep enzUI state separate from other Hyprland sessions.

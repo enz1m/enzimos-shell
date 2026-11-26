@@ -415,12 +415,15 @@ class PlatformTests(unittest.TestCase):
         identity = {"pid": 42, "start": 10, "display": "wayland-1", "instance": "owned-instance"}
         with mock.patch.dict(os.environ, {"DBUS_SESSION_BUS_ADDRESS": "unix:path=/owned-bus"}, clear=True), mock.patch.object(platform, "private_bus", return_value=peer), \
                 mock.patch.object(platform, "compositor", return_value=identity), mock.patch.object(platform, "command") as command:
+            command.side_effect = [":19\n", ""]
             platform.bind_activation_environment(config, identity)
-            args = command.call_args_list[0].args[0]
+            args = command.call_args_list[1].args[0]
+            self.assertEqual(os.environ["DISPLAY"], ":19")
             self.assertIn("--systemd", args)
             for expected in ("ENZUI_PLUGIN_ISOLATION=delegated", "ENZUI_DESKTOP_SESSION=installed", "ENZUI_HYPR_CONTROL_BIN=/usr/lib/enzui/compositor/hyprland-current-build/hyprctl/hyprctl",
                              f"ENZUI_HYPR_RUNROOT={runtime}", "ENZUI_SHELL_SETTINGS=/home/ann/.config/enzui-shell/settings.json",
-                             "ENZUI_SHELL_BIN_DIR=/usr/lib/enzui/bin", "WAYLAND_DISPLAY=wayland-1"):
+                             "ENZUI_SHELL_BIN_DIR=/usr/lib/enzui/bin", "WAYLAND_DISPLAY=wayland-1", "DISPLAY=:19",
+                             "_JAVA_AWT_WM_NONREPARENTING=1", "GDK_BACKEND=wayland,x11", "QT_QPA_PLATFORM=wayland;xcb"):
                 self.assertIn(expected, args)
 
     def test_activation_rejects_a_different_bus_before_any_command(self):

@@ -258,6 +258,27 @@ Resident authentication prompts reload the stored desktop language when a new
 request becomes active. An already active prompt keeps its password and
 authorization transaction.
 
+## Third-party app backends
+
+The local desktop publishes `XDG_SESSION_TYPE=wayland`, its Wayland socket, and
+its compositor's XWayland `DISPLAY` to Shell launches and D-Bus activation.
+GTK tries Wayland then X11. Qt tries Wayland then xcb. An app can override the
+backend in its own launcher. Managed previews continue to use Wayland for
+Shell and D-Bus activation.
+
+Current Chromium and Electron 38 or newer can choose Wayland from the session
+environment. The desktop leaves Ozone flags to the application or its package.
+Electron 38 removed `ELECTRON_OZONE_PLATFORM_HINT`. For a runtime that needs an
+explicit setting, use `--ozone-platform=wayland` or
+`--ozone-platform=x11` in the affected app's launcher. Per-user flags files
+apply when the package's wrapper reads them.
+[Electron 38 release notes](https://www.electronjs.org/blog/electron-38-0)
+
+The session sets `_JAVA_AWT_WM_NONREPARENTING=1` for Swing and AWT apps on
+XWayland. The compositor also sets it for its own child processes. The
+desktop leaves `GDK_SCALE` and `sun.java2d.uiScale` to the toolkit or app.
+Use `-Dsun.java2d.uiScale=VALUE` per Java app if its X11 scaling needs adjustment.
+
 ## Desktop fonts
 
 Settings stores UI, document and monospace font choices and the weight preset

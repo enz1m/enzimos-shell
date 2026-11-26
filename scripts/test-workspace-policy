@@ -65,8 +65,8 @@ function hl.unbind(key)removed=removed+1 end
 function hl.bind(key,callback)keys[key]=callback end
 windows={window(2)};active=2
 assert(enzui_workspace_id_at("WAYLAND-1",1)==2)
-enzui_install_workspace_keys();keys["SUPER + 2"]();assert(active==3)
-local before=#focused;keys["SUPER + 9"]();assert(#focused==before)
+enzui_install_workspace_keys();keys["SUPER + code:11"]();assert(active==3)
+local before=#focused;keys["SUPER + code:18"]();assert(#focused==before)
 enzui_install_workspace_keys();assert(removed==9)
 local older,recent=window(2),window(2)
 older.focus_history_id=8;recent.focus_history_id=2

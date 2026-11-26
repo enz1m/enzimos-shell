@@ -51,7 +51,7 @@ pub(super) enum Message {
     Reset(Arc<Layout>),
 }
 static SHAPES: [RadioChoice<'static, Shape>; 4] = [
-    RadioChoice::new("compact", Shape::Compact, "Circle"),
+    RadioChoice::new("compact", Shape::Compact, "Compact"),
     RadioChoice::new("pill", Shape::Pill, "2 wide"),
     RadioChoice::new("triple", Shape::Triple, "3 wide"),
     RadioChoice::new("wide", Shape::Wide, "Full"),

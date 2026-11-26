@@ -45,7 +45,7 @@ impl Shape {
     pub const ALL: [Self; 4] = [Self::Compact, Self::Pill, Self::Triple, Self::Wide];
     pub fn label(self) -> &'static str {
         match self {
-            Self::Compact => tr("shell-circle"),
+            Self::Compact => tr("shell-compact"),
             Self::Pill => "2 wide",
             Self::Triple => "3 wide",
             Self::Wide => tr("shell-full-width"),
@@ -432,19 +432,20 @@ impl Layout {
             });
             used += span;
         }
-        let stretchable = |action| {
-            self.shape(action) != Shape::Compact && !resizing.is_some_and(|(key, _)| key == action)
-        };
         for row in placements.chunk_by_mut(|a, b| a.bounds.y == b.bounds.y) {
             let used = row.iter().map(|tile| tile.bounds.width).sum::<f32>()
                 + (row.len() - 1) as f32 * GAP;
             let spare = (width - used).max(0.0);
-            let stretch_count = row.iter().filter(|tile| stretchable(tile.action)).count();
-            let (mut x, extra) = if stretch_count == 0 {
-                (spare * 0.5, 0.0)
-            } else {
-                (0.0, spare / stretch_count as f32)
+            let available = |action| !resizing.is_some_and(|(key, _)| key == action);
+            let has_wide_tiles = row
+                .iter()
+                .any(|tile| available(tile.action) && self.shape(tile.action) != Shape::Compact);
+            let stretchable = |action| {
+                available(action) && (!has_wide_tiles || self.shape(action) != Shape::Compact)
             };
+            let stretch_count = row.iter().filter(|tile| stretchable(tile.action)).count();
+            let extra = spare / stretch_count.max(1) as f32;
+            let mut x = 0.0;
             for tile in row {
                 tile.bounds.x = x;
                 if stretchable(tile.action) {
@@ -494,7 +495,16 @@ mod tests {
                 placed.iter().map(|tile| tile.action).collect::<Vec<_>>(),
                 visible
             );
-            let [appearance, phone, tiling, volume, dnd, _, night_light] = placed.as_slice() else {
+            let [
+                appearance,
+                phone,
+                tiling,
+                volume,
+                dnd,
+                screenshot,
+                night_light,
+            ] = placed.as_slice()
+            else {
                 panic!("missing a selected control");
             };
             let right = |p: &Placement| p.bounds.x + p.bounds.width;
@@ -503,7 +513,10 @@ mod tests {
             assert!(phone.bounds.width < appearance.bounds.width);
             assert!(volume.bounds.y > tiling.bounds.y);
             assert!(night_light.bounds.y > volume.bounds.y);
-            assert!((dnd.bounds.x - (width - right(night_light))).abs() < 0.001);
+            assert_eq!(dnd.bounds.x, 0.0);
+            assert_eq!(dnd.bounds.width, screenshot.bounds.width);
+            assert_eq!(screenshot.bounds.width, night_light.bounds.width);
+            assert!((right(night_light) - width).abs() < 0.001);
             assert_eq!(
                 layout.shape_after_resize(Appearance, 8.0, width, height),
                 Shape::Pill

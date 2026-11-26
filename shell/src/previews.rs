@@ -267,9 +267,6 @@ fn live_thumbnail(
 ) -> Option<RgbaImage> {
     type Key = (String, u32, u32, bool, bool, u64);
     static LAST: std::sync::Mutex<Option<(Key, RgbaImage)>> = std::sync::Mutex::new(None);
-    let binary = std::env::var_os("ENZUI_SHELL_BIN_DIR")
-        .map(|dir| PathBuf::from(dir).join("enzwall"))
-        .filter(|path| path.is_absolute() && path.is_file())?;
     let minute = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
@@ -292,36 +289,14 @@ fn live_thumbnail(
         return Some(image.clone());
     }
     let out = directory.join("wallpaper.png");
-    let mut command = std::process::Command::new(binary);
-    command
-        .arg("snapshot")
-        .arg(scenes.join(scene))
-        .arg(&out)
-        .arg("--size")
-        .arg(format!("{width}x{height}"))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    if wallpaper.hide_clock {
-        command.arg("--hide-clock");
-    }
-    if wallpaper.hide_date {
-        command.arg("--hide-date");
-    }
-    let mut child = command.spawn().ok()?;
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => break,
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
+    if !enzui_shell::wallpaper_snapshot::render(
+        &scenes.join(scene),
+        &out,
+        (width, height),
+        wallpaper.hide_clock,
+        wallpaper.hide_date,
+    ) {
+        return None;
     }
     let image = read_image(&out).ok()?;
     let image = if image.dimensions() == (width, height) {

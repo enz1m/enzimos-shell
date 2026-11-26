@@ -713,9 +713,17 @@ impl SettingsApp {
                     && (self.files_watch.is_none()
                         || self.files_read_at.elapsed() >= Duration::from_secs(30)) =>
             {
-                Task::batch([self.read_files(), self.system_tick()])
+                Task::batch([
+                    self.read_files(),
+                    self.system_tick(),
+                    self.refresh_live_wallpaper_preview(),
+                ])
             }
-            Message::Tick => Task::batch([self.read_controls(), self.system_tick()]),
+            Message::Tick => Task::batch([
+                self.read_controls(),
+                self.system_tick(),
+                self.refresh_live_wallpaper_preview(),
+            ]),
             Message::Connectivity => self.network_changed(),
             Message::Close | Message::Window(WindowCommand::Close) => {
                 let displays = self.revert_display_on_close();

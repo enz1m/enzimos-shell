@@ -52,3 +52,70 @@ async fn wallpaper_settings_behaviour() {
         "Image operation canceled"
     );
 }
+
+#[test]
+fn live_preview_key_changes_with_the_scene_flags_and_minute() {
+    use super::preview::State;
+    use enzui_shell::desktop_preferences::{Wallpaper, WallpaperKind};
+
+    let mut preferences = Wallpaper {
+        kind: WallpaperKind::Live,
+        scene: Some("bauhaus".into()),
+        ..Wallpaper::default()
+    };
+    let root = Path::new("/desktop");
+    let state = State::default();
+    let initial = state.live_preview_key(&preferences, root, 10);
+    assert!(initial.is_some());
+    assert_ne!(state.live_preview_key(&preferences, root, 11), initial);
+
+    preferences.scene = Some("bloom".into());
+    let changed_scene = state.live_preview_key(&preferences, root, 10);
+    assert_ne!(changed_scene, initial);
+
+    preferences.hide_clock = true;
+    let date_only = state.live_preview_key(&preferences, root, 10);
+    assert_ne!(date_only, changed_scene);
+    assert_ne!(state.live_preview_key(&preferences, root, 11), date_only);
+
+    preferences.hide_date = true;
+    let neither = state.live_preview_key(&preferences, root, 10);
+    assert_ne!(neither, date_only);
+    assert_eq!(state.live_preview_key(&preferences, root, 11), neither);
+
+    let state = State {
+        view_kind: Some(WallpaperKind::Color),
+        ..State::default()
+    };
+    assert_eq!(state.live_preview_key(&preferences, root, 10), None);
+}
+
+#[test]
+fn live_preview_coalesces_changes_and_discards_stale_results() {
+    use super::preview::{LivePreview, PreviewVisual, State};
+    use enzui_shell::desktop_preferences::{Wallpaper, WallpaperKind};
+
+    let preferences = Wallpaper {
+        kind: WallpaperKind::Live,
+        scene: Some("bauhaus".into()),
+        ..Wallpaper::default()
+    };
+    let state = State::default();
+    let key = |minute| {
+        state
+            .live_preview_key(&preferences, Path::new("/desktop"), minute)
+            .expect("live scene key")
+    };
+    let old = key(10);
+    let new = key(11);
+    let mut preview = LivePreview::default();
+    assert!(preview.start(&old));
+    assert!(!preview.start(&new));
+    assert!(!preview.finish(&old, Some(&new)));
+    assert!(preview.start(&new));
+    assert!(preview.finish(&new, Some(&new)));
+    preview.remember(new.clone(), PreviewVisual::Image("preview.png".into()));
+    assert!(!preview.start(&new));
+    assert!(preview.start(&key(12)));
+    assert!(!preview.finish(&key(12), None));
+}

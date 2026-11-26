@@ -1,7 +1,7 @@
 use super::super::{Message as AppMessage, Page, SettingsApp};
 use super::{
     gallery::{parse_gallery, parse_live_scenes, run_child},
-    preview::{Message, gallery_folder, message, parse_color},
+    preview::{LivePreviewResult, Message, PreviewVisual, gallery_folder, message, parse_color},
 };
 use enzui_shell::i18n::tr;
 use enzui_shell::{
@@ -81,10 +81,7 @@ impl SettingsApp {
         root: &Path,
         cancel: tokio::sync::watch::Receiver<bool>,
     ) -> Task<AppMessage> {
-        let Some(binary) = std::env::var_os("ENZUI_SHELL_BIN_DIR")
-            .map(|dir| PathBuf::from(dir).join("enzwall"))
-            .filter(|path| path.is_absolute() && path.is_file())
-        else {
+        let Some(binary) = enzui_shell::wallpaper_snapshot::binary() else {
             return Task::none();
         };
         let scenes = root.join("enzwall/scenes");
@@ -181,13 +178,25 @@ impl SettingsApp {
             |result| message(Message::Imported(result)),
         )
     }
+    pub(crate) fn refresh_live_wallpaper_preview(&mut self) -> Task<AppMessage> {
+        if self
+            .wallpaper
+            .view_kind
+            .unwrap_or(self.settings.wallpaper.kind)
+            != WallpaperKind::Live
+        {
+            return Task::none();
+        }
+        self.warm_wallpaper_preview()
+    }
+
     pub(crate) fn warm_wallpaper_preview(&mut self) -> Task<AppMessage> {
-        if !self.wallpaper.supported {
+        if self.page != Page::Appearance || self.closing || !self.wallpaper.supported {
             return Task::none();
         }
         let before = self.wallpaper.displayed(&self.settings.wallpaper);
-        let after = self.wallpaper.preview_visual(&self.settings.wallpaper);
-        self.wallpaper.transition_preview(before, after, false)
+        self.wallpaper
+            .refresh_preview(&self.settings.wallpaper, before, false)
     }
 
     pub(crate) fn wallpaper_message(&mut self, event: Message) -> Task<AppMessage> {
@@ -244,6 +253,7 @@ impl SettingsApp {
             Message::Browse => return self.start_wallpaper_picker(),
             Message::Retry if !self.closing => {
                 self.wallpaper.preview_failed = None;
+                self.wallpaper.live_preview.forget();
                 apply = Some(WallpaperChange::Retry);
             }
             Message::RefreshGallery => {
@@ -267,8 +277,7 @@ impl SettingsApp {
                     self.wallpaper.expected_digest = Some(entry.digest.clone());
                     self.wallpaper.import_choice = Some(id.clone());
                     self.wallpaper.gallery_choice = Some(id);
-                    let after = self.wallpaper.preview_visual(&preference);
-                    let preview = self.wallpaper.transition_preview(before, after, false);
+                    let preview = self.wallpaper.refresh_preview(&preference, before, false);
                     return Task::batch([preview, self.wallpaper_import()]);
                 }
             }
@@ -411,6 +420,34 @@ impl SettingsApp {
                     }
                 }
             }
+            Message::LivePreviewLoaded(key, result) => {
+                let current = (self.page == Page::Appearance && !self.closing)
+                    .then(|| self.wallpaper.current_live_preview_key(&preference))
+                    .flatten();
+                if !self.wallpaper.live_preview.finish(&key, current.as_ref()) {
+                    return self.warm_wallpaper_preview();
+                }
+                match result {
+                    LivePreviewResult::Snapshot(path, handle) => {
+                        self.wallpaper
+                            .live_preview
+                            .remember(key, PreviewVisual::Image(path.clone()));
+                        self.wallpaper.preview_epoch = self.wallpaper.preview_epoch.wrapping_add(1);
+                        return self.wallpaper.warm_preview_handle(
+                            self.wallpaper.preview_epoch,
+                            path,
+                            handle,
+                        );
+                    }
+                    LivePreviewResult::Fallback(path) => {
+                        let visual = path.map_or_else(
+                            || PreviewVisual::Color(self.wallpaper.hsva.to_color()),
+                            PreviewVisual::Image,
+                        );
+                        self.wallpaper.live_preview.remember(key, visual);
+                    }
+                }
+            }
             Message::PreviewLoaded(epoch, path, result) => {
                 if self.wallpaper.preview_pending.as_ref() != Some(&(epoch, path.clone())) {
                     return Task::none();
@@ -418,13 +455,7 @@ impl SettingsApp {
                 self.wallpaper.preview_pending = None;
                 match result {
                     Ok(handle) => {
-                        self.wallpaper.remember_handle(path.clone(), handle);
-                        self.wallpaper.preview_warming = Some((epoch, path.clone()));
-                        let warm = path;
-                        return Task::perform(
-                            async { tokio::time::sleep(Duration::from_millis(70)).await },
-                            move |()| message(Message::PreviewWarm(epoch, warm)),
-                        );
+                        return self.wallpaper.warm_preview_handle(epoch, path, handle);
                     }
                     Err(error) => {
                         self.wallpaper.preview_failed = Some(path);
@@ -438,9 +469,7 @@ impl SettingsApp {
                     return Task::none();
                 }
                 self.wallpaper.preview_warming = None;
-                let before = self.wallpaper.displayed(&preference);
-                let after = self.wallpaper.preview_visual(&preference);
-                return self.wallpaper.transition_preview(before, after, false);
+                return self.warm_wallpaper_preview();
             }
             Message::Status(status) => {
                 let wanted = serde_json::to_value(&preference).unwrap_or_default();
@@ -455,14 +484,18 @@ impl SettingsApp {
         if let Some(change) = apply {
             self.menu = None;
             let task = self.update(AppMessage::Change(Change::Wallpaper(change)));
-            let after = self.wallpaper.preview_visual(&self.settings.wallpaper);
             return Task::batch([
                 task,
-                self.wallpaper.transition_preview(before, after, live_color),
+                self.wallpaper
+                    .refresh_preview(&self.settings.wallpaper, before, live_color),
             ]);
         }
-        let after = self.wallpaper.preview_visual(&self.settings.wallpaper);
-        let preview = self.wallpaper.transition_preview(before, after, live_color);
+        let preview = if self.page == Page::Appearance && !self.closing {
+            self.wallpaper
+                .refresh_preview(&self.settings.wallpaper, before, live_color)
+        } else {
+            Task::none()
+        };
         if self.closing
             && !self.wallpaper.pending()
             && !self.busy

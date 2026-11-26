@@ -1,7 +1,7 @@
 use super::super::Message as AppMessage;
 use super::gallery::{Gallery, LiveScene};
 use enzui_shell::desktop_preferences::{
-    Wallpaper as WallpaperPreference, WallpaperFit, WallpaperKind,
+    Wallpaper as WallpaperPreference, WallpaperFit, WallpaperKind, valid_scene_id,
 };
 use enzui_shell::i18n::tr;
 use enzui_widgets::{
@@ -13,8 +13,8 @@ use iced::{
     widget::{Space, container},
 };
 use std::{
-    path::PathBuf,
-    time::{Duration, Instant},
+    path::{Path, PathBuf},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 pub(crate) const WALLPAPER_SETTLE: Duration = Duration::from_secs(3);
@@ -23,6 +23,86 @@ pub(crate) const WALLPAPER_SETTLE: Duration = Duration::from_secs(3);
 pub(crate) enum PreviewVisual {
     Image(String),
     Color(iced::Color),
+}
+
+const PREVIEW_SIZE: (u32, u32) = (1040, 585);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LivePreviewKey {
+    scene: PathBuf,
+    hide_clock: bool,
+    hide_date: bool,
+    minute: Option<u64>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum LivePreviewResult {
+    Snapshot(String, iced::widget::image::Handle),
+    Fallback(Option<String>),
+}
+
+#[derive(Default)]
+pub(crate) struct LivePreview {
+    rendering: bool,
+    completed: Option<(LivePreviewKey, PreviewVisual)>,
+}
+
+impl LivePreview {
+    pub(super) fn start(&mut self, key: &LivePreviewKey) -> bool {
+        if self.rendering || self.visual(key).is_some() {
+            return false;
+        }
+        self.rendering = true;
+        true
+    }
+
+    pub(super) fn finish(
+        &mut self,
+        key: &LivePreviewKey,
+        current: Option<&LivePreviewKey>,
+    ) -> bool {
+        self.rendering = false;
+        current == Some(key)
+    }
+
+    pub(super) fn remember(&mut self, key: LivePreviewKey, visual: PreviewVisual) {
+        self.completed = Some((key, visual));
+    }
+
+    pub(super) fn forget(&mut self) {
+        self.completed = None;
+    }
+
+    fn visual(&self, key: &LivePreviewKey) -> Option<PreviewVisual> {
+        self.completed
+            .as_ref()
+            .filter(|(cached, _)| cached == key)
+            .map(|(_, visual)| visual.clone())
+    }
+}
+
+impl LivePreviewKey {
+    pub(super) fn render(&self) -> LivePreviewResult {
+        if let Ok(directory) = tempfile::Builder::new()
+            .prefix("enzui-wallpaper-")
+            .tempdir()
+        {
+            let out = directory.path().join("snapshot.png");
+            if enzui_shell::wallpaper_snapshot::render(
+                &self.scene,
+                &out,
+                PREVIEW_SIZE,
+                self.hide_clock,
+                self.hide_date,
+            ) && let Ok(handle) = load_preview(&out)
+            {
+                // The temporary path survives only as the decoded handle's cache key.
+                return LivePreviewResult::Snapshot(out.to_string_lossy().into_owned(), handle);
+            }
+        }
+        let path = self.scene.join("preview.png");
+        LivePreviewResult::Fallback(path.is_file().then(|| path.to_string_lossy().into_owned()))
+    }
 }
 
 #[derive(Default)]
@@ -42,6 +122,7 @@ pub(crate) struct State {
     pub(crate) preview_showing: Option<PreviewVisual>,
     pub(crate) preview_handles: Vec<(String, iced::widget::image::Handle)>,
     pub(crate) preview_epoch: u64,
+    pub(super) live_preview: LivePreview,
     pub(crate) preview_pending: Option<(u64, String)>,
     pub(crate) preview_failed: Option<String>,
     // Warm decoded textures on the GPU before fading away from the previous picture.
@@ -72,6 +153,68 @@ pub(crate) struct State {
 }
 
 impl State {
+    pub(super) fn live_preview_key(
+        &self,
+        preference: &WallpaperPreference,
+        root: &Path,
+        minute: u64,
+    ) -> Option<LivePreviewKey> {
+        if self.view_kind.unwrap_or(preference.kind) != WallpaperKind::Live {
+            return None;
+        }
+        let scene = preference
+            .scene
+            .as_deref()
+            .filter(|id| valid_scene_id(id))
+            .or_else(|| self.live.first().map(|scene| scene.id.as_str()))?;
+        Some(LivePreviewKey {
+            scene: root.join("enzwall/scenes").join(scene),
+            hide_clock: preference.hide_clock,
+            hide_date: preference.hide_date,
+            minute: (!(preference.hide_clock && preference.hide_date)).then_some(minute),
+        })
+    }
+
+    pub(super) fn current_live_preview_key(
+        &self,
+        preference: &WallpaperPreference,
+    ) -> Option<LivePreviewKey> {
+        let root = PathBuf::from(std::env::var_os("ENZUI_DESKTOP_ROOT")?);
+        let minute = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() / 60;
+        self.live_preview_key(preference, &root, minute)
+    }
+
+    pub(super) fn refresh_preview(
+        &mut self,
+        preference: &WallpaperPreference,
+        before: PreviewVisual,
+        live_color: bool,
+    ) -> Task<AppMessage> {
+        let after = if let Some(key) = self.current_live_preview_key(preference) {
+            let Some(visual) = self.live_preview.visual(&key) else {
+                self.preview_pending = None;
+                self.preview_warming = None;
+                if !self.live_preview.start(&key) {
+                    return Task::none();
+                }
+                self.preview_showing.get_or_insert(before);
+                let request = key.clone();
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || request.render())
+                            .await
+                            .unwrap_or(LivePreviewResult::Fallback(None))
+                    },
+                    move |result| message(Message::LivePreviewLoaded(key, result)),
+                );
+            };
+            visual
+        } else {
+            self.preview_visual(preference)
+        };
+        self.transition_preview(before, after, live_color)
+    }
+
     pub(crate) fn preview_visual(&self, preference: &WallpaperPreference) -> PreviewVisual {
         let kind = self.view_kind.unwrap_or(preference.kind);
         let default = || {
@@ -132,11 +275,30 @@ impl State {
         }
     }
 
-    pub(crate) fn remember_handle(&mut self, path: String, handle: iced::widget::image::Handle) {
+    pub(super) fn warm_preview_handle(
+        &mut self,
+        epoch: u64,
+        path: String,
+        handle: iced::widget::image::Handle,
+    ) -> Task<AppMessage> {
+        self.remember_handle(path.clone(), handle);
+        self.preview_warming = Some((epoch, path.clone()));
+        Task::perform(
+            async { tokio::time::sleep(Duration::from_millis(70)).await },
+            move |()| message(Message::PreviewWarm(epoch, path)),
+        )
+    }
+
+    fn remember_handle(&mut self, path: String, handle: iced::widget::image::Handle) {
         self.preview_handles.retain(|(cached, _)| cached != &path);
         self.preview_handles.push((path, handle));
         if self.preview_handles.len() > 4 {
-            self.preview_handles.remove(0);
+            let (evicted, _) = self.preview_handles.remove(0);
+            if self.live_preview.completed.as_ref().is_some_and(
+                |(_, visual)| matches!(visual, PreviewVisual::Image(path) if path == &evicted),
+            ) {
+                self.live_preview.forget();
+            }
         }
     }
 
@@ -146,6 +308,14 @@ impl State {
         after: PreviewVisual,
         live_color: bool,
     ) -> Task<AppMessage> {
+        if let PreviewVisual::Image(path) = &after
+            && self
+                .preview_warming
+                .as_ref()
+                .is_some_and(|(_, warming)| warming == path)
+        {
+            return Task::none();
+        }
         if let PreviewVisual::Image(path) = &after
             && self.handle(path).is_none()
         {
@@ -169,7 +339,7 @@ impl State {
             let reply = path.clone();
             return Task::perform(
                 async move {
-                    tokio::task::spawn_blocking(move || load_preview(&decode))
+                    tokio::task::spawn_blocking(move || load_preview(Path::new(&decode)))
                         .await
                         .map_err(|_| tr("shell-wallpaper-preview-worker-stopped").to_owned())?
                 },
@@ -288,6 +458,7 @@ pub(crate) enum Message {
     Dropped(enzui_widgets::file_drop::FileDrop),
     Imported(Result<String, String>),
     Status(Option<(serde_json::Value, Option<String>)>),
+    LivePreviewLoaded(LivePreviewKey, LivePreviewResult),
     PreviewLoaded(u64, String, Result<iced::widget::image::Handle, String>),
     // The decoded preview has been drawn unseen for a moment: fade to it.
     PreviewWarm(u64, String),
@@ -316,14 +487,15 @@ pub(crate) fn parse_color(text: &str) -> Option<Hsva> {
         value as u8,
     )))
 }
-pub(crate) fn load_preview(path: &str) -> Result<iced::widget::image::Handle, String> {
-    let image = enzui_shell::profile_image::decode(std::path::Path::new(path))?;
+fn load_preview(path: &Path) -> Result<iced::widget::image::Handle, String> {
+    let image = enzui_shell::profile_image::decode(path)?;
+    let (width, height) = PREVIEW_SIZE;
     let image = raster::DynamicImage::ImageRgba8(image)
-        .resize_to_fill(1040, 585, raster::imageops::FilterType::Triangle)
+        .resize_to_fill(width, height, raster::imageops::FilterType::Triangle)
         .to_rgba8();
     Ok(iced::widget::image::Handle::from_rgba(
-        1040,
-        585,
+        width,
+        height,
         image.into_raw(),
     ))
 }

@@ -213,9 +213,20 @@ impl KeyLabels {
         modifier_labels(modifiers).chain([label]).collect()
     }
 
-    /// Formats the chord with its individual keys separated by plus signs.
+    /// Formats the chord with its individual keys separated by plus signs. A
+    /// key that is itself punctuation is quoted so "Super + -" reads as a key.
     pub fn badge(&self, chord: &str) -> String {
-        self.caps(chord).join(" + ")
+        self.caps(chord)
+            .into_iter()
+            .map(|cap| {
+                let mut chars = cap.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(c), None) if !c.is_alphanumeric() => format!("\u{201c}{cap}\u{201d}"),
+                    _ => cap,
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" + ")
     }
 
     pub(super) fn matches_symbol(&self, code: u32, symbol: &str) -> bool {
@@ -271,7 +282,10 @@ mod tests {
             ]});
             let map = KeyLabels::from_devices(&devices.to_string()).unwrap();
             for (code, label) in [61, 60, 59, 49].into_iter().zip(labels) {
-                assert!(map.badge(&format!("SUPER + code:{code}")).ends_with(label));
+                let chord = format!("SUPER + code:{code}");
+                assert_eq!(map.caps(&chord).last().map(String::as_str), Some(label));
+                let quoted = !label.chars().all(char::is_alphanumeric);
+                assert_eq!(map.badge(&chord).ends_with('\u{201d}'), quoted);
             }
         }
         let dvorak = KeyLabels::compile("", "", "us", "dvorak", "", 0);

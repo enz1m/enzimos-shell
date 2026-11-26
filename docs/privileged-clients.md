@@ -23,7 +23,7 @@ and binary tree. Portal service-instance attestation is separate from executable
 | Portal executables | Capture and input capture | Startup-approved executable inode |
 | Remote-desktop portal | Input | Startup-approved executable inode; its own consent flow still governs sessions |
 | Portal helpers | Capture | Approved helper inode and an uninjected approved portal parent |
-| Input method | Input method | Startup-approved executable inode (`ENZUI_IME_EXES`, Fcitx5) |
+| Input method | Input method | Startup-approved executable inode (`ENZUI_IME_EXES`: Fcitx5, and dictation to type its text) |
 | Root grants | Named capture/input | Matching UID and exact/subtree `/system.slice/…` cgroup from a protected public grant |
 | Explicit preview dev tools | Capture, input, input method, input capture and control | Startup-approved executable inode; QA only |
 

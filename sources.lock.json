@@ -31,7 +31,7 @@
   },
   "enzwall": {
     "url": "https://github.com/enz1m/enzwall.git",
-    "revision": "545a5203db36159f44dfe571c5ab7f53269a3afb",
+    "revision": "144c4f2ce299e44ec99412a0b3b5a9061090602f",
     "destination": "enzwall"
   },
   "remote_desktop_portal": {

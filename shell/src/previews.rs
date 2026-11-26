@@ -253,6 +253,87 @@ fn wallpaper_thumbnail(path: &Path, width: u32, height: u32) -> Result<RgbaImage
     Ok(image)
 }
 
+/// A live scene drawn now at thumbnail size, so its clock and date match the
+/// desktop rather than the scene's fixed gallery preview. Kept for the rest of
+/// the minute, since the scene's text changes at most once a minute.
+fn live_thumbnail(
+    scenes: &Path,
+    scene: &str,
+    wallpaper: &crate::desktop_preferences::Wallpaper,
+    width: u32,
+    height: u32,
+    directory: &Path,
+) -> Option<RgbaImage> {
+    type Key = (String, u32, u32, bool, bool, u64);
+    static LAST: std::sync::Mutex<Option<(Key, RgbaImage)>> = std::sync::Mutex::new(None);
+    let binary = std::env::var_os("ENZUI_SHELL_BIN_DIR")
+        .map(|dir| PathBuf::from(dir).join("enzwall"))
+        .filter(|path| path.is_absolute() && path.is_file())?;
+    let minute = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs()
+        / 60;
+    let key: Key = (
+        scene.to_owned(),
+        width,
+        height,
+        wallpaper.hide_clock,
+        wallpaper.hide_date,
+        minute,
+    );
+    if let Some((cached, image)) = LAST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        && *cached == key
+    {
+        return Some(image.clone());
+    }
+    let out = directory.join("wallpaper.png");
+    let mut command = std::process::Command::new(binary);
+    command
+        .arg("snapshot")
+        .arg(scenes.join(scene))
+        .arg(&out)
+        .arg("--size")
+        .arg(format!("{width}x{height}"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if wallpaper.hide_clock {
+        command.arg("--hide-clock");
+    }
+    if wallpaper.hide_date {
+        command.arg("--hide-date");
+    }
+    let mut child = command.spawn().ok()?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    let image = read_image(&out).ok()?;
+    let image = if image.dimensions() == (width, height) {
+        image
+    } else {
+        resize(&image, width, height, FilterType::Triangle)
+    };
+    *LAST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((key, image.clone()));
+    Some(image)
+}
+
 /// What a desktop's preview starts from: the wallpaper that desktop shows. A
 /// chosen picture, colour or live scene that cannot be read falls back to the
 /// built-in wallpaper rather than failing the preview.
@@ -261,6 +342,7 @@ fn backdrop(
     wallpaper: &crate::desktop_preferences::Wallpaper,
     width: u32,
     height: u32,
+    directory: &Path,
 ) -> Result<RgbaImage, String> {
     use crate::desktop_preferences::WallpaperKind;
     let chosen = match wallpaper.kind {
@@ -281,16 +363,21 @@ fn backdrop(
             None
         }
         WallpaperKind::Image => wallpaper.image.as_ref().map(PathBuf::from),
-        WallpaperKind::Live => wallpaper
-            .scene
-            .as_ref()
-            .filter(|scene| {
+        WallpaperKind::Live => {
+            let scene = wallpaper.scene.as_ref().filter(|scene| {
                 !scene.is_empty()
                     && scene.bytes().all(|byte| {
                         byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
                     })
-            })
-            .map(|scene| root.join("enzwall/scenes").join(scene).join("preview.png")),
+            });
+            let scenes = root.join("enzwall/scenes");
+            if let Some(image) = scene.and_then(|scene| {
+                live_thumbnail(&scenes, scene, wallpaper, width, height, directory)
+            }) {
+                return Ok(image);
+            }
+            scene.map(|scene| scenes.join(scene).join("preview.png"))
+        }
         WallpaperKind::Default => None,
     };
     chosen
@@ -354,8 +441,15 @@ pub async fn capture(
         .tempdir_in(cache)
         .map_err(|_| tr("shell-cannot-create-private-preview-directory"))?;
     let backdrop_root = root.clone();
+    let backdrop_directory = temporary.path().to_owned();
     let background = tokio::task::spawn_blocking(move || {
-        backdrop(&backdrop_root, &wallpaper, thumb_width, thumb_height)
+        backdrop(
+            &backdrop_root,
+            &wallpaper,
+            thumb_width,
+            thumb_height,
+            &backdrop_directory,
+        )
     })
     .await
     .map_err(|_| tr("shell-preview-renderer-stopped"))??;

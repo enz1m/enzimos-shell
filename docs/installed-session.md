@@ -174,11 +174,12 @@ after Settings accepts the job.
 | --- | --- |
 | FileChooser, Access, Background | enzUI |
 | Settings color-scheme | enzUI; other settings fall through |
-| ScreenCast | enzUI remote, then Hyprland |
-| RemoteDesktop | enzUI remote |
-| Screenshot, GlobalShortcuts | Hyprland |
+| Screenshot, ScreenCast, RemoteDesktop, GlobalShortcuts, InputCapture | enzUI remote |
 | Print | GTK |
-| Other interfaces | Hyprland, then GTK |
+| Other interfaces | enzUI remote, then GTK |
+
+The system's `xdg-desktop-portal-hyprland` is not used or admitted for capture in
+the enzUI session, so other sessions on the same system keep their own portal.
 
 The frontend owns document grants; the chooser returns selected files without
 opening them. Cancel, window close and Request.Close cancel selection. Nested

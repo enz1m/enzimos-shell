@@ -719,7 +719,7 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual(values["ENZUI_SHELL_EXE"], str((self.root / "enzui-shell").resolve()))
         self.assertNotIn("ENZUI_DEV_PRIVILEGED_EXES", values)
         remote = str((self.root / "xdg-desktop-portal-enzui-remote").resolve())
-        self.assertEqual(values["ENZUI_PORTAL_EXES"].split(":"), ["/usr/lib/xdg-desktop-portal-hyprland", remote])
+        self.assertEqual(values["ENZUI_PORTAL_EXES"], remote)
         self.assertEqual(values["ENZUI_PORTAL_INPUT_EXES"], remote)
         self.assertNotIn(remote, values["ENZUI_PORTAL_HELPER_EXES"])
         self.assertEqual(values["ENZUI_CONTROL_EXES"].split(":"), [*(str((self.root / name).resolve()) for name in ("enzui-settings", "enzui-welcome")),

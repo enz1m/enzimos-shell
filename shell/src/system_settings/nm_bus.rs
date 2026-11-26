@@ -92,6 +92,8 @@ pub(super) async fn overview(system: &zbus::Connection) -> Option<Overview> {
                 "org.freedesktop.NetworkManager.Connection.Active",
             )
             .await
+                // ActiveConnections also includes activating and deactivating profiles.
+                && matches!(active.get_property::<u32>("State").await, Ok(2))
                 && let Ok(uuid) = active.get_property::<String>("Uuid").await
             {
                 uuids.insert(uuid);
@@ -227,6 +229,9 @@ fn saved_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use zbus::zvariant::Str;
 
     /// The bus reading keeps what `nmcli` parsing keeps. Sabotage: map
     /// NetworkManager's state 100 to Connecting; the connected link then
@@ -266,5 +271,91 @@ mod tests {
                 .is_some_and(|c| c.active && c.kind == ConnectionKind::Vpn)
         );
         assert!(saved_connection("Cable".into(), "c".into(), "802-3-ethernet", &active).is_none());
+    }
+
+    const PATH: &str = "/org/freedesktop/NetworkManager";
+    const SETTINGS: &str = "/org/freedesktop/NetworkManager/Settings";
+    const PROFILE: &str = "/org/freedesktop/NetworkManager/Settings/1";
+    const ACTIVE: &str = "/org/freedesktop/NetworkManager/ActiveConnection/1";
+    const UUID: &str = "36ecc274-fb78-416f-bdde-e754549f079f";
+
+    struct Manager;
+    #[zbus::interface(name = "org.freedesktop.NetworkManager")]
+    impl Manager {
+        #[zbus(property)]
+        fn networking_enabled(&self) -> bool {
+            true
+        }
+        #[zbus(property)]
+        fn active_connections(&self) -> Vec<OwnedObjectPath> {
+            vec![OwnedObjectPath::try_from(ACTIVE).unwrap()]
+        }
+        fn get_devices(&self) -> Vec<OwnedObjectPath> {
+            Vec::new()
+        }
+    }
+
+    struct ConnectionSettings;
+    #[zbus::interface(name = "org.freedesktop.NetworkManager.Settings")]
+    impl ConnectionSettings {
+        fn list_connections(&self) -> Vec<OwnedObjectPath> {
+            vec![OwnedObjectPath::try_from(PROFILE).unwrap()]
+        }
+    }
+
+    struct VpnProfile;
+    #[zbus::interface(name = "org.freedesktop.NetworkManager.Settings.Connection")]
+    impl VpnProfile {
+        fn get_settings(&self) -> HashMap<&str, HashMap<&str, OwnedValue>> {
+            HashMap::from([(
+                "connection",
+                HashMap::from([
+                    ("id", OwnedValue::from(Str::from("Work tunnel"))),
+                    ("uuid", OwnedValue::from(Str::from(UUID))),
+                    ("type", OwnedValue::from(Str::from("wireguard"))),
+                ]),
+            )])
+        }
+    }
+
+    struct Tunnel(Arc<AtomicU32>);
+    #[zbus::interface(name = "org.freedesktop.NetworkManager.Connection.Active")]
+    impl Tunnel {
+        #[zbus(property)]
+        fn uuid(&self) -> &str {
+            UUID
+        }
+        #[zbus(property)]
+        fn state(&self) -> u32 {
+            self.0.load(Ordering::Relaxed)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_listed_vpn_is_connected_only_when_activated() {
+        let bus = crate::test_bus::Bus::start();
+        let nm = bus.serve(SERVICE, PATH, Manager).await;
+        nm.object_server()
+            .at(SETTINGS, ConnectionSettings)
+            .await
+            .unwrap();
+        nm.object_server().at(PROFILE, VpnProfile).await.unwrap();
+        let state = Arc::new(AtomicU32::new(1));
+        nm.object_server()
+            .at(ACTIVE, Tunnel(Arc::clone(&state)))
+            .await
+            .unwrap();
+
+        let client = bus.client().await;
+        for (code, connected) in [(1, false), (2, true), (3, false)] {
+            state.store(code, Ordering::Relaxed);
+            let overview = overview(&client).await.unwrap();
+            let [vpn] = overview.connections.as_slice() else {
+                panic!("expected the saved VPN profile");
+            };
+            assert_eq!(vpn.uuid, UUID);
+            assert_eq!(vpn.kind, ConnectionKind::Vpn);
+            assert_eq!(vpn.active, connected, "NetworkManager state {code}");
+        }
     }
 }

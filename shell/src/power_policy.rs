@@ -29,19 +29,50 @@ pub fn subscription(lid: LidAction) -> iced::Subscription<String> {
     iced::Subscription::batch([
         iced::Subscription::run(sleep_stream),
         iced::Subscription::run_with(lid, lid_stream),
+        if std::env::var("ENZUI_MANAGED_LOCK").as_deref() == Ok("1") {
+            iced::Subscription::run(cover_recovery_stream)
+        } else {
+            iced::Subscription::none()
+        },
     ])
+}
+
+fn cover_recovery_stream() -> impl iced::futures::Stream<Item = String> {
+    iced::stream::channel(1, async |output| {
+        let _output = output;
+        let Ok(compositor) = crate::compositor::Compositor::from_environment() else {
+            return;
+        };
+        loop {
+            if request_within(
+                &compositor,
+                &["enzuisleepcover", "recovery"],
+                Duration::from_secs(1),
+            )
+            .await
+            .is_ok_and(|status| status.trim() == "needed")
+            {
+                set_displays(Some(&compositor), true).await;
+                attach_resume_locker().await;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    })
 }
 
 fn sleep_stream() -> impl iced::futures::Stream<Item = String> {
     use iced::futures::SinkExt;
     iced::stream::channel(1, async |mut output| {
         loop {
-            if let Err(error) = run_sleep().await
-                && output.send(error).await.is_err()
-            {
-                return;
+            match run_sleep().await {
+                Ok(()) => tokio::time::sleep(Duration::from_millis(200)).await,
+                Err(error) => {
+                    if output.send(error).await.is_err() {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
             }
-            tokio::time::sleep(Duration::from_secs(5)).await;
         }
     })
 }
@@ -79,6 +110,103 @@ async fn lock_before_deadline(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Cover {
+    Ready,
+    Unsupported,
+}
+
+async fn present_sleep_cover(compositor: &crate::compositor::Compositor) -> Result<Cover, String> {
+    let mut status = compositor.request(&["enzuisleepcover", "arm"]).await?;
+    if matches!(status.trim(), "unknown request" | "unavailable") {
+        return Ok(Cover::Unsupported);
+    }
+    while status.trim() == "pending" {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        status = compositor.request(&["enzuisleepcover", "status"]).await?;
+    }
+    if status.trim() != "ready" {
+        return Err(cover_error());
+    }
+    Ok(Cover::Ready)
+}
+
+fn cover_error() -> String {
+    tr("shell-the-lock-cover-was-not-presented").into()
+}
+
+async fn request_within(
+    compositor: &crate::compositor::Compositor,
+    request: &[&str],
+    limit: Duration,
+) -> Result<String, String> {
+    tokio::time::timeout(limit, compositor.request(request))
+        .await
+        .map_err(|_| cover_error())?
+}
+
+async fn cover_within(
+    compositor: Option<&crate::compositor::Compositor>,
+    limit: Duration,
+) -> Result<Cover, String> {
+    let compositor = compositor.ok_or_else(cover_error)?;
+    tokio::time::timeout(limit, present_sleep_cover(compositor))
+        .await
+        .map_err(|_| cover_error())?
+}
+
+async fn confirm_sleep(
+    cover: Result<Cover, String>,
+    lock: impl AsyncFnOnce() -> Result<(), String>,
+    attest: impl AsyncFnOnce(bool) -> Result<(), String>,
+) -> Result<(), String> {
+    match cover {
+        Ok(Cover::Ready) => attest(false).await,
+        Ok(Cover::Unsupported) => {
+            lock().await?;
+            attest(true).await
+        }
+        Err(_) => {
+            lock().await?;
+            attest(false).await
+        }
+    }
+}
+
+pub(crate) async fn prepare_request() -> Result<(), String> {
+    let compositor =
+        crate::compositor::Compositor::from_environment().map_err(|_| cover_error())?;
+    confirm_sleep(
+        cover_within(Some(&compositor), Duration::from_secs(2)).await,
+        async || crate::session_lock::lock_for_sleep(crate::session_lock::SLEEP_LOCK_LIMIT).await,
+        async |legacy| attest_sleep(&compositor, legacy, true).await,
+    )
+    .await
+}
+
+async fn attest_sleep(
+    compositor: &crate::compositor::Compositor,
+    legacy: bool,
+    reserve: bool,
+) -> Result<(), String> {
+    let (command, expected): (&[&str], _) = if legacy {
+        (&["locked"], "true")
+    } else if reserve {
+        (&["enzuisleepcover", "sleep-ready"], "ready")
+    } else {
+        (&["enzuisleepcover", "status"], "ready")
+    };
+    if request_within(compositor, command, Duration::from_secs(1))
+        .await?
+        .trim()
+        == expected
+    {
+        Ok(())
+    } else {
+        Err(cover_error())
+    }
+}
+
 async fn run_sleep() -> Result<(), String> {
     let connection = zbus::Connection::system()
         .await
@@ -91,6 +219,10 @@ async fn run_sleep() -> Result<(), String> {
     )
     .await
     .map_err(|_| tr("shell-logind-is-not-available"))?;
+    let mut owners = manager
+        .receive_owner_changed()
+        .await
+        .map_err(|_| tr("shell-logind-is-not-available"))?;
     let mut sleeping = manager
         .receive_signal("PrepareForSleep")
         .await
@@ -129,35 +261,55 @@ async fn run_sleep() -> Result<(), String> {
         "delay",
     )
     .await;
-    let mut lock_failed = false;
+    let mut needs_locker = false;
+    let mut covered = false;
     loop {
         tokio::select! {
+            _ = owners.next() => return Ok(()),
             signal = sleeping.next() => {
                 let Some(signal) = signal else { return Ok(()) };
                 let Ok(starting) = signal.body().deserialize::<bool>() else { continue };
                 if starting {
                     let deadline = tokio::time::Instant::now() + delay_limit;
-                    lock_failed = match lock_before_deadline(crate::session_lock::lock_for_sleep, deadline).await {
-                        Ok(()) => {
-                            let _ = tokio::time::timeout_at(deadline, set_displays(compositor.as_ref(), false)).await;
-                            false
-                        }
-                        Err(error) => {
-                            eprintln!("enzui-shell: lock before sleep: {error}");
-                            true
-                        }
+                    let cover = cover_within(compositor.as_ref(), delay_limit.min(Duration::from_secs(2))).await;
+                    covered = cover == Ok(Cover::Ready);
+                    let acknowledged = if covered {
+                        needs_locker = true;
+                        let _ = tokio::time::timeout_at(deadline, set_displays(compositor.as_ref(), false)).await;
+                        true
+                    } else {
+                        needs_locker = match lock_before_deadline(crate::session_lock::lock_for_sleep, deadline).await {
+                            Ok(()) => {
+                                let _ = tokio::time::timeout_at(deadline, set_displays(compositor.as_ref(), false)).await;
+                                false
+                            }
+                            Err(error) => {
+                                eprintln!("enzui-shell: lock before sleep: {error}");
+                                true
+                            }
+                        };
+                        !needs_locker
                     };
-                    delay = None;
+                    if acknowledged
+                        && let Some(compositor) = compositor.as_ref()
+                        && tokio::time::timeout_at(deadline, attest_sleep(compositor, cover == Ok(Cover::Unsupported), false))
+                            .await.is_ok_and(|status| status.is_ok())
+                    {
+                        delay = None;
+                    }
                 } else {
                     if delay.is_none() {
                         delay = inhibit(&manager, "sleep", tr("shell-locking-the-screen-before-sleep"), "delay").await;
                     }
-                    if lock_failed
-                        && let Err(error) = crate::session_lock::lock_for_sleep(crate::session_lock::SLEEP_LOCK_LIMIT).await
-                    {
-                        eprintln!("enzui-shell: lock on resume: {error}");
+                    let needs_locker = std::mem::take(&mut needs_locker);
+                    let covered = std::mem::take(&mut covered);
+                    if needs_locker && !covered {
+                        attach_resume_locker().await;
                     }
                     set_displays(compositor.as_ref(), true).await;
+                    if needs_locker && covered {
+                        tokio::spawn(attach_resume_locker());
+                    }
                 }
             }
             request = async {
@@ -173,6 +325,14 @@ async fn run_sleep() -> Result<(), String> {
                 tokio::spawn(crate::session_lock::lock());
             }
         }
+    }
+}
+
+async fn attach_resume_locker() {
+    if let Err(error) =
+        crate::session_lock::lock_for_sleep(crate::session_lock::SLEEP_LOCK_LIMIT).await
+    {
+        eprintln!("enzui-shell: lock on resume: {error}");
     }
 }
 
@@ -219,6 +379,46 @@ async fn run_lid(lid: LidAction) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn sleep_requires_current_compositor_confirmation() {
+        let legacy = confirm_sleep(
+            Ok(Cover::Unsupported),
+            async || Ok(()),
+            async |legacy| {
+                assert!(legacy);
+                Ok(())
+            },
+        );
+        assert!(legacy.await.is_ok());
+
+        let rejected = confirm_sleep(
+            Err("IPC timeout".into()),
+            async || Err("rejected".into()),
+            async |_| panic!("locker rejection must abort suspend"),
+        );
+        assert_eq!(rejected.await.unwrap_err(), "rejected");
+
+        let unconfirmed = confirm_sleep(
+            Err("IPC timeout".into()),
+            async || Ok(()),
+            async |legacy| {
+                assert!(!legacy);
+                Err("pending".into())
+            },
+        );
+        assert_eq!(unconfirmed.await.unwrap_err(), "pending");
+
+        let concurrent = confirm_sleep(
+            Ok(Cover::Ready),
+            async || panic!("an independently confirmed cover needs no second locker"),
+            async |legacy| {
+                assert!(!legacy);
+                Ok(())
+            },
+        );
+        assert!(concurrent.await.is_ok());
+    }
 
     #[tokio::test]
     async fn retries_failed_lock_within_the_delay() {

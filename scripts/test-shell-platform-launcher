@@ -744,6 +744,7 @@ class PlatformTests(unittest.TestCase):
         values = platform.privileged_clients(self.root)
         self.assertEqual(values["ENZUI_PRIVILEGED_CLIENTS"], "enforce")
         self.assertEqual(values["ENZUI_SHELL_EXE"], str((self.root / "enzui-shell").resolve()))
+        self.assertEqual(values["ENZUI_LOCK_EXE"], str((self.root / "enzui-lock").resolve()))
         self.assertNotIn("ENZUI_DEV_PRIVILEGED_EXES", values)
         remote = str((self.root / "xdg-desktop-portal-enzui-remote").resolve())
         self.assertEqual(values["ENZUI_PORTAL_EXES"], remote)

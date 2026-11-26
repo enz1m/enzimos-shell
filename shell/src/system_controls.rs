@@ -735,8 +735,14 @@ impl SystemControls {
             }
             Action::Eject(drive) => crate::drives::eject_mounted(drive).await?,
             Action::Suspend if self.allow_power => {
-                crate::session_lock::lock_for_sleep(crate::session_lock::SLEEP_LOCK_LIMIT).await?;
-                self.run("systemctl", &["suspend"]).await?;
+                let suspend = async {
+                    crate::power_policy::prepare_request().await?;
+                    self.run("systemctl", &["suspend"]).await
+                };
+                if let Err(error) = suspend.await {
+                    tokio::spawn(crate::session_lock::lock());
+                    return Err(error);
+                }
             }
             Action::Suspend => {
                 return Err(

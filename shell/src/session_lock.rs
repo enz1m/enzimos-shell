@@ -150,13 +150,14 @@ fn launch(program: &PathBuf, sleeping: bool) -> Result<(tokio::process::Child, L
 async fn spawn(
     program: &PathBuf,
 ) -> Result<(tokio::process::Child, Lines, Option<String>), String> {
-    let (child, mut lines) = launch(program, false)?;
-    // One CPU and software rendering can take several seconds to first frame.
-    let first = match tokio::time::timeout(Duration::from_secs(15), lines.next_line()).await {
-        Ok(Ok(line)) => line,
-        _ => None,
-    };
-    Ok((child, lines, first))
+    let (mut child, mut lines) = launch(program, false)?;
+    match tokio::time::timeout(LOCK_DEADLINE, lines.next_line()).await {
+        Ok(Ok(first)) => Ok((child, lines, first)),
+        _ => {
+            let _ = child.kill().await;
+            Err(tr("shell-the-lock-screen-could-not-start").into())
+        }
+    }
 }
 
 fn note_crash(status: std::process::ExitStatus) -> bool {
@@ -216,10 +217,6 @@ async fn acquire(
             locked_hint(true).await;
             supervise(program, child, lines).await;
         }
-        Ok(Ok(Some(line))) if line.trim() == "already-locked" => {
-            settle(Ok(()));
-            reap(child, lines).await;
-        }
         // It exits before locking when it cannot draw, so another locker may.
         Ok(Ok(Some(_))) => {
             settle(Err(tr("shell-the-lock-screen-could-not-start").into()));
@@ -266,12 +263,10 @@ async fn locked_hint(locked: bool) {
     let _ = tokio::time::timeout(Duration::from_secs(3), set).await;
 }
 
-// Keeps reading so the client never blocks on a full pipe, and reaps it.
-// Returns whether it reported `unlocked`.
 async fn reap(mut child: tokio::process::Child, mut lines: Lines) -> bool {
     let mut unlocked = false;
     while let Ok(Some(line)) = lines.next_line().await {
-        unlocked |= line.trim() == "unlocked";
+        unlocked |= matches!(line.trim(), "authenticated" | "unlocked");
     }
     if let Ok(status) = child.wait().await {
         note_crash(status);
@@ -279,13 +274,24 @@ async fn reap(mut child: tokio::process::Child, mut lines: Lines) -> bool {
     unlocked
 }
 
-// Restart failed lock clients with rate limiting; compositor enforcement remains active
-// throughout. HELD is cleared before any await so a new lock never trusts an ending client.
+async fn unlock_confirmed() -> bool {
+    if std::env::var("ENZUI_MANAGED_LOCK").as_deref() != Ok("1") {
+        return true;
+    }
+
+    let Ok(compositor) = crate::compositor::Compositor::from_environment() else {
+        return false;
+    };
+    tokio::time::timeout(Duration::from_secs(1), compositor.request(&["locked"]))
+        .await
+        .is_ok_and(|response| response.is_ok_and(|status| status.trim() == "false"))
+}
+
 async fn supervise(program: PathBuf, child: tokio::process::Child, lines: Lines) {
     let mut restarts: Vec<std::time::Instant> = Vec::new();
     let (mut child, mut lines) = (child, lines);
     loop {
-        if reap(child, lines).await {
+        if reap(child, lines).await && unlock_confirmed().await {
             HELD.store(false, Ordering::Release);
             LOCKED.store(false, Ordering::Release);
             locked_hint(false).await;
@@ -304,11 +310,6 @@ async fn supervise(program: PathBuf, child: tokio::process::Child, lines: Lines)
                 Ok((next, next_lines, Some(line))) if line.trim() == "locked" => {
                     (child, lines) = (next, next_lines);
                     break;
-                }
-                Ok((next, next_lines, Some(line))) if line.trim() == "already-locked" => {
-                    HELD.store(false, Ordering::Release);
-                    reap(next, next_lines).await;
-                    return;
                 }
                 Ok((next, next_lines, _)) => {
                     reap(next, next_lines).await;
@@ -331,11 +332,12 @@ mod tests {
         let crashing = directory.path().join("enzui-lock-crashing");
         std::fs::write(
             &crashing,
-            "#!/bin/sh\n[ \"$ENZUI_LOCK_SOFTWARE\" = 1 ] && echo already-locked || kill -SEGV $$\n",
+            "#!/bin/sh\n[ \"$ENZUI_LOCK_SOFTWARE\" = 1 ] && echo rejected || kill -SEGV $$\n",
         )
         .unwrap();
         std::fs::set_permissions(&crashing, std::fs::Permissions::from_mode(0o700)).unwrap();
-        lock_with(crashing, LOCK_DEADLINE, false).await.unwrap();
+        assert!(lock_with(crashing, LOCK_DEADLINE, false).await.is_err());
+        assert!(CRASHED.load(Ordering::Acquire));
         assert!(!locked());
 
         let starts = directory.path().join("starts");

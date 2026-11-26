@@ -1,7 +1,7 @@
 {
   "hyprland": {
     "url": "https://github.com/enz1m/enzim-hyprland.git",
-    "revision": "e52637a7b211f095630d7f8d8a00be6659f25bce",
+    "revision": "02586864f34f771ad078e7394fb5be398bce687f",
     "destination": "vendor/Hyprland",
     "variants": {
       "scoped-eis": "173de69ebc7dc3fd3743257482bc416d0e2d8caf",
@@ -10,7 +10,7 @@
   },
   "aquamarine": {
     "url": "https://github.com/enz1m/enzim-aquamarine.git",
-    "revision": "9b360e9775c3920dd6144e8a872e5575e7c43fbd",
+    "revision": "96fa865836b8fe898bf3ceefa3bd431a11f889f1",
     "destination": "vendor/aquamarine",
     "variants": {
       "headless-render-node": "211c66e3567f35c5ed2479f4524c3c2360d0a9a4"

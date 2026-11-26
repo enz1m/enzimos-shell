@@ -2020,6 +2020,7 @@ shell-clipboard-item-expired-or-was-cleared = Clipboard item expired or was clea
 shell-clipboard-service-is-unavailable = Clipboard service is unavailable
 shell-clipboard-service-is-busy = Clipboard service is busy
 shell-the-enzui-lock-screen-is-not-installed = The enzUI lock screen is not installed
+shell-the-lock-cover-was-not-presented = The lock cover could not be displayed before sleep.
 shell-the-lock-screen-could-not-start = The lock screen could not start
 shell-the-lock-screen-is-still-starting = The lock screen is still starting
 shell-lock-and-suspend = Lock and suspend

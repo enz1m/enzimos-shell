@@ -1,7 +1,8 @@
 //! Compositor-enforced lock screen and greetd greeter.
 //!
 //! The lock survives client failure. Stdout reports `locked` after compositor acknowledgement,
-//! `already-locked` for an existing lock, and `unlocked` before successful exit.
+//! `rejected` for a refused lock, and `authenticated` for a managed unlock request or
+//! `unlocked` after an ordinary unlock.
 //! The greeter authenticates through greetd before starting the selected session.
 
 use enzui_shell::i18n::tr;
@@ -610,16 +611,18 @@ pub fn run(mode: Mode) -> Result<(), String> {
     }
 
     // Session-lock xray fades over the live desktop instead of a captured frame.
+    let managed = mode == Mode::Lock && std::env::var("ENZUI_MANAGED_LOCK").as_deref() == Ok("1");
     let sleeping =
         mode == Mode::Lock && std::env::var("ENZUI_LOCK_FOR_SLEEP").as_deref() == Ok("1");
+    let opaque = managed || sleeping;
     let xray = mode == Mode::Lock
-        && !sleeping
+        && !opaque
         && (std::env::var("ENZUI_LOCK_XRAY").as_deref() == Ok("1") || hyprland_xray());
 
     // Remote-session outputs are locked too, but not shown the capture.
     // The greeter has no desktop to capture; it starts from black.
     if mode == Mode::Lock
-        && !sleeping
+        && !opaque
         && !xray
         && let Some(screencopy) = state.screencopy.clone()
     {
@@ -671,8 +674,7 @@ pub fn run(mode: Mode) -> Result<(), String> {
         },
     )?;
     if state.finished {
-        // Not a failure: the session is locked, just not by us.
-        say("already-locked");
+        say("rejected");
         return Ok(());
     }
 
@@ -766,7 +768,7 @@ pub fn run(mode: Mode) -> Result<(), String> {
         let placeholder =
             handle(desktop.unwrap_or_else(|| background::Picture::solid(width, height, [0, 0, 0])));
         surface.images = Some(ui::Images {
-            desktop: (mode == Mode::Lock && !xray && !sleeping).then(|| placeholder.clone()),
+            desktop: (mode == Mode::Lock && !xray && !opaque).then(|| placeholder.clone()),
             wallpaper: placeholder.clone(),
             soft: placeholder,
             has_clock: !sleeping,
@@ -1370,10 +1372,10 @@ pub fn run(mode: Mode) -> Result<(), String> {
             }
         } else if ui.outro_done(Instant::now()) {
             lock.unlock_and_destroy();
-            let _ = queue.roundtrip(&mut state);
-            // The live wallpaper is left as it was: replaying its entrance
-            // would jump away from the frame the lock just faded into.
-            say("unlocked");
+            queue
+                .roundtrip(&mut state)
+                .map_err(|error| error.to_string())?;
+            say(if managed { "authenticated" } else { "unlocked" });
             return Ok(());
         }
         if state.finished {

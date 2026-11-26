@@ -1062,6 +1062,9 @@ class LiftedWindow final : public IPassElement {
     LiftedWindow(UP<Render::CRenderPass> pass) : contents(std::move(pass)) {}
     bool needsLiveBlur() override { return contents->needsLiveBlur(); }
     bool needsPrecomputeBlur() override { return contents->needsPrecomputeBlur(); }
+    std::optional<CBox> boundingBox() override {
+        return CBox{{}, g_pHyprRenderer->m_renderData.pMonitor->m_size};
+    }
     bool disableSimplification() override { return true; }
     bool requiresFullDamage() override { return false; }
     const char *passName() override { return "EnzLiftedWindow"; }

@@ -2073,6 +2073,7 @@ shell-clipboard-item-expired-or-was-cleared = El artículo del portapapeles expi
 shell-clipboard-service-is-unavailable = El servicio del portapapeles no está disponible
 shell-clipboard-service-is-busy = El servicio de portapapeles está ocupado
 shell-the-enzui-lock-screen-is-not-installed = La pantalla de bloqueo de enzUI no está instalada
+shell-the-lock-cover-was-not-presented = No se pudo mostrar la pantalla de bloqueo antes de suspender.
 shell-the-lock-screen-could-not-start = La pantalla de bloqueo no se pudo iniciar
 shell-the-lock-screen-is-still-starting = La pantalla de bloqueo todavía está en marcha
 shell-lock-and-suspend = Bloquear y suspender

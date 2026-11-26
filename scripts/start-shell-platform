@@ -826,6 +826,7 @@ def privileged_clients(binaries, dev_tools=None):
     and tools named explicitly for disposable previews."""
     remote = str((binaries / "xdg-desktop-portal-enzui-remote").resolve())
     values = {"ENZUI_PRIVILEGED_CLIENTS": "enforce", "ENZUI_SHELL_EXE": str((binaries / "enzui-shell").resolve()),
+              "ENZUI_LOCK_EXE": str((binaries / "enzui-lock").resolve()),
               "ENZUI_PORTAL_EXES": remote,
               "ENZUI_PORTAL_INPUT_EXES": remote,
               "ENZUI_PORTAL_HELPER_EXES": "/usr/bin/grim:/usr/bin/hyprpicker",
@@ -1081,6 +1082,7 @@ def installed(args):
     clean.update({"XDG_RUNTIME_DIR": str(xdg), "XDG_SESSION_TYPE": "wayland", "DBUS_SESSION_BUS_ADDRESS": address,
                   "XDG_CURRENT_DESKTOP": "enzUI:Hyprland", "XDG_SESSION_DESKTOP": "enzUI",
                   "ENZUI_DESKTOP_SESSION": "installed", "ENZUI_PLUGIN_ISOLATION": "delegated", "ENZUI_ALLOW_SYSTEM_POWER": "1",
+                  "ENZUI_MANAGED_LOCK": "1", "ENZUI_SLEEP_COVER_LOGIND": "1",
                   "ENZUI_HYPR_RUNROOT": str(runtime), "ENZUI_HYPR_BUILDROOT": str(build), "ENZUI_HYPR_CONFIG": str(runtime / "config/hyprland.lua"),
                   "ENZUI_SHELL_SETTINGS": config["settings"], "ENZUI_SHELL_BIN_DIR": str(binaries), "ENZUI_DESKTOP_ROOT": str(ROOT),
                   **privileged_clients(binaries)})
@@ -1351,6 +1353,8 @@ def start(args):
     if not remote and (worker := getattr(args, "dev_permissions_worker", None)):
         clean["ENZUI_APP_PERMISSIONS_WORKER"] = worker
     clean.update(privileged_clients(binaries, getattr(args, "dev_capture_tools", None)))
+    if not remote and getattr(args, "managed_lock", False):
+        clean["ENZUI_MANAGED_LOCK"] = "1"
     if args.headless:
         clean["ENZUI_SCREENSHOT_DIR"] = str(profile / "screenshots")
     if getattr(args, "agent_mock", False):
@@ -1404,6 +1408,7 @@ def main():
     parser.add_argument("--build-root", default=os.environ.get("ENZUI_HYPR_BUILDROOT", str(ROOT / ".build/desktop")))
     parser.add_argument("--shell-bin-dir", help="Prepared shell/Settings binaries under this repository; defaults to target/debug")
     parser.add_argument("--headless", type=dimensions)
+    parser.add_argument("--managed-lock", action="store_true", help="With --experimental: test installed lock admission and opaque lock rendering")
     parser.add_argument("--dev-capture-tools", type=dev_tool_list, help="With --experimental: programs allowed to capture the screen and inject input in this preview (QA tools)")
     worker = parser.add_mutually_exclusive_group()
     worker.add_argument("--dev-permissions-worker", type=permissions_worker,

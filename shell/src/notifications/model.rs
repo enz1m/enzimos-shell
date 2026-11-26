@@ -88,6 +88,8 @@ pub struct Notification {
     pub origin: Origin,
     pub draft: Draft,
     pub received_ms: u64,
+    /// The arrival time on the local monotonic clock.
+    pub received_at: Instant,
     pub updated_ms: u64,
     pub unread: bool,
     pub expires: Option<Instant>,
@@ -268,6 +270,7 @@ impl Model {
                 .ok_or_else(|| tr("shell-notification-identities-exhausted"))?,
         };
         let received_ms = previous.map_or(wall_ms, |old| old.received_ms);
+        let received_at = previous.map_or(now, |old| old.received_at);
         let revision = self
             .revision
             .checked_add(1)
@@ -342,6 +345,7 @@ impl Model {
             origin,
             draft,
             received_ms,
+            received_at,
             updated_ms: wall_ms,
             unread: true,
             expires,
@@ -499,9 +503,9 @@ impl Model {
     }
     fn prune_history(&mut self, wall_ms: u64) {
         let before = self.history.len();
-        let max_age = u64::from(self.policy.history_minutes) * 60000;
-        self.history
-            .retain(|entry| entry.closed_ms <= wall_ms && wall_ms - entry.closed_ms < max_age);
+        self.history.retain(|entry| {
+            super::archive::within_retention(entry.closed_ms, wall_ms, self.policy.history_minutes)
+        });
         let mut bytes: usize = self.history.iter().map(Archived::bytes).sum();
         while self.history.len() > MAX_HISTORY
             || bytes > self.policy.history_mib as usize * 1024 * 1024

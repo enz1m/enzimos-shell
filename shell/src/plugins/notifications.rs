@@ -129,6 +129,7 @@ mod tests {
                         saved_file: None,
                     },
                     received_ms: 1,
+                    received_at: std::time::Instant::now(),
                     updated_ms: 2,
                     unread: true,
                     expires: None,

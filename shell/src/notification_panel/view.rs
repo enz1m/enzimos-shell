@@ -518,7 +518,7 @@ impl Shell {
                 app_icon: entry.origin.app_icon.as_deref(),
                 // In the panel a group header names the sender of two or more.
                 source: if named { &entry.origin.label } else { "" },
-                time: Some(relative_time(entry.received_ms)),
+                time: Some(relative_minutes(entry.received_at.elapsed().as_secs() / 60)),
                 summary: &entry.draft.summary,
                 body: if toast || expanded {
                     &entry.draft.body
@@ -985,7 +985,10 @@ fn relative_time(received_ms: u64) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(received_ms, |elapsed| elapsed.as_millis() as u64);
-    let minutes = now.saturating_sub(received_ms) / 60_000;
+    relative_minutes(now.saturating_sub(received_ms) / 60_000)
+}
+
+fn relative_minutes(minutes: u64) -> String {
     match minutes {
         0 => tr("shell-now").into(),
         1..=59 => tr!("shell-min-3", "arg0" => format!("{:}", minutes)),

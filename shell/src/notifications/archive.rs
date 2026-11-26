@@ -133,14 +133,15 @@ impl Record {
         })
     }
 }
+pub(crate) fn within_retention(closed_ms: u64, now_ms: u64, minutes: u32) -> bool {
+    now_ms.saturating_sub(closed_ms) < u64::from(minutes) * 60_000
+}
+
 pub(crate) fn bounded(mut entries: Vec<Archived>, policy: &Policy, now_ms: u64) -> Vec<Archived> {
     if !policy.history {
         return Vec::new();
     }
-    entries.retain(|entry| {
-        entry.closed_ms <= now_ms
-            && now_ms - entry.closed_ms < u64::from(policy.history_minutes) * 60000
-    });
+    entries.retain(|entry| within_retention(entry.closed_ms, now_ms, policy.history_minutes));
     entries.sort_by_key(|entry| std::cmp::Reverse(entry.closed_ms));
     let limit = policy.history_mib as usize * 1024 * 1024;
     let mut bytes = 0usize;
@@ -352,6 +353,18 @@ mod tests {
             ..Policy::default()
         }
     }
+    #[test]
+    fn backward_wall_clock_correction_preserves_history() {
+        let temp = directory();
+        let storage = Storage::for_settings(&temp.path().join("settings.json")).unwrap();
+        let mut snapshot = Snapshot::empty(3, policy());
+        snapshot.history.push(entry());
+        storage.save(&policy(), &snapshot, 1).unwrap();
+        assert_eq!(storage.load(&policy(), 1).unwrap().len(), 1);
+        let expiry = entry().closed_ms + u64::from(policy().history_minutes) * 60_000;
+        assert!(storage.load(&policy(), expiry).unwrap().is_empty());
+    }
+
     #[test]
     fn archive_behaviour() {
         // Archive roundtrip has no sender or action authority.

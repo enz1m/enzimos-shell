@@ -3,6 +3,7 @@ use super::{
     model::{Action, Archived, Closed, Key, Model, Notification, Policy, Posted},
     origin::Origin,
     payload::{Arguments, Draft, Urgency},
+    prompts::{self, Prompts},
     session::Target,
 };
 use crate::compositor::Compositor;
@@ -171,6 +172,7 @@ struct Service {
     identity: Connection,
     model: Model,
     compositor: Option<Compositor>,
+    prompts: Prompts,
     sender_gate: Gate,
     app_gate: Gate,
 }
@@ -190,6 +192,21 @@ impl Service {
         };
         self.model
             .post(origin, draft, Instant::now(), wall_ms(), fullscreen)
+    }
+
+    async fn refresh_prompts(&mut self) -> Result<(), String> {
+        if let Some(compositor) = &self.compositor
+            && let Ok(response) = compositor.request(&["deferreddialogs"]).await
+            && let Ok(dialogs) = serde_json::from_str(&response)
+        {
+            close_signals(
+                &self.connection,
+                self.prompts
+                    .sync(&mut self.model, dialogs, Instant::now(), wall_ms())?,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     async fn method(&mut self, message: Message) -> Result<(), String> {
@@ -384,7 +401,7 @@ impl Service {
     ) -> Result<(), String> {
         match command {
             Command::PostCapture(capture) => {
-                let posted = match Origin::internal_capture(capture.icon()) {
+                let posted = match Origin::internal(capture.icon()) {
                     Ok(origin) => self.post(origin, capture.into_draft()).await,
                     Err(error) => Err(error),
                 };
@@ -400,16 +417,19 @@ impl Service {
                 let result = match self.model.authorize(key, action) {
                     Err(error) => Err(error),
                     Ok(dispatch) if dispatch.origin.is_internal() => {
-                        let result = match self
+                        let result = if let Some(id) = self.prompts.id_for(key)
+                            && matches!(&dispatch.action, Action::Invoke(action) if action == prompts::SHOW)
+                            && let Some(compositor) = &self.compositor
+                        {
+                            prompts::reveal(compositor, id).await
+                        } else if let Some(file) = self
                             .model
                             .get(key)
                             .and_then(|entry| entry.draft.saved_file.as_ref())
                         {
-                            Some(file) => file.open(token.as_deref()).await,
-                            None => {
-                                Err(tr("shell-notification-action-is-unavailable-or-invalid")
-                                    .into())
-                            }
+                            file.open(token.as_deref()).await
+                        } else {
+                            Err(tr("shell-notification-action-is-unavailable-or-invalid").into())
                         };
                         if result.is_ok() {
                             let closed = self.model.action_delivered(key, wall_ms());
@@ -586,6 +606,7 @@ pub async fn run_initialized(
         identity,
         model,
         compositor: Compositor::from_environment().ok(),
+        prompts: Prompts::default(),
         sender_gate: Gate::default(),
         app_gate: Gate::default(),
     };
@@ -604,6 +625,13 @@ pub async fn run_initialized(
     };
     let mut next = tokio::time::Instant::now() + period(&service);
     let mut ticked = false;
+    let dialog_changes = crate::workspaces::deferred_dialog_changes(
+        service
+            .compositor
+            .as_ref()
+            .and_then(Compositor::event_socket),
+    );
+    tokio::pin!(dialog_changes);
     let result = loop {
         let result = tokio::select! {
             biased;
@@ -612,6 +640,7 @@ pub async fn run_initialized(
             () = service.identity.closed() => break Err(tr("shell-notification-identity-connection-closed").into()),
             () = tokio::time::sleep_until(next) => { ticked = true; let closed = service.model.expire(Instant::now(), wall_ms()); close_signals(&service.connection, closed).await },
             command = commands.recv() => match command { Some(command) => service.command(command, &events).await, None => break Ok(()) },
+            Some(()) = dialog_changes.next() => service.refresh_prompts().await,
             message = incoming.next() => match message { Some(Ok(message)) => service.method(message).await, _ => break Err(tr("shell-notification-method-stream-ended").into()) },
         };
         if let Err(error) = result {

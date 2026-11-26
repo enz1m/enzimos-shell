@@ -5413,3 +5413,6 @@ shell-shortcut-key-mic-mute = Mic mute
 shell-shortcut-key-play = Play
 shell-shortcut-key-pause = Pause
 shell-shortcut-key-stop = Stop
+shell-fullscreen-prompt-title = A prompt is waiting
+shell-fullscreen-prompt-fallback = A dialog needs your attention.
+shell-fullscreen-prompt-show = Show

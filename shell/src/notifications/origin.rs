@@ -177,7 +177,7 @@ async fn credentials(connection: &zbus::Connection, sender: &str) -> Result<(u32
     .map_err(error)?
 }
 impl Origin {
-    pub(super) fn internal_capture(icon: &str) -> Result<Self, String> {
+    pub(super) fn internal(icon: &str) -> Result<Self, String> {
         let pid = std::process::id();
         let meta = fs::metadata("/proc/self/exe").map_err(error)?;
         let executable = policy_path(

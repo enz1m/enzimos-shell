@@ -7,6 +7,7 @@ pub mod origin;
 pub mod payload;
 pub mod preferences;
 pub mod presentation;
+mod prompts;
 pub mod runtime;
 pub mod server;
 pub mod session;

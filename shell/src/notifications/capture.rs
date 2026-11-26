@@ -244,7 +244,7 @@ mod tests {
         let mut model = Model::new(1, policy.clone()).unwrap();
         let posted = model
             .post(
-                Origin::internal_capture("camera").unwrap(),
+                Origin::internal("camera").unwrap(),
                 draft,
                 Instant::now(),
                 1,

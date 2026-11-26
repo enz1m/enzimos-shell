@@ -185,8 +185,11 @@ overview release, use the compositor's keyboard-shortcuts-inhibit check.
 The installed desktop enables `misc:protect_fullscreen_focus`. A floating
 pinned dialog with `stay_focused`, or a floating transient/modal dialog from a
 background app, stays hidden and out of input routing while a game has focus.
-The compositor shows waiting dialogs when focus leaves fullscreen, with
-session locks and already-active modal prompts taking priority. A background
+The Shell posts a notification with a Show action for a waiting dialog. The
+notification follows the critical banner policy and is withdrawn when the
+dialog appears or closes. Show can raise the dialog over fullscreen. The
+compositor also releases it when focus leaves fullscreen, subject to session
+locks and already-active modal prompts. A background
 activation waits and is then processed under the normal activation policy,
 which marks the window as needing attention by default.
 

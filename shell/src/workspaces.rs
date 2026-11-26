@@ -146,6 +146,13 @@ enum Events {
     Keyboard,
     Dock,
     Config,
+    DeferredDialogs,
+}
+
+pub(crate) fn deferred_dialog_changes(
+    socket: Option<std::path::PathBuf>,
+) -> impl iced::futures::Stream<Item = ()> {
+    event_stream(&(socket, Events::DeferredDialogs))
 }
 
 fn event_stream(
@@ -163,6 +170,11 @@ fn event_stream(
         }
         Events::Dock => dock_event,
         Events::Config => |line| line == b"configreloaded>>\n",
+        Events::DeferredDialogs => |line| {
+            line.starts_with(b"fullscreen_dialog_deferred>>")
+                || line.starts_with(b"fullscreen_dialog_released>>")
+                || line.starts_with(b"fullscreen_dialog_closed>>")
+        },
     };
     iced::stream::channel(4, async move |mut output| {
         let Some(socket) = socket else {

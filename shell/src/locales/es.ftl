@@ -5407,3 +5407,6 @@ shell-shortcut-key-mic-mute = Silenciar mic.
 shell-shortcut-key-play = Reproducir
 shell-shortcut-key-pause = Pausa
 shell-shortcut-key-stop = Detener
+shell-fullscreen-prompt-title = Hay una solicitud pendiente
+shell-fullscreen-prompt-fallback = Un cuadro de diálogo requiere tu atención.
+shell-fullscreen-prompt-show = Mostrar

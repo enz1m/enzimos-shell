@@ -26,7 +26,7 @@ dofile(path)
 assert(rule.match.class=="^dev[.]enzui[.]Desktop$" and rule.no_xdg_drags)
 assert(rule.suppress_event=="maximize fullscreen")
 local keyboard={"SUPER + Q","ALT + F4","SUPER + V","SUPER + F","SUPER + M"}
-for i=1,9 do table.insert(keyboard,"SUPER + SHIFT + "..i) end
+for i=1,9 do table.insert(keyboard,"SUPER + SHIFT + code:"..(i+9)) end
 for _,key in ipairs(keyboard)do call(key) end
 assert(#dispatched==0)
 active=app
@@ -63,8 +63,8 @@ for _,n in pairs(removed)do assert(n==1) end
 assert(removed["SUPER + Return"]==nil and removed["SUPER + 1"]==nil)
 active=app;app.monitor={name="WAYLAND-1"}
 function enzui_workspace_id_at(output,index)assert(output=="WAYLAND-1");if index==2 then return 23 end end
-local count=#dispatched;call("SUPER + SHIFT + 2");assert(#dispatched==count+1 and dispatched[#dispatched].args.workspace==23)
-call("SUPER + SHIFT + 9");assert(#dispatched==count+1)
+local count=#dispatched;call("SUPER + SHIFT + code:11");assert(#dispatched==count+1 and dispatched[#dispatched].args.workspace==23)
+call("SUPER + SHIFT + code:18");assert(#dispatched==count+1)
 local observed={}
 function enzui_sidebar_press()observed[#observed+1]=#dispatched end
 function enzui_sidebar_release()observed[#observed+1]=#dispatched end

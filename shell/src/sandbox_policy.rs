@@ -911,13 +911,15 @@ mod tests {
             std::fs::write(&worker,format!("#!/usr/bin/python\nimport subprocess,sys,time\nsys.stdin.read()\np=subprocess.Popen(['/usr/bin/sleep','20']);open({:?},'w').write(str(p.pid));time.sleep(20)\n",pid.to_str().unwrap())).unwrap();
             std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o700)).unwrap();
             let task = tokio::spawn(call_worker(worker, json!({})));
-            for _ in 0..100 {
-                if pid.exists() {
+            // The worker creates the file before its contents reach disk.
+            let mut child = String::new();
+            for _ in 0..500 {
+                child = std::fs::read_to_string(&pid).unwrap_or_default();
+                if !child.trim().is_empty() {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            let child = std::fs::read_to_string(&pid).unwrap();
             let stat = std::fs::read_to_string(format!("/proc/{child}/stat")).unwrap();
             let start = stat
                 .rsplit_once(')')

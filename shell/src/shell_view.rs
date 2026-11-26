@@ -90,6 +90,7 @@ impl Shell {
             ),
             self.plugin_subscription(),
             self.notification_subscription(),
+            crate::desktop_update::subscription(),
             self.assistant_subscription(),
             enzui_shell::network_connectivity::subscription().map(Message::Connectivity),
             if self.desired_settings.controller_notifications {

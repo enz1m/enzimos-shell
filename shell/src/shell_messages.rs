@@ -72,6 +72,7 @@ pub(super) enum Message {
     DesktopsRead(u64, Result<enzui_shell::workspaces::Desktops, String>),
     DesktopWheel(iced::mouse::ScrollDelta),
     DesktopChanged,
+    DesktopUpdated,
     ToggleOverview,
     OverviewHidden(window::Id),
     OverviewAnchor(u64, Option<iced::Rectangle>),

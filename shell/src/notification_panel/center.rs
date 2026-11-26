@@ -815,6 +815,12 @@ impl Shell {
         }
         Task::batch(tasks)
     }
+    pub(crate) fn post_desktop_update(&mut self) {
+        if self.desktop_update_pending && self.notification.send(Command::PostDesktopUpdate) {
+            self.desktop_update_pending = false;
+        }
+    }
+
     pub(crate) fn notification_message(&mut self, event: Message) -> Task<ShellMessage> {
         let task = self.notification_event(event);
         Task::batch([task, self.refit_notification_center()])
@@ -836,6 +842,7 @@ impl Shell {
                     if let Some(policy) = &self.notification.effective_policy {
                         self.notification.send(Command::Policy(policy.clone()));
                     }
+                    self.post_desktop_update();
                     Task::none()
                 }
                 Update::Snapshot(snapshot) => {
@@ -880,13 +887,18 @@ impl Shell {
                     Task::none()
                 }
                 Update::Operation(
-                    server::Event::Policy(result) | server::Event::PostedCapture(result),
+                    server::Event::Policy(result)
+                    | server::Event::PostedCapture(result)
+                    | server::Event::PostedDesktopUpdate(result),
                 ) => {
                     if let Err(error) = result {
                         self.notification.error = Some(error);
                     }
                     Task::none()
                 }
+                Update::Operation(server::Event::LogOut) => Task::done(ShellMessage::SystemAction(
+                    enzui_shell::system_controls::Action::LogOut,
+                )),
                 Update::Operation(server::Event::Ready(_)) => Task::none(),
                 Update::Stopped(error) => {
                     if let Some(authority) = self.notification.authority.take() {

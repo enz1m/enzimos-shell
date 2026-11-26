@@ -51,6 +51,7 @@ impl Message {
             Self::DesktopsRead(_, Err(_)) => "DesktopsRead.Err",
             Self::DesktopWheel(..) => "DesktopWheel",
             Self::DesktopChanged => "DesktopChanged",
+            Self::DesktopUpdated => "DesktopUpdated",
             Self::ToggleOverview => "ToggleOverview",
             Self::OverviewHidden(..) => "OverviewHidden",
             Self::OverviewAnchor(..) => "OverviewAnchor",

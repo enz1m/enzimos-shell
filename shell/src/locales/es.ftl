@@ -791,6 +791,7 @@ shell-power-off-anyway = Apagar de todos modos
 shell-restart-anyway = Reiniciar de todos modos
 shell-log-out-anyway = Cerrar sesión de todos modos
 shell-confirm = Confirmar
+shell-desktop-updated = enzimOS se ha actualizado. Cierra sesión para terminar
 shell-log-out-2 = Cerrar sesión
 shell-power-off-3 = Apagar
 shell-switch-user = Cambiar usuario

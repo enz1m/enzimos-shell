@@ -738,6 +738,7 @@ shell-power-off-anyway = Power off anyway
 shell-restart-anyway = Restart anyway
 shell-log-out-anyway = Log out anyway
 shell-confirm = Confirm
+shell-desktop-updated = enzimOS was updated — log out to finish
 shell-log-out-2 = Log out
 shell-power-off-3 = Power off
 shell-switch-user = Switch user

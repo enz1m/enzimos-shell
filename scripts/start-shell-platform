@@ -233,6 +233,9 @@ def launch_shell(config, identity, restore_displays=True):
     env = dict(os.environ, WAYLAND_DISPLAY=identity["display"], HYPRLAND_INSTANCE_SIGNATURE=identity["instance"],
                ENZUI_HYPR_CONTROL_BIN=str(control_binary(config)), ENZUI_DESKTOP_ROOT=str(ROOT),
                MALLOC_ARENA_MAX="2", WINIT_UNIX_BACKEND="wayland")
+    env.pop("ENZUI_DESKTOP_UPDATE_FILES", None)
+    if "desktop_update_files" in config:
+        env["ENZUI_DESKTOP_UPDATE_FILES"] = json.dumps(config["desktop_update_files"])
     prefix = Path(config["build"]) / "prefix"
     env["PATH"] = str(prefix / "bin") + ":" + env.get("PATH", "/usr/bin:/bin")
     env["LD_LIBRARY_PATH"] = library_path(prefix / "lib", env.get("LD_LIBRARY_PATH"))
@@ -428,8 +431,27 @@ def start_compositor(config):
         command([str(ROOT / "enzui-hypr"), "start"], timeout=40)
 
 
+def desktop_update_files(config):
+    build = Path(config["build"])
+    paths = (Path(config["shell_bin_dir"]) / "enzui-shell",
+             compositor_binary(build), build / "shell-plugins/enzui-pointer-events.so",
+             Path("/usr/bin/enzimos-agent-harness"))
+    files = []
+    for path in paths:
+        try:
+            metadata = path.stat()
+            identity = [metadata.st_dev, metadata.st_ino, metadata.st_mtime_ns]
+        except OSError:
+            identity = None
+        files.append([str(path), identity])
+    return files
+
+
 def prepare_desktop(config):
     runtime = Path(config["runtime"])
+    if (config.get("installed") and Path("/etc/arch-release").is_file()
+            or os.environ.get("ENZUI_DESKTOP_UPDATE_LOCK")):
+        config["desktop_update_files"] = desktop_update_files(config)
     start_compositor(config)
     identity = compositor(config)
     if json.loads(control(config, identity, "-j", "clients")):
@@ -1318,6 +1340,8 @@ def start(args):
     digest = hashlib.sha256(read_private(path)).hexdigest()
     clean = {"HOME": str(Path.home()), "USER": os.environ.get("USER", str(os.getuid())), "PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "XDG_RUNTIME_DIR": str(client_runtime), "XDG_CONFIG_HOME": str(profile / "client-config"), "XDG_DATA_HOME": str(profile / "client-data"), "XDG_CACHE_HOME": str(profile / "client-cache"), "ENZUI_HYPR_RUNROOT": str(runtime), "ENZUI_HYPR_BUILDROOT": str(build), "ENZUI_HYPR_CONFIG": str(runtime / "config/hyprland.lua"), "ENZUI_HYPR_HOST_WAYLAND": str(parent), "WAYLAND_DISPLAY": str(runtime / "wayland-unavailable"), "ENZUI_SHELL_SETTINGS": config["settings"], "ENZUI_SHELL_PLATFORM_PREVIEW": "1", "ENZUI_DESKTOP_SESSION": "preview", "ENZUI_PLUGIN_ISOLATION": "delegated", "LD_LIBRARY_PATH": str(build / "prefix/lib")}
     clean["XDG_STATE_HOME"] = str(profile / "client-state")
+    if not remote and (update_lock := os.environ.get("ENZUI_DESKTOP_UPDATE_LOCK")):
+        clean["ENZUI_DESKTOP_UPDATE_LOCK"] = update_lock
     if not remote and os.environ.get("XDG_SESSION_ID"):
         clean["XDG_SESSION_ID"] = os.environ["XDG_SESSION_ID"]
     clean["ENZUI_SHELL_BIN_DIR"] = str(binaries)

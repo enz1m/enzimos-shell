@@ -3,6 +3,7 @@ use enzui_shell::i18n::{self, tr};
 mod activities;
 mod assistant;
 mod control_center;
+mod desktop_update;
 #[path = "plugin_applications/hover.rs"]
 mod dock_hover;
 #[path = "plugin_applications/dock_ui.rs"]
@@ -74,6 +75,7 @@ struct Shell {
     controllers: enzui_shell::controllers::Notifications,
     controllers_generation: u64,
     notification: notification_panel::State,
+    desktop_update_pending: bool,
     activity: shell_activity::Activity,
     osd: shell_osd::Osd,
     glass_windows: std::collections::HashMap<window::Id, enzui_shell::surface_input::SurfaceInput>,
@@ -346,6 +348,7 @@ impl Shell {
             controllers: Default::default(),
             controllers_generation: 0,
             notification: Default::default(),
+            desktop_update_pending: false,
             activity: Default::default(),
             osd: Default::default(),
             glass_windows: std::collections::HashMap::new(),
@@ -725,6 +728,11 @@ impl Shell {
             }
             Message::QuickSearch(message) => self.search_message(message),
             Message::Notification(message) => self.notification_message(message),
+            Message::DesktopUpdated => {
+                self.desktop_update_pending = true;
+                self.post_desktop_update();
+                Task::none()
+            }
             Message::Assistant(message) => self.assistant_message(message),
             Message::Controllers(generation, list) => self.controllers_changed(generation, list),
             Message::ControllerNotified(result) => {

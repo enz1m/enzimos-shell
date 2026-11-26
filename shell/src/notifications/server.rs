@@ -26,6 +26,8 @@ use zbus::{
     message::{Flags, Type},
 };
 
+const LOG_OUT: &str = "log-out";
+
 pub const SERVICE: &str = "org.freedesktop.Notifications";
 pub const PATH: &str = "/org/freedesktop/Notifications";
 const XML: &str = r#"<node><interface name="org.freedesktop.Notifications">
@@ -61,6 +63,7 @@ impl Snapshot {
 #[derive(Clone)]
 pub enum Command {
     PostCapture(CaptureNotice),
+    PostDesktopUpdate,
     /// `token` is an XDG activation token from the click, handed to the app
     /// first (`ActivationToken`) so it may raise its window.
     Action {
@@ -78,6 +81,8 @@ pub enum Command {
 pub enum Event {
     Ready(u64),
     PostedCapture(Result<(), String>),
+    PostedDesktopUpdate(Result<(), String>),
+    LogOut,
     Action {
         key: Key,
         result: Result<(), String>,
@@ -413,11 +418,29 @@ impl Service {
                     .try_send(Event::PostedCapture(result))
                     .map_err(|_| "Notification consumer is unavailable or busy")?;
             }
+            Command::PostDesktopUpdate => {
+                let posted = match Origin::internal("system-software-update") {
+                    Ok(origin) => self.post(origin, desktop_update_draft()).await,
+                    Err(error) => Err(error),
+                };
+                let result = match posted {
+                    Ok(posted) => close_signals(&self.connection, posted.closed).await,
+                    Err(error) => Err(error),
+                };
+                events
+                    .try_send(Event::PostedDesktopUpdate(result))
+                    .map_err(|_| "Notification consumer is unavailable or busy")?;
+            }
             Command::Action { key, action, token } => {
                 let result = match self.model.authorize(key, action) {
                     Err(error) => Err(error),
                     Ok(dispatch) if dispatch.origin.is_internal() => {
-                        let result = if let Some(id) = self.prompts.id_for(key)
+                        let result = if matches!(&dispatch.action, Action::Invoke(action) if action == LOG_OUT)
+                        {
+                            events
+                                .try_send(Event::LogOut)
+                                .map_err(|_| "Notification consumer is unavailable or busy".into())
+                        } else if let Some(id) = self.prompts.id_for(key)
                             && matches!(&dispatch.action, Action::Invoke(action) if action == prompts::SHOW)
                             && let Some(compositor) = &self.compositor
                         {
@@ -679,6 +702,28 @@ async fn notification_owner(connection: &zbus::Connection) -> Option<String> {
 /// What the notification center says when `program` holds notifications.
 fn held_by(program: &str) -> String {
     enzui_shell::tr!("shell-notifications-are-handled-by-another-program", "arg0" => program.to_owned())
+}
+
+fn desktop_update_draft() -> Draft {
+    Draft {
+        app_name: "enzimOS".into(),
+        desktop_entry: None,
+        replaces: 0,
+        summary: tr("shell-desktop-updated").into(),
+        body: String::new(),
+        actions: vec![super::payload::Action {
+            key: LOG_OUT.into(),
+            label: tr("shell-log-out-2").into(),
+        }],
+        reply: None,
+        image: None,
+        urgency: Urgency::Normal,
+        resident: false,
+        transient: false,
+        timeout_ms: -1,
+        value: None,
+        saved_file: None,
+    }
 }
 
 #[cfg(test)]

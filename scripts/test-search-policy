@@ -31,7 +31,7 @@ function hl.get_active_workspace(output) assert(output==monitor.name);return {id
 function hl.get_active_window() return active end
 function hl.get_cursor_pos() return pointer end
 function hl.get_window(selector) for _,w in ipairs(windows) do if "address:"..w.address==selector then return w end end end
-for _,name in ipairs({"move","resize","alter_zorder","set_prop"}) do hl.dsp.window[name]=function(args) return {name=name,args=args} end end
+for _,name in ipairs({"move","resize","alter_zorder","set_prop","pin"}) do hl.dsp.window[name]=function(args) return {name=name,args=args} end end
 function hl.dsp.focus(args) return {name="focus",args=args} end
 function hl.dsp.cursor.move(args)
     assert(search.workspace.id==nil and active~=search and follow_mouse==3)
@@ -47,7 +47,9 @@ function hl.dispatch(action)
         active=args.window
         if not no_warps then pointer={x=10,y=20} end
     end
+    if action.name=="pin" then args.window.pinned=args.action=="on" end
     if action.name=="move" then
+        assert(not args.window.pinned or args.workspace~="special:enzui-search")
         if args.workspace then args.window.workspace={id=type(args.workspace)=="number" and args.workspace or nil,name=args.workspace}
         else args.window.at={x=args.x,y=args.y} end
     end
@@ -207,8 +209,9 @@ assert(not pcall(enzui_search_resize,42,monitor.name,620,90,27,island) and #acti
 native_ready=true
 assert(enzui_search_park(42,28).ok and search.workspace.id==nil)
 assert(not pcall(enzui_search_resize,42,monitor.name,620,90,27,island))
-assert(enzui_search_present(42,monitor.name,620,90,29,island).ok and search.at.y==768)
-assert(enzui_search_park(42,30).ok)
+island.overview=true
+assert(enzui_search_present(42,monitor.name,620,90,29,island).ok and search.at.y==768 and search.pinned)
+assert(enzui_search_park(42,30).ok and not search.pinned)
 assert(pointer.x==712.5 and pointer.y==540.25)
 monitor.transform=1
 assert(enzui_search_present(42,monitor.name,620,570,31).ok)

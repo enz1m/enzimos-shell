@@ -19,13 +19,14 @@ pub struct IslandPlacement {
     pub frame: bool,
     /// The card dims the rest of the screen.
     pub dim: bool,
+    pub overview: bool,
 }
 impl IslandPlacement {
     fn lua(self) -> String {
         // The window keeps shadow room around the card (`reveal::margins`).
         let m = crate::reveal::margins(self.bottom, self.attachment);
         format!(
-            "{{x={},bar_end={},side_gap={},far_gap={},bottom={},ml={},mt={},mr={},mb={},dim={},frame={}}}",
+            "{{x={},bar_end={},side_gap={},far_gap={},bottom={},ml={},mt={},mr={},mb={},dim={},frame={},overview={}}}",
             self.local_x,
             self.bar_end,
             self.side_gap,
@@ -36,7 +37,8 @@ impl IslandPlacement {
             m.right,
             m.bottom,
             self.dim,
-            self.frame
+            self.frame,
+            self.overview
         )
     }
 }
@@ -662,6 +664,7 @@ impl Compositor {
                     bottom: bar == crate::settings::BarEdge::Bottom,
                     attachment,
                     frame: false,
+                    overview: false,
                     // A panel joined to the bar stays one surface with it, undimmed.
                     dim: matches!(attachment, crate::reveal::Attachment::Island { .. }),
                 }),
@@ -708,6 +711,7 @@ impl Compositor {
                 bottom: bar == crate::settings::BarEdge::Bottom,
                 attachment,
                 frame: true,
+                overview: false,
                 dim: matches!(attachment, crate::reveal::Attachment::Island { .. }),
             }),
         })

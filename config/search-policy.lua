@@ -133,6 +133,11 @@ function enzui_search_present(owner,output,width,height,epoch,island,fade)
         if scene then assert(scene.anchor_panel(w.address,owner,x,y,width,height,island.bottom),"Island Search anchor rejected") end
         dispatch(hl.dsp.window.resize({window=w,x=width,y=height}))
         dispatch(hl.dsp.window.move({window=w,x=x,y=y}))
+        -- Pinned windows win pointer hit tests over the floating spread even after it is raised.
+        local pinned=island~=nil and island.overview==true
+        if pinned~=(w.pinned==true) then
+            dispatch(hl.dsp.window.pin({window=w,action=pinned and "on" or "off"}))
+        end
         dispatch(hl.dsp.window.alter_zorder({window=w,mode="top"}))
         local dim=island==nil or island.dim==true
         enzui_search_background_fade=fade~=false
@@ -206,6 +211,7 @@ function enzui_search_park(owner,epoch)
     end
     preserve_pointer(function()
         search_dim(owner,w,epoch,false,enzui_search_background_fade~=false)
+        if w.pinned then dispatch(hl.dsp.window.pin({window=w,action="off"})) end
         dispatch(hl.dsp.window.move({window=w,workspace="special:enzui-search",follow=false}))
         if target then dispatch(hl.dsp.focus({window=target})) end
         refresh_pointer_focus()

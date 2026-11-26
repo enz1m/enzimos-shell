@@ -304,6 +304,7 @@ fn all_apps_keep_their_place_in(attachment: enzui_shell::reveal::Attachment, fra
         attachment,
         frame,
         dim: false,
+        overview: false,
     });
     shell.search.apps = Arc::new(
         (0..14)

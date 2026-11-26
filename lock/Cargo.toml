@@ -16,10 +16,10 @@ path = "src/bin/enzui-greeter-preview.rs"
 required-features = ["greeter-preview"]
 
 [dependencies]
-enzui-core = { git = "https://github.com/enz1m/enzui.git", rev = "4f951251c8f31a649dd862e274f81260690a9b98" }
-enzui-theme = { git = "https://github.com/enz1m/enzui.git", rev = "4f951251c8f31a649dd862e274f81260690a9b98" }
+enzui-core = { git = "https://github.com/enz1m/enzui.git", rev = "503341c0d70d3984a3b024e960a2fa82ca0137ba" }
+enzui-theme = { git = "https://github.com/enz1m/enzui.git", rev = "503341c0d70d3984a3b024e960a2fa82ca0137ba" }
 enzui-shell = { path = "../shell" }
-enzui-widgets = { git = "https://github.com/enz1m/enzui.git", rev = "4f951251c8f31a649dd862e274f81260690a9b98" }
+enzui-widgets = { git = "https://github.com/enz1m/enzui.git", rev = "503341c0d70d3984a3b024e960a2fa82ca0137ba" }
 iced = { git = "https://github.com/enz1m/enzim-iced.git", rev = "838066d2e7373e87cfb42e62cca5a1dc9625b5f9", features = ["wgpu", "tiny-skia", "crisp", "web-colors", "thread-pool", "linux-theme-detection", "wayland", "tokio", "advanced", "image-without-codecs"], default-features = false }
 iced_runtime = { git = "https://github.com/enz1m/enzim-iced.git", rev = "838066d2e7373e87cfb42e62cca5a1dc9625b5f9" }
 iced_wgpu = { git = "https://github.com/enz1m/enzim-iced.git", rev = "838066d2e7373e87cfb42e62cca5a1dc9625b5f9" }

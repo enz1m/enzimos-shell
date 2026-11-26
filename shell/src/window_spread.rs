@@ -247,7 +247,7 @@ async fn load(
         return Err(tr("shell-no-windows-to-spread").into());
     }
     let (area, top, bottom) = compositor
-        .prepare_spread(metrics, bar, overview.is_none())
+        .prepare_spread(metrics, bar, overview.is_some())
         .await?;
     let (rounding, _) = compositor.window_rounding().await;
     let mut insets = Padding::ZERO.top(top).bottom(bottom);

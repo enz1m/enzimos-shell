@@ -149,6 +149,7 @@ impl Shell {
                         self.search.geometry = Some((geometry.body_max, output.clone()));
                         self.search.island = geometry.island.map(|island| IslandPlacement {
                             dim: island.dim && !self.search.overview,
+                            overview: self.search.overview,
                             ..island
                         });
                         self.search.preparing = false;

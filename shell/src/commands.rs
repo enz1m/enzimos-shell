@@ -49,8 +49,8 @@ pub enum Command {
     OutputRescaled,
     /// Super was pressed and released alone on a floating desktop.
     Activities,
-    /// Super was pressed and released alone where the overview has no window
-    /// spread: a tiling desktop or a fullscreen app.
+    /// Super was pressed and released alone on a tiling desktop, where the
+    /// overview has no window spread.
     ActivitiesSearch,
 }
 

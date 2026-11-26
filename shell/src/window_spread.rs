@@ -308,13 +308,13 @@ impl Shell {
             SpreadMessage::Desktop(id)
                 if self.desktops.as_ref().is_some_and(|d| d.active == id) =>
             {
-                self.close_spread(None)
+                Task::none()
             }
+            // The overview stays open: the spread ends here and reloads once
+            // the chosen desktop is up.
             SpreadMessage::Desktop(id) => {
-                // The other desktop's windows slide in as the view goes.
-                let search = self.overview_leaving_desktop();
-                let close = self.abort_spread();
-                Task::batch([search, close, self.update(Message::SelectDesktop(id))])
+                let spread = self.end_spread();
+                Task::batch([spread, self.overview_select_desktop(id)])
             }
             SpreadMessage::Loaded(sent, result)
                 if sent == generation && self.spread.phase == Phase::Loading =>

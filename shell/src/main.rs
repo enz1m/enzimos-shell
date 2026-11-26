@@ -84,6 +84,8 @@ struct Shell {
     spread: window_spread::Spread,
     // The overview Super opens: Search and the spread, shown together.
     activities: bool,
+    // A desktop chosen in the overview is coming up; the overview follows it.
+    activities_following: bool,
     emoji: shell_emoji::EmojiPicker,
     capture: shell_capture::Capture,
     osk: shell_osk::Osk,
@@ -352,6 +354,7 @@ impl Shell {
             switcher: Default::default(),
             spread: Default::default(),
             activities: false,
+            activities_following: false,
             emoji: Default::default(),
             capture: Default::default(),
             osk: Default::default(),

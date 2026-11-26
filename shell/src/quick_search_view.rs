@@ -1,7 +1,7 @@
 use super::{Message, message, source_chord};
 use crate::{Message as ShellMessage, Shell};
 use enzui_shell::i18n::tr;
-use enzui_shell::search::{Category, Ticket};
+use enzui_shell::search::Ticket;
 use enzui_shell::tr;
 use enzui_widgets::{
     icon::enz_icon,
@@ -67,7 +67,7 @@ impl Shell {
         );
         let blank_apps = state.model.query.trim().is_empty()
             && (state.model.category.is_none() || state.browse_all_apps)
-            && state.preferences.shows(Category::Apps)
+            && state.blank_apps()
             && state.alias.is_none()
             && !composing;
         let active = state

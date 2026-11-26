@@ -1,4 +1,4 @@
-if enzui_control_dismiss_version ~= 7 then
+if enzui_control_dismiss_version ~= 8 then
     for _,binding in ipairs(enzui_control_center_dismiss or {}) do binding:remove() end
     local function inside(window,point)
         local at,size=window.at,window.size
@@ -13,13 +13,17 @@ if enzui_control_dismiss_version ~= 7 then
     local function dismiss_outside()
         local point = hl.get_cursor_pos()
         local windows = hl.get_windows()
+        local spread = {}
         for _, window in ipairs(windows) do
             if window.mapped and window.class == "dev.enzui.Desktop" and inside(window,point) then return end
+            if window.mapped and window.class == "dev.enzui.WindowSpread" then spread[window.pid] = true end
         end
         for _, window in ipairs(windows) do
             local api=hl.plugin and hl.plugin.enzui_sidebar_scene
             local shaped_popup=(window.class=="dev.enzui.QuickSearch" or window.class=="dev.enzui.Launcher") and window.workspace and type(window.workspace.id)=="number"
                 and api and type(api.input_at)=="function" and type(api.input_at(window.address,window.pid,point.x,point.y))=="boolean"
+            -- The overview's spread handles presses around its Search itself.
+            if shaped_popup and window.class == "dev.enzui.QuickSearch" and spread[window.pid] then shaped_popup = false end
             if window.mapped and (shaped_popup or window.class == "dev.enzui.ControlCenter" or window.class == "dev.enzui.WorkspaceOverview" or window.class == "dev.enzui.PluginPanel" or window.class == "dev.enzui.NotificationCenter") then
                 if not inside(window,point) then hl.dispatch(hl.dsp.window.close({window=window})) end
             end
@@ -29,7 +33,7 @@ if enzui_control_dismiss_version ~= 7 then
         hl.bind("mouse:272", dismiss_outside, { non_consuming = true, ignore_mods = true }),
         hl.bind("mouse:273", dismiss_outside, { non_consuming = true, ignore_mods = true }),
     }
-    enzui_control_dismiss_version = 7
+    enzui_control_dismiss_version = 8
 end
 
 function enzui_control_center_cache(owner,visible)

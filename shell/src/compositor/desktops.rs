@@ -180,6 +180,35 @@ impl Compositor {
         self.desktop_snapshot().await
     }
 
+    /// Shows another desktop under the overview. Search's card, when open
+    /// under `search_epoch`, moves along in the same call and keeps the keyboard.
+    pub async fn overview_desktop_focus(
+        &self,
+        id: u32,
+        search_epoch: Option<u64>,
+    ) -> Result<crate::workspaces::Desktops, String> {
+        let output = self.desktop_output().await?;
+        let name = output["name"]
+            .as_str()
+            .ok_or_else(|| tr("shell-missing-desktop-output"))?;
+        let follow = search_epoch.map_or_else(String::new, |epoch| {
+            format!(
+                "pcall(enzui_search_follow, {}, {epoch})",
+                std::process::id()
+            )
+        });
+        let query = format!(
+            "{}\n{}\nlocal focused=enzui_workspace_focus({}, {id})\nif type(focused)~='table' or focused.ok~=true then return focused end\n{follow}\nreturn focused",
+            include_str!("../../../config/output-size.lua"),
+            include_str!("../../../config/search-policy.lua"),
+            serde_json::to_string(name).expect("serializing a string cannot fail")
+        );
+        if self.request(&["eval", &query]).await?.trim() != "ok" {
+            return Err(tr("shell-desktop-selection-was-rejected").into());
+        }
+        self.desktop_snapshot().await
+    }
+
     pub async fn prepare_desktop_frame(&self) -> Result<String, String> {
         let output = self.desktop_output().await?;
         let name = output["name"]

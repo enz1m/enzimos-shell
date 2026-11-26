@@ -418,6 +418,11 @@ impl Shell {
         if self.search.model.query.trim().is_empty()
             && (self.search.model.category.is_none() || self.search.browse_all_apps)
         {
+            if !self.search.blank_apps() {
+                self.search.top_apps.clear();
+                self.search.model.replace(Vec::new());
+                return;
+            }
             let installed =
                 search::browse_installed_apps(self.search.apps.iter(), &self.search.preferences);
             self.search.top_apps = installed.iter().take(search::TOP_APPS).cloned().collect();

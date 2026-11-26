@@ -49,8 +49,12 @@ popup.class='dev.enzui.QuickSearch';popup.workspace={id=1};shaped=true
 point={x=1050,y=50};bindings['mouse:272']();assert(#closed==7)
 popup.workspace={name="special:enzui-search"};bindings['mouse:272']();assert(#closed==7)
 popup.workspace.id=1;shaped=false;bindings['mouse:272']();assert(#closed==7)
+local spread={class="dev.enzui.WindowSpread",mapped=true,pid=888,at={x=0,y=0},size={x=1440,y=900}}
+function hl.get_windows() return {app,popup,spread,panel} end
+shaped=true;bindings['mouse:272']();assert(#closed==7,"the overview's spread keeps its Search")
+function hl.get_windows() return {app,popup,panel} end
 print('Island Search dismissal excludes parked surfaces and preserves the Frame focus policy.')
 popup.class='dev.enzui.Launcher';shaped=true;bindings['mouse:272']();assert(#closed==8)
 shaped=false;bindings['mouse:272']();assert(#closed==8)
-assert(enzui_control_dismiss_version==7)
+assert(enzui_control_dismiss_version==8)
 print('Classic Applications only uses shaped dismissal in Islands.')

@@ -211,7 +211,7 @@ impl CapsLock {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SuperKey {
     /// Search, desktops and the current desktop's windows together; Search
-    /// alone on a tiling desktop or over a fullscreen app.
+    /// alone on a tiling desktop. A tap over a fullscreen app does nothing.
     Overview,
     Search,
     Nothing,

@@ -63,15 +63,23 @@ hl.bind("SUPER + code:60", command("emoji-picker"))
 hl.bind("SUPER + H", hl.dsp.exec_cmd("enzimos-dictation press"))
 hl.bind("SUPER + H", hl.dsp.exec_cmd("enzimos-dictation release"), { release = true })
 hl.bind("SUPER + W", command("window-spread"))
--- Super pressed and released with no other key, button or wheel between opens
--- the overview; Super+key shortcuts and Super+drag do not. A press runs no
--- bind, so the Super key still reaches apps.
+-- Super pressed and released within TAP_MS with no other key, button or wheel
+-- between opens the overview; Super+key shortcuts, Super+drag and a held Super
+-- do not. A press runs no bind, so the Super key still reaches apps.
+local TAP_MS = 600
 enzui_super_tap = enzui_super_tap or { pointer = 0 }
 local tap = enzui_super_tap
-if hl.on and not tap.listener then
-    tap.listener = hl.on("input.keyboard.key", function(code, _, state)
+-- A reload drops every event subscription, so each load listens again. Key event
+-- times are not reliable on every backend, so a timer marks a long hold.
+if hl.on then
+    hl.on("input.keyboard.key", function(code, _, state)
         if state == 1 then
-            tap.pressed, tap.pointer_at_press = code, tap.pointer
+            tap.serial = (tap.serial or 0) + 1
+            tap.pressed, tap.pointer_at_press, tap.held = code, tap.pointer, false
+            local serial = tap.serial
+            hl.timer(function()
+                if tap.serial == serial then tap.held = true end
+            end, { timeout = TAP_MS, type = "oneshot" })
         else
             tap.released = code
         end
@@ -83,8 +91,11 @@ end
 local function super_released()
     -- The key event precedes its binds: the released key is the one pressed last.
     if tap.released == nil or tap.released ~= tap.pressed or tap.pointer ~= tap.pointer_at_press then return end
+    if tap.held then return end
+    -- Fullscreen apps, games especially, keep an accidental tap to themselves.
+    if enzui_desktop_fullscreen() then return end
     local desktop = hl.get_active_workspace and hl.get_active_workspace()
-    local spread = not enzui_desktop_fullscreen() and not enzui_desktop_tiling_at(desktop and desktop.id)
+    local spread = not enzui_desktop_tiling_at(desktop and desktop.id)
     hl.dispatch(hl.dsp.event("enzui-command:" .. (spread and "activities" or "activities-search")))
 end
 hl.bind("SUPER + Super_L", super_released, { release = true })

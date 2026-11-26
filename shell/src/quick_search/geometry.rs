@@ -106,7 +106,7 @@ impl Shell {
     }
     /// The card's height before anything is typed, as it rests under the bar.
     pub(crate) fn search_resting_height(&self) -> f32 {
-        if self.search.preferences.shows(Category::Apps) {
+        if self.search.blank_apps() {
             BLANK_HEIGHT
         } else {
             112.0
@@ -235,7 +235,7 @@ impl Shell {
             .as_ref()
             .map_or(iced::Size::new(620.0, 760.0), |g| g.0);
         size.height = size.height.min(self.search_height_limit());
-        if !self.search_expanded() && self.search.preferences.shows(Category::Apps) {
+        if !self.search_expanded() && self.search.blank_apps() {
             return 4;
         }
         let feedback = self
@@ -412,18 +412,6 @@ impl Shell {
         self.search.overview = false;
         Task::batch([overview, self.close_search_card()])
     }
-    /// Closes Search without its closing motion, which stops once the card's
-    /// desktop is no longer shown and would leave the card unparked there.
-    pub(crate) fn close_search_at_once(&mut self) -> Task<ShellMessage> {
-        let close = self.close_search();
-        let hidden = match self.search.window {
-            Some(id) if !self.search.showing && self.search.started => {
-                self.search_message(Message::Hidden(id, self.search.epoch))
-            }
-            _ => Task::none(),
-        };
-        Task::batch([close, hidden])
-    }
     fn close_search_card(&mut self) -> Task<ShellMessage> {
         if !self.search.showing && !self.search.preparing {
             return Task::none();
@@ -507,8 +495,14 @@ impl Shell {
                 let compositor = self.compositor.clone();
                 let epoch = self.search.epoch;
                 let revision = self.search.focus_revision;
+                let overview = self.search.overview;
                 perform(
-                    async move { compositor.search_focus_retained().await.unwrap_or(false) },
+                    async move {
+                        compositor
+                            .search_focus_retained(overview)
+                            .await
+                            .unwrap_or(false)
+                    },
                     move |kept| Message::FocusChecked(epoch, revision, kept),
                 )
             }

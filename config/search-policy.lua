@@ -168,6 +168,24 @@ function enzui_search_resize(owner,output,width,height,epoch,island)
     end)
     return {ok=true}
 end
+-- The overview keeps Search open across a desktop switch: the card moves to the
+-- new desktop and keeps the keyboard. Its return target was on the old desktop.
+function enzui_search_follow(owner,epoch)
+    assert(enzui_search_epoch and enzui_search_epoch.owner==owner and enzui_search_epoch.value==epoch,"Stale search follow")
+    local w=search_surface(owner)
+    assert(local_window(w) and w.workspace and type(w.workspace.id)=="number","Search is not presented")
+    local ws=hl.get_active_workspace(w.monitor.name)
+    assert(ws and type(ws.id)=="number","No desktop for search")
+    enzui_search_return=nil
+    if w.workspace.id~=ws.id then
+        preserve_pointer(function()
+            dispatch(hl.dsp.window.move({window=w,workspace=ws.id,follow=false}))
+            dispatch(hl.dsp.window.alter_zorder({window=w,mode="top"}))
+            dispatch(hl.dsp.focus({window=w}))
+        end)
+    end
+    return {ok=true}
+end
 function enzui_search_park(owner,epoch)
     transition(owner,epoch)
     local w=search_surface(owner)

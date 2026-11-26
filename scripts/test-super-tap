@@ -1,7 +1,8 @@
 #!/usr/bin/env lua
--- A lone Super tap asks for the overview; any key, button or wheel input while
--- Super is held cancels it, and the desktop's state chooses which overview.
-local bindings, listeners, events = {}, {}, {}
+-- A short lone Super tap asks for the overview; any key, button or wheel input
+-- while Super is held, or a long hold, cancels it, and the desktop's state
+-- chooses which overview. Over a fullscreen app a tap does nothing.
+local bindings, listeners, events, timers = {}, {}, {}, {}
 local tiling, fullscreen = false, false
 hl = {
     dsp = {
@@ -15,6 +16,11 @@ hl = {
     bind = function(key, action, options)
         bindings[key] = bindings[key] or {}
         table.insert(bindings[key], { action = action, options = options or {} })
+        return {}
+    end,
+    timer = function(callback, options)
+        assert(options.type == "oneshot" and options.timeout == 600)
+        timers[#timers + 1] = callback
         return {}
     end,
     on = function(name, callback)
@@ -33,7 +39,9 @@ dofile(arg[0]:match("^(.*)/") .. "/../config/shell-keys.lua")
 
 local SUPER_L, SUPER_R, Q = 133, 134, 24
 local function key(code, pressed) listeners["input.keyboard.key"](code, 0, pressed and 1 or 0) end
-local function release(name, code)
+local function hold_expires() for _, callback in ipairs(timers) do callback() end; timers = {} end
+local function release(name, code, held)
+    if held then hold_expires() end
     key(code, false)
     for _, bind in ipairs(bindings[name]) do
         if bind.options.release then bind.action() end
@@ -72,9 +80,17 @@ tiling = true
 key(SUPER_L, true); release("SUPER + Super_L", SUPER_L)
 assert(#events == 4 and last() == "enzui-command:activities-search")
 
+key(SUPER_L, true); release("SUPER + Super_L", SUPER_L, true)
+assert(#events == 4, "a Super held past the tap limit must not open the overview")
+
+timers = {}
+key(SUPER_L, true); key(SUPER_L, false)
+key(SUPER_L, true); timers[1](); release("SUPER + Super_L", SUPER_L)
+assert(#events == 5 and last() == "enzui-command:activities-search", "an earlier press's timer must not cancel a new tap")
+
 tiling, fullscreen = false, true
 key(SUPER_L, true); release("SUPER + Super_L", SUPER_L)
-assert(#events == 5 and last() == "enzui-command:activities-search")
+assert(#events == 5, "a tap over a fullscreen app must do nothing")
 
 for _, name in ipairs({ "SUPER + Super_L", "SUPER + Super_R" }) do
     for _, bind in ipairs(bindings[name]) do assert(not bind.options.locked, "the overview stays shut while locked") end

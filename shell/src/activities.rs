@@ -12,8 +12,8 @@ use enzui_shell::desktop_preferences::SuperKey;
 use iced::Task;
 
 impl Shell {
-    /// A lone Super press; `spread` is false on a tiling desktop or over a
-    /// fullscreen app, where the overview is Search alone.
+    /// A lone Super press; `spread` is false on a tiling desktop, where the
+    /// overview is Search alone. Over a fullscreen app the compositor sends none.
     pub(crate) fn activities_command(&mut self, spread: bool) -> Task<Message> {
         // The framed bar keeps Super for shortcuts.
         if self.metrics.islands.is_none() {
@@ -32,14 +32,21 @@ impl Shell {
 
     fn open_activities(&mut self) -> Task<Message> {
         self.activities = true;
+        self.activities_following = false;
         self.search.overview = true;
-        let band = OverviewBand {
-            search: self.search_resting_height(),
-        };
+        let band = self.overview_band();
         Task::batch([
             self.search_message(SearchMessage::Show(None)),
             self.spread_message(SpreadMessage::Overview(band)),
         ])
+    }
+
+    // The centred card can join the bar with rounded corners that add the
+    // panel radius below its resting height.
+    fn overview_band(&self) -> OverviewBand {
+        OverviewBand {
+            search: self.search_resting_height() + f32::from(self.metrics.radius),
+        }
     }
 
     fn close_activities(&mut self) -> Task<Message> {
@@ -67,14 +74,33 @@ impl Shell {
         }
     }
 
-    /// A desktop was chosen in the strip: Search goes at once, before its
-    /// desktop slides away.
-    pub(crate) fn overview_leaving_desktop(&mut self) -> Task<Message> {
-        if std::mem::take(&mut self.activities) {
-            self.close_search_at_once()
-        } else {
-            Task::none()
+    /// A desktop was chosen in the strip: it comes up with Search's card on it.
+    pub(crate) fn overview_select_desktop(&mut self, id: u32) -> Task<Message> {
+        if !self.activities {
+            return Task::none();
         }
+        self.activities_following = true;
+        self.desktop_steps = 0;
+        self.desktop_wheel = Default::default();
+        self.desktop_busy = true;
+        self.desktop_generation = self.desktop_generation.wrapping_add(1);
+        let generation = self.desktop_generation;
+        let compositor = self.compositor.clone();
+        let search = self.search.shown_epoch();
+        Task::perform(
+            async move { compositor.overview_desktop_focus(id, search).await },
+            move |result| Message::DesktopsRead(generation, result),
+        )
+    }
+
+    /// The desktop chosen in the strip is up: the overview spreads its windows.
+    pub(crate) fn overview_desktop_shown(&mut self) -> Task<Message> {
+        if !std::mem::take(&mut self.activities_following) || !self.activities {
+            return Task::none();
+        }
+        self.quiet = false;
+        let band = self.overview_band();
+        self.spread_message(SpreadMessage::Overview(band))
     }
 
     /// The spread could not open; Search stays as it would on its own.
@@ -133,6 +159,24 @@ mod tests {
         let mut shell = island_shell();
         let _ = shell.activities_command(true);
         let _ = shell.spread_message(SpreadMessage::Dismiss);
+        assert!(!shell.activities);
+        assert!(!shell.spread_active());
+    }
+
+    #[test]
+    fn choosing_another_desktop_keeps_the_overview_and_spreads_it_once_up() {
+        let mut shell = island_shell();
+        let _ = shell.activities_command(true);
+        let _ = shell.spread_message(SpreadMessage::Desktop(2));
+        assert!(shell.activities);
+        assert!(shell.search.overview);
+        assert!(!shell.spread_active());
+
+        let _ = shell.overview_desktop_shown();
+        assert!(shell.activities);
+        assert!(shell.spread_active());
+
+        let _ = shell.activities_command(true);
         assert!(!shell.activities);
         assert!(!shell.spread_active());
     }

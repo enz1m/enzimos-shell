@@ -384,7 +384,7 @@ impl Shell {
             }
             Message::BrowseApps(expanded)
                 if self.search.showing
-                    && self.search.preferences.shows(Category::Apps)
+                    && self.search.blank_apps()
                     && self.search.model.query.trim().is_empty() =>
             {
                 if !expanded && self.search.pending_browse_collapse {
@@ -477,7 +477,7 @@ impl Shell {
                     && !self.search.browse_all_apps
                     && self.search.model.query.trim().is_empty()
                     && self.search.model.category.is_none()
-                    && self.search.preferences.shows(Category::Apps)
+                    && self.search.blank_apps()
                     && next >= search::TOP_APPS
                     && search::browse_installed_apps(
                         self.search.apps.iter(),
@@ -528,7 +528,7 @@ impl Shell {
                 let top_row = self.search.model.query.trim().is_empty()
                     && !self.search.browse_all_apps
                     && self.search.model.category.is_none()
-                    && self.search.preferences.shows(Category::Apps);
+                    && self.search.blank_apps();
                 match key {
                     Key::Named(Named::ArrowRight) if top_row => {
                         self.search_message(Message::Navigate(1))
@@ -789,7 +789,10 @@ impl Shell {
             Message::OutsideCheck(epoch, at)
                 if epoch == self.search.epoch
                     && self.search.showing
-                    && !self.search.action_busy =>
+                    && !self.search.action_busy
+                    // The overview's spread covers the output and handles every
+                    // press there, including the ones that close it.
+                    && !self.activities =>
             {
                 let inside = self.search.last_press.is_some_and(|press| {
                     press + OUTSIDE_WINDOW >= at && at + OUTSIDE_WINDOW >= press

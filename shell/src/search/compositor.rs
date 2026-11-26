@@ -243,11 +243,15 @@ impl Compositor {
         })
     }
 
-    pub async fn search_focus_retained(&self) -> Result<bool, String> {
+    /// Whether the keyboard is still with Search. In the overview, a press on
+    /// its window spread may take it; the spread handles that press itself.
+    pub async fn search_focus_retained(&self, overview: bool) -> Result<bool, String> {
         let value: serde_json::Value =
             serde_json::from_str(&self.request(&["-j", "activewindow"]).await?)
                 .map_err(|_| tr("shell-invalid-focused-window"))?;
-        Ok(retained_search_focus(&value, std::process::id()))
+        let pid = std::process::id();
+        Ok(retained_search_focus(&value, pid)
+            || overview && retained_popup_focus(&value, pid, "dev.enzui.WindowSpread"))
     }
 
     pub async fn launcher_focus_retained(&self) -> Result<bool, String> {

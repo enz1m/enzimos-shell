@@ -116,6 +116,17 @@ pub(crate) struct State {
     /// belongs to ends there instead of opening Search again.
     pub(super) closed_by: Option<Instant>,
 }
+impl State {
+    /// Whether the blank card offers apps. The overview's card keeps to the
+    /// field, leaving the windows their room.
+    pub(crate) fn blank_apps(&self) -> bool {
+        self.preferences.shows(enzui_shell::search::Category::Apps) && !self.overview
+    }
+    /// The transition the shown card was presented under.
+    pub(crate) fn shown_epoch(&self) -> Option<u64> {
+        self.showing.then_some(self.epoch)
+    }
+}
 #[derive(Clone)]
 pub(crate) enum Message {
     Show(Option<Category>),

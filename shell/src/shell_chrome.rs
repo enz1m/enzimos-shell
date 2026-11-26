@@ -245,7 +245,8 @@ impl Shell {
                     Task::none()
                 };
                 let open = self.open_ready_overview();
-                Task::batch([refresh, previews, open, spread])
+                let activities = self.overview_desktop_shown();
+                Task::batch([refresh, previews, open, spread, activities])
             }
             Message::DesktopWheel(delta) => {
                 if let Some(step) = self.desktop_wheel.step(delta, Instant::now()) {

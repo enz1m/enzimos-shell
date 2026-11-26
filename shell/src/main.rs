@@ -801,6 +801,10 @@ impl Shell {
                 }
                 Task::none()
             }
+            Message::ThermalWarningFailed(error) => {
+                eprintln!("enzui-shell: thermal warning: {error}");
+                Task::none()
+            }
             Message::BatteryWarned(result) => {
                 if let Err(error) = result {
                     eprintln!("enzui-shell: battery warning: {error}");

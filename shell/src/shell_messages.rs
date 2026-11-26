@@ -46,6 +46,7 @@ pub(super) enum Message {
     ToggleOsk,
     EmojiKey(window::Id, iced::keyboard::Key),
     BatteryWarned(Result<(), String>),
+    ThermalWarningFailed(String),
     BackupCheck,
     BackupChecked(Result<(), String>),
     NoticePosted(Result<(), String>),

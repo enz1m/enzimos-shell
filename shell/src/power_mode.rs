@@ -116,6 +116,17 @@ async fn read_now(connection: &zbus::Connection) -> Option<PowerMode> {
     Some(PowerMode { active, available })
 }
 
+pub(crate) async fn thermal_degradation() -> Option<bool> {
+    crate::bus::bounded(async { thermal_degradation_on(&crate::bus::system().await?).await })
+        .await?
+}
+
+async fn thermal_degradation_on(connection: &zbus::Connection) -> Option<bool> {
+    let proxy = service(connection).await?;
+    let reason: String = proxy.get_property("PerformanceDegraded").await.ok()?;
+    Some(reason == "high-operating-temperature")
+}
+
 /// Makes `profile` the active mode.
 pub async fn set(profile: Profile) -> Result<(), String> {
     let connection = crate::bus::bounded(crate::bus::system())
@@ -140,7 +151,7 @@ pub async fn set(profile: Profile) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    struct Profiles(bool);
+    struct Profiles(bool, &'static str);
     #[zbus::interface(name = "org.freedesktop.UPower.PowerProfiles")]
     impl Profiles {
         #[zbus(property)]
@@ -149,6 +160,28 @@ mod tests {
                 std::future::pending::<()>().await;
             }
             "balanced".into()
+        }
+
+        #[zbus(property)]
+        fn performance_degraded(&self) -> String {
+            self.1.into()
+        }
+    }
+
+    #[tokio::test]
+    async fn power_profiles_reports_heat_separately_from_lap_detection() {
+        for (reason, thermal) in [
+            ("high-operating-temperature", true),
+            ("lap-detected", false),
+        ] {
+            let bus = crate::test_bus::Bus::start();
+            let _service = bus
+                .serve(SERVICES[0].0, SERVICES[0].1, Profiles(false, reason))
+                .await;
+            assert_eq!(
+                thermal_degradation_on(&bus.client().await).await,
+                Some(thermal)
+            );
         }
     }
 
@@ -161,13 +194,13 @@ mod tests {
     async fn a_stuck_power_profiles_service_does_not_hold_the_reader() {
         let bus = crate::test_bus::Bus::start();
         let _service = bus
-            .serve(SERVICES[0].0, SERVICES[0].1, Profiles(false))
+            .serve(SERVICES[0].0, SERVICES[0].1, Profiles(false, ""))
             .await;
         let mode = read_on(&bus.client().await).await.unwrap();
         assert_eq!(mode.active, Profile::Balanced);
         let stuck = crate::test_bus::Bus::start();
         let _service = stuck
-            .serve(SERVICES[0].0, SERVICES[0].1, Profiles(true))
+            .serve(SERVICES[0].0, SERVICES[0].1, Profiles(true, ""))
             .await;
         let client = stuck.client().await;
         let read = tokio::time::timeout(crate::bus::READ * 2, read_on(&client)).await;

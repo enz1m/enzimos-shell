@@ -28,6 +28,7 @@ impl Message {
             Self::ToggleOsk => "ToggleOsk",
             Self::EmojiKey(..) => "EmojiKey",
             Self::BatteryWarned(..) => "BatteryWarned",
+            Self::ThermalWarningFailed(..) => "ThermalWarningFailed",
             Self::BackupCheck => "BackupCheck",
             Self::BackupChecked(..) => "BackupChecked",
             Self::NoticePosted(..) => "NoticePosted",

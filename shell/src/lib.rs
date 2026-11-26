@@ -130,6 +130,7 @@ mod test_bus;
 pub mod theme_palette;
 pub mod theme_presets;
 pub mod theme_store;
+pub mod thermal;
 pub mod thunderbolt;
 pub mod titlebar_theme;
 pub mod user_accounts;

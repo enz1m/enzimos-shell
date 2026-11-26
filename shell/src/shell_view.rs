@@ -154,6 +154,7 @@ impl Shell {
                 Subscription::none()
             },
             enzui_shell::power_policy::subscription(session.lid).map(Message::PowerPolicy),
+            enzui_shell::thermal::subscription().map(Message::ThermalWarningFailed),
             drives,
             enzui_shell::privacy::subscription().map(Message::Privacy),
             if self.recording.is_some() {

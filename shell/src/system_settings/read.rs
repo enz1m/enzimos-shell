@@ -529,11 +529,13 @@ impl SystemSettings {
                 Err(refusal) => Backed::Refused(refusal.message()),
             },
         };
-        let (game_mode, game_preferences) = tokio::join!(
+        let (game_mode, game_preferences, thermal) = tokio::join!(
             crate::game_mode::read(),
-            tokio::task::spawn_blocking(crate::game_mode::preferences::read)
+            tokio::task::spawn_blocking(crate::game_mode::preferences::read),
+            crate::thermal::read(),
         );
         Power {
+            thermal,
             battery,
             lid,
             profiles,

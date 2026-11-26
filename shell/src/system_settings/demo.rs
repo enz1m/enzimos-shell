@@ -216,6 +216,7 @@ fn initial() -> State {
             error: None,
         },
         power: Power {
+            thermal: None,
             game_mode: Some(crate::game_mode::Status {
                 clients: 1,
                 requested: false,

@@ -325,6 +325,7 @@ pub struct Profiles {
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Power {
+    pub thermal: Option<crate::thermal::Level>,
     pub battery: Option<BatteryState>,
     pub game_mode: Option<crate::game_mode::Status>,
     pub game_preferences: crate::game_mode::preferences::Preferences,

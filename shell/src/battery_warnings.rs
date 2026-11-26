@@ -147,6 +147,15 @@ pub fn message(warning: Warning, action: Option<&str>) -> (String, String, bool)
 
 /// Posts a notification through the desktop's own notification service.
 pub async fn notify(summary: String, body: String, urgent: bool) -> Result<(), String> {
+    notify_power("battery-low", summary, body, urgent).await
+}
+
+pub(crate) async fn notify_power(
+    icon: &str,
+    summary: String,
+    body: String,
+    urgent: bool,
+) -> Result<(), String> {
     let connection = zbus::Connection::session()
         .await
         .map_err(|_| tr("shell-no-session-bus"))?;
@@ -171,7 +180,7 @@ pub async fn notify(summary: String, body: String, urgent: bool) -> Result<(), S
             &(
                 "Power",
                 0u32,
-                "battery-low",
+                icon,
                 summary.as_str(),
                 body.as_str(),
                 actions,

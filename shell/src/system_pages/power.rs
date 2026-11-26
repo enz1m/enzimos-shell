@@ -292,6 +292,16 @@ impl SettingsApp {
         if self.offers(Feature::PowerModes) {
             body = body.push(self.power_mode_card(power.as_ref()));
         }
+        if let Some(level) = power.as_ref().and_then(|power| power.thermal) {
+            body = body.push(
+                self.section_card_for(
+                    "power/temperature",
+                    self.info_row("thermometer", level.title(), level.detail()),
+                )
+                .title(tr("shell-temperature"))
+                .into_element(),
+            );
+        }
         if self.offers(Feature::GameMode) {
             body = body.push(self.game_mode_card(power.as_ref()));
         }

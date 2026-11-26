@@ -949,7 +949,7 @@ fn volume_row<'a, Message: Clone + 'a>(
             .single_line_elided()
             .into_element()
     };
-    let arrow: Element<'a, Message> = if let Some(message) = disclosure {
+    let arrow = disclosure.map(|message| {
         enzui_widgets::enz_toolbar_icon(
             if expanded {
                 "chevron-up"
@@ -966,10 +966,8 @@ fn volume_row<'a, Message: Clone + 'a>(
         .id("control-volume-details".into())
         .enabled(info.enabled || preview)
         .into_element()
-    } else {
-        iced::widget::space().width(0).into()
-    };
-    value_row(mute, level, Some(arrow), &p, height)
+    });
+    value_row(mute, level, arrow, &p, height)
 }
 
 /// A level as the volume shows it: a thick pill whose fill is the level, with
@@ -1016,8 +1014,6 @@ fn pill_level<'a, Message: Clone + 'a>(
     .into()
 }
 
-/// The volume row's frame around an icon, a level and an optional trailing
-/// control.
 fn value_row<'a, Message: 'a>(
     icon: Element<'a, Message>,
     level: Element<'a, Message>,
@@ -1028,15 +1024,15 @@ fn value_row<'a, Message: 'a>(
     let radius = (height / 2.0).min(28.0);
     let background = p.surface_alt;
     let text = p.text;
-    let mut content = row![
+    // Both sliders reserve the same trailing column for the volume disclosure.
+    let trailing = trailing.unwrap_or_else(|| iced::widget::space().into());
+    let content = row![
         container(icon).width(32),
-        container(level).width(Length::Fill)
+        container(level).width(Length::Fill),
+        container(trailing).width(32),
     ]
     .spacing(6)
     .align_y(iced::Alignment::Center);
-    if let Some(trailing) = trailing {
-        content = content.push(container(trailing).width(32));
-    }
     container(content)
         .padding([0, 8])
         .width(Length::Fill)

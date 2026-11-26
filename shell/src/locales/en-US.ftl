@@ -5502,3 +5502,5 @@ writing-model-keywords = writing tools preferred model on device local AI
 shell-assistant-control-allow = Allow the assistant to control this computer
 shell-assistant-control-unavailable = Desktop control was declined or is unavailable.
 shell-assistant-control-indicator = Assistant control active · Click to stop
+shell-drive-could-not-be-removed = Could not safely remove { $arg0 }
+shell-unmount-all-volumes-before-removing-this-drive = Unmount every volume before removing this drive.

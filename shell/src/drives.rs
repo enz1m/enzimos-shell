@@ -234,10 +234,18 @@ async fn watch(output: &mut iced::futures::channel::mpsc::Sender<Event>) -> Resu
     // Hotplugged block objects not handled yet, and those that were.
     let mut waiting: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut handled: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let (unlocked_tx, mut unlocked) = tokio::sync::mpsc::unbounded_channel::<Unlocked>();
+    let mut unlocking = std::collections::HashSet::new();
+    let (unlocked_tx, mut unlocked) =
+        tokio::sync::mpsc::unbounded_channel::<(u32, Option<Unlocked>)>();
     loop {
         tokio::select! {
-            Some(done) = unlocked.recv() => {
+            Some((notification, done)) = unlocked.recv() => {
+                unlocking.remove(&notification);
+                let Some(done) = done else { continue };
+                if pending.remove(&notification).is_none() {
+                    continue;
+                }
+                close(&session, notification).await;
                 let id = notify(&session, &format!("{} unlocked", done.label), tr("shell-ready-to-use"), &["open", "Open", "eject", "Eject"], true).await;
                 if let Ok(id) = id {
                     pending.insert(id, Pending::Mounted { path: done.cleartext, mount: done.mount.clone(), label: done.label, backing: Some(done.backing) });
@@ -307,7 +315,7 @@ async fn watch(output: &mut iced::futures::channel::mpsc::Sender<Event>) -> Resu
                                 let _ = notify(&session, &format!("{label} can be removed"), tr("shell-it-is-safe-to-unplug-it-now"), &[], false).await;
                             }
                             Err(error) => {
-                                let summary = format!("{label} is still in use");
+                                let summary = tr!("shell-drive-could-not-be-removed", "arg0" => label.clone());
                                 if let Ok(retry) = notify(&session, &summary, &error, &["eject", tr("shell-try-again")], true).await {
                                     pending.insert(retry, item);
                                 }
@@ -331,11 +339,14 @@ async fn watch(output: &mut iced::futures::channel::mpsc::Sender<Event>) -> Resu
                             }
                         }
                     }
-                    (Pending::Locked { path, label }, "unlock") => {
-                        pending.remove(&id);
-                        close(&session, id).await;
-                        if let Err(error) = unlock_dialog(&path, label, unlocked_tx.clone()) {
-                            let _ = output.send(Event::Error(error)).await;
+                    (Pending::Locked { path, label }, "unlock") if !unlocking.contains(&id) => {
+                        match unlock_dialog(&path, label, id, unlocked_tx.clone()) {
+                            Ok(()) => {
+                                unlocking.insert(id);
+                            }
+                            Err(error) => {
+                                let _ = output.send(Event::Error(error)).await;
+                            }
                         }
                     }
                     _ => {}
@@ -466,7 +477,7 @@ async fn read_object(system: &zbus::Connection, path: &str) -> Interfaces {
 
 // Whether this login is the active, unlocked session on its seat.
 async fn session_in_use(system: &zbus::Connection) -> bool {
-    if crate::session_lock::locked() {
+    if crate::session_lock::locking() {
         return false;
     }
     let Ok(id) = std::env::var("XDG_SESSION_ID") else {
@@ -512,29 +523,56 @@ async fn mount(system: &zbus::Connection, path: &str) -> Result<PathBuf, String>
 }
 
 async fn eject(system: &zbus::Connection, path: &str, backing: Option<&str>) -> Result<(), String> {
-    let filesystem = zbus::Proxy::new(system, UDISKS, path.to_owned(), FILESYSTEM)
-        .await
-        .map_err(|_| tr("shell-the-drive-went-away"))?;
-    match filesystem.call::<_, _, ()>("Unmount", &(options(),)).await {
-        Ok(()) => {}
-        // Already unmounted elsewhere (Files): still power it down.
-        Err(error) if error.to_string().contains("NotMounted") => {}
-        Err(error) => return Err(udisks_error(&error)),
+    if let Some(result) = remove_with_mount_service(backing.unwrap_or(path)).await {
+        return result;
     }
-    // An unlocked drive is locked again before it is powered down.
-    let device = match backing {
-        Some(backing) => {
-            let encrypted = zbus::Proxy::new(system, UDISKS, backing.to_owned(), ENCRYPTED)
+    eject_udisks(system, path, backing).await
+}
+
+async fn eject_udisks(
+    system: &zbus::Connection,
+    path: &str,
+    backing: Option<&str>,
+) -> Result<(), String> {
+    let encrypted = match backing {
+        Some(backing) => Some(
+            zbus::Proxy::new(system, UDISKS, backing.to_owned(), ENCRYPTED)
                 .await
-                .map_err(|_| tr("shell-the-drive-went-away"))?;
+                .map_err(|_| tr("shell-the-drive-went-away"))?,
+        ),
+        None => None,
+    };
+    let cleartext: OwnedObjectPath;
+    let filesystem = match &encrypted {
+        Some(encrypted) => {
+            cleartext = encrypted
+                .get_property("CleartextDevice")
+                .await
+                .map_err(|error| udisks_error(&error))?;
+            cleartext.as_str()
+        }
+        None => path,
+    };
+    if filesystem != "/" {
+        let filesystem = zbus::Proxy::new(system, UDISKS, filesystem.to_owned(), FILESYSTEM)
+            .await
+            .map_err(|_| tr("shell-the-drive-went-away"))?;
+        match filesystem.call::<_, _, ()>("Unmount", &(options(),)).await {
+            Ok(()) => {}
+            Err(error) if method_error_is(&error, "org.freedesktop.UDisks2.Error.NotMounted") => {}
+            Err(error) => return Err(udisks_error(&error)),
+        }
+    }
+    let device = match (backing, encrypted) {
+        (Some(backing), Some(encrypted)) => {
             if let Err(error) = encrypted.call::<_, _, ()>("Lock", &(options(),)).await
-                && !error.to_string().contains("NotUnlocked")
+                && !method_error_is(&error, "org.freedesktop.UDisks2.Error.NotUnlocked")
             {
                 return Err(udisks_error(&error));
             }
             backing
         }
-        None => path,
+        _ => path,
     };
     let block = zbus::Proxy::new(system, UDISKS, device.to_owned(), BLOCK)
         .await
@@ -546,18 +584,91 @@ async fn eject(system: &zbus::Connection, path: &str, backing: Option<&str>) -> 
     if drive_path.as_str() == "/" {
         return Ok(());
     }
-    let drive = zbus::Proxy::new(system, UDISKS, drive_path, "org.freedesktop.UDisks2.Drive")
-        .await
-        .map_err(|_| tr("shell-the-drive-went-away"))?;
+    let drive = zbus::Proxy::new(
+        system,
+        UDISKS,
+        drive_path.as_ref(),
+        "org.freedesktop.UDisks2.Drive",
+    )
+    .await
+    .map_err(|_| tr("shell-the-drive-went-away"))?;
     let ejectable: bool = drive.get_property("Ejectable").await.unwrap_or(false);
     let power_off: bool = drive.get_property("CanPowerOff").await.unwrap_or(false);
-    // Unmounted is already safe; ejecting or powering off is a courtesy.
-    if ejectable {
-        let _ = drive.call::<_, _, ()>("Eject", &(options(),)).await;
-    } else if power_off {
-        let _ = drive.call::<_, _, ()>("PowerOff", &(options(),)).await;
+    if ejectable || power_off {
+        let method = if ejectable { "Eject" } else { "PowerOff" };
+        return drive
+            .call(method, &(options(),))
+            .await
+            .map_err(|error| udisks_error(&error));
+    }
+    let manager = zbus::fdo::ObjectManagerProxy::builder(system)
+        .destination(UDISKS)
+        .map_err(|error| udisks_error(&error))?
+        .path("/org/freedesktop/UDisks2")
+        .map_err(|error| udisks_error(&error))?
+        .build()
+        .await
+        .map_err(|error| udisks_error(&error))?;
+    let objects = manager
+        .get_managed_objects()
+        .await
+        .map_err(|_| tr("shell-the-drive-did-not-respond"))?;
+    if objects.values().any(|interfaces| {
+        interfaces
+            .get(BLOCK)
+            .and_then(|properties| get::<OwnedObjectPath>(properties, "Drive"))
+            .as_ref()
+            == Some(&drive_path)
+            && interfaces
+                .get(FILESYSTEM)
+                .and_then(|properties| get::<Vec<Vec<u8>>>(properties, "MountPoints"))
+                .is_some_and(|points| !points.is_empty())
+    }) {
+        return Err(tr("shell-unmount-all-volumes-before-removing-this-drive").into());
     }
     Ok(())
+}
+
+async fn remove_with_mount_service(path: &str) -> Option<Result<(), String>> {
+    if !block_object(path) {
+        return Some(Err(tr("shell-unexpected-drive").into()));
+    }
+    let (_, block) = path.rsplit_once('/')?;
+    let session = crate::bus::session().await?;
+    let proxy = zbus::Proxy::new(
+        &session,
+        "org.enzimos.Mount1",
+        "/org/enzimos/Mount1",
+        "org.enzimos.Mount1",
+    )
+    .await
+    .ok()?;
+    let result = proxy
+        .call::<_, _, ()>("SafelyRemove", &(format!("block:{block}"),))
+        .await;
+    match result {
+        Ok(()) => Some(Ok(())),
+        Err(error)
+            if method_error_is(&error, "org.freedesktop.DBus.Error.ServiceUnknown")
+                || method_error_is(&error, "org.freedesktop.DBus.Error.NameHasNoOwner") =>
+        {
+            None
+        }
+        Err(zbus::Error::MethodError(name, Some(message), _))
+            if name.as_str() == "org.enzimos.Mount1.Error.Busy" =>
+        {
+            Some(Err(message
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(300)
+                .collect()))
+        }
+        Err(error) => Some(Err(udisks_error(&error))),
+    }
+}
+
+fn method_error_is(error: &zbus::Error, expected: &str) -> bool {
+    matches!(error, zbus::Error::MethodError(name, _, _) if name.as_str() == expected)
 }
 
 /// A removable drive with a filesystem, mounted (by anyone: Files, this
@@ -670,6 +781,9 @@ async fn notify(
     if !lasting {
         hints.insert("transient", zbus::zvariant::Value::from(true));
     }
+    if actions.first() == Some(&"unlock") {
+        hints.insert("resident", zbus::zvariant::Value::from(true));
+    }
     proxy
         .call(
             "Notify",
@@ -722,7 +836,8 @@ pub fn block_object(path: &str) -> bool {
 fn unlock_dialog(
     path: &str,
     label: String,
-    done: tokio::sync::mpsc::UnboundedSender<Unlocked>,
+    notification: u32,
+    done: tokio::sync::mpsc::UnboundedSender<(u32, Option<Unlocked>)>,
 ) -> Result<(), String> {
     use tokio::io::AsyncBufReadExt;
     if !block_object(path) {
@@ -745,19 +860,17 @@ fn unlock_dialog(
     let backing = path.to_owned();
     tokio::spawn(async move {
         let mut lines = tokio::io::BufReader::new(stdout).lines();
-        if let Ok(Some(line)) = lines.next_line().await
-            && let Some((cleartext, mount)) = line.split_once(' ')
-            && block_object(cleartext)
-            && openable(Path::new(mount))
-        {
-            let _ = done.send(Unlocked {
+        let unlocked = lines.next_line().await.ok().flatten().and_then(|line| {
+            let (cleartext, mount) = line.split_once(' ')?;
+            (block_object(cleartext) && openable(Path::new(mount))).then(|| Unlocked {
                 backing,
                 cleartext: cleartext.to_owned(),
                 mount: PathBuf::from(mount),
                 label,
-            });
-        }
+            })
+        });
         let _ = child.wait().await;
+        let _ = done.send((notification, unlocked));
     });
     Ok(())
 }
@@ -788,13 +901,93 @@ pub async fn unlock(path: &str, passphrase: &SecretText) -> Result<(String, Path
                 udisks_error(&error)
             }
         })?;
-    let mount = mount(&system, cleartext.as_str()).await?;
-    Ok((cleartext.to_string(), mount))
+    match mount(&system, cleartext.as_str()).await {
+        Ok(mount) => Ok((cleartext.to_string(), mount)),
+        Err(error) => {
+            let _ = encrypted.call::<_, _, ()>("Lock", &(options(),)).await;
+            Err(error)
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const BLOCK_PATH: &str = "/org/freedesktop/UDisks2/block_devices/fixture";
+    const DRIVE_PATH: &str = "/org/freedesktop/UDisks2/drives/fixture";
+
+    struct Filesystem;
+    #[zbus::interface(name = "org.freedesktop.UDisks2.Filesystem")]
+    impl Filesystem {
+        fn unmount(&self, options: std::collections::HashMap<String, OwnedValue>) {
+            assert!(options.is_empty());
+        }
+    }
+
+    struct Block;
+    #[zbus::interface(name = "org.freedesktop.UDisks2.Block")]
+    impl Block {
+        #[zbus(property)]
+        fn drive(&self) -> OwnedObjectPath {
+            DRIVE_PATH.try_into().unwrap()
+        }
+    }
+
+    struct Drive(std::sync::Arc<std::sync::atomic::AtomicBool>);
+    #[zbus::interface(name = "org.freedesktop.UDisks2.Drive")]
+    impl Drive {
+        #[zbus(property)]
+        fn ejectable(&self) -> bool {
+            false
+        }
+
+        #[zbus(property)]
+        fn can_power_off(&self) -> bool {
+            true
+        }
+
+        fn power_off(
+            &self,
+            options: std::collections::HashMap<String, OwnedValue>,
+        ) -> zbus::fdo::Result<()> {
+            assert!(options.is_empty());
+            if self.0.load(std::sync::atomic::Ordering::Relaxed) {
+                Err(zbus::fdo::Error::Failed(
+                    "sibling filesystem target is busy".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn power_off_refusal_is_reported_even_after_the_selected_volume_unmounts() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        let bus = crate::test_bus::Bus::start();
+        let busy = Arc::new(AtomicBool::new(true));
+        let server = bus
+            .serve(UDISKS, DRIVE_PATH, Drive(Arc::clone(&busy)))
+            .await;
+        server
+            .object_server()
+            .at(BLOCK_PATH, Filesystem)
+            .await
+            .unwrap();
+        server.object_server().at(BLOCK_PATH, Block).await.unwrap();
+        let client = bus.client().await;
+        let error = eject_udisks(&client, BLOCK_PATH, None).await.unwrap_err();
+        assert_eq!(
+            error,
+            tr("shell-close-the-files-and-apps-that-are-using-it-then-try-again")
+        );
+        busy.store(false, Ordering::Relaxed);
+        eject_udisks(&client, BLOCK_PATH, None).await.unwrap();
+    }
 
     fn stick() -> Volume {
         Volume {

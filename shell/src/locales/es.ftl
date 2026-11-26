@@ -5491,3 +5491,5 @@ writing-shortcut = Atajo de las herramientas de escritura
 writing-shortcut-edit = Editar atajo
 writing-search-keywords = texto seleccionado corregir reescribir amistoso profesional conciso resumir herramientas de escritura
 writing-model-keywords = herramientas de escritura modelo preferido dispositivo IA local
+shell-drive-could-not-be-removed = No se pudo extraer { $arg0 } de forma segura
+shell-unmount-all-volumes-before-removing-this-drive = Desmonta todos los volúmenes antes de extraer esta unidad.

@@ -203,6 +203,7 @@ def run():
     unreadable = False
     parsed = None
     last_status = None
+    status_write_failed = False
     snapshots, logs = {}, {}
     ended_logs = set()
     # Use per-renderer control sockets to avoid collisions during replacement.
@@ -253,7 +254,7 @@ def run():
         return renderer_failed(log)
 
     def status(request, error):
-        nonlocal last_status
+        nonlocal last_status, status_write_failed
         published = {key: value for key, value in request.items() if key != "language"} if isinstance(request, dict) else request
         value = {"request": published, "error": error, "pid": current.pid if current is not None else None,
                  "language": request.get("language", "auto") if isinstance(request, dict) else "auto"}
@@ -261,7 +262,14 @@ def run():
         if live_socket is not None:
             value["socket"] = str(live_socket)
         if value != last_status:
-            platform.publish(status_path, value)
+            try:
+                platform.publish(status_path, value)
+            except OSError as error:
+                if not status_write_failed:
+                    print("Cannot save wallpaper status:", error, file=sys.stderr, flush=True)
+                status_write_failed = True
+                return
+            status_write_failed = False
             last_status = value
 
     def start(value, output, reuse_live=True):

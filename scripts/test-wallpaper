@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import errno
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -190,6 +191,14 @@ class WallpaperTests(unittest.TestCase):
         self.addCleanup(lambda: (compositor.kill(), compositor.wait()))
         identity = {"pid": compositor.pid, "start": worker.platform.start_ticks(compositor.pid), "display": "wayland-owned", "instance": "owned"}
         replaced = []
+        publish = worker.platform.publish
+        failed_status = threading.Event()
+
+        def publish_status(path, value):
+            if path.name == "wallpaper-status.json" and not failed_status.is_set():
+                failed_status.set()
+                raise OSError(errno.ENOSPC, "full")
+            publish(path, value)
 
         def replace_then_end():
             deadline = time.monotonic() + 5
@@ -211,7 +220,8 @@ class WallpaperTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"ENZUI_HYPR_RUNROOT": str(runtime), "WAYLAND_DISPLAY": "wayland-owned"}), \
                     mock.patch.object(worker.platform, "compositor", return_value=identity), \
                     mock.patch.object(worker.platform, "desktop_output", return_value="OWNED-1"), \
-                    mock.patch.object(worker.platform, "control", side_effect=layers):
+                    mock.patch.object(worker.platform, "control", side_effect=layers), \
+                    mock.patch.object(worker.platform, "publish", side_effect=publish_status):
                 driver.start()
                 worker.run()
                 ended = time.monotonic()
@@ -221,6 +231,7 @@ class WallpaperTests(unittest.TestCase):
             signal.signal(signal.SIGTERM, handlers[0])
             signal.signal(signal.SIGINT, handlers[1])
         self.assertEqual([color for _, color in renderers()], ["112233", "445566"])
+        self.assertTrue(failed_status.is_set())
         self.assertLess(replaced[1] - replaced[0], 1)
         self.assertLess(ended - replaced[2], 1)
         for pid, _ in renderers():

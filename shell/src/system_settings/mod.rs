@@ -1049,7 +1049,6 @@ esac"#,
             let root = tempfile::tempdir().unwrap();
             let settings = fixture(root.path());
             let log = root.path().join("log");
-            let refuse = root.path().join("refuse");
             script(
                 root.path(),
                 "nmcli",
@@ -1065,12 +1064,23 @@ esac"#,
  :Campus:60:WPA2 802.1X
 ';;
 -t*) ;;
-*"connection up"*) echo "$*" >> '{log}'
-  [ -e '{refuse}' ] && echo 'Error: Connection activation failed: Secrets were required' && exit 4; true;;
+*"connection up"*)
+  credentials=$(cat) || exit 1
+  case "$credentials" in
+    '802-1x.identity:alice
+802-1x.password:wrong') result=4;;
+    '802-1x.identity:alice
+802-1x.password:secret') result=0;;
+    *) exit 1;;
+  esac
+  echo "$*" >> '{log}'
+  if [ "$result" = 4 ]; then
+    echo 'Error: Connection activation failed: Secrets were required' >&2
+  fi
+  exit "$result";;
 *) echo "$*" >> '{log}';;
 esac"#,
-                    log = log.display(),
-                    refuse = refuse.display()
+                    log = log.display()
                 ),
             );
             let join = |password: &str, server: ServerCheck| Request::WifiJoin {
@@ -1097,9 +1107,8 @@ esac"#,
                 assert!(settings.apply(&refused).await.is_err());
             }
             assert!(!log.exists(), "a refused form changed a profile");
-            std::fs::write(&refuse, "").unwrap();
-            assert!(settings.apply(&join("wrong", campus())).await.is_err());
-            std::fs::remove_file(&refuse).unwrap();
+            let error = settings.apply(&join("wrong", campus())).await.unwrap_err();
+            assert_eq!(error, tr("shell-the-password-is-incorrect"));
             settings.apply(&join("secret", campus())).await.unwrap();
             let log = std::fs::read_to_string(&log).unwrap();
             let lines: Vec<&str> = log.lines().collect();
@@ -1112,6 +1121,11 @@ esac"#,
                 adds.iter().all(|add| add.contains(
                     "802-1x.system-ca-certs yes 802-1x.domain-suffix-match radius.example.org"
                 )),
+                "{log}"
+            );
+            assert_eq!(
+                lines.iter().filter(|l| l.contains("connection up")).count(),
+                2,
                 "{log}"
             );
             let old = lines.iter().position(|l| l.contains("aaaa-old"));

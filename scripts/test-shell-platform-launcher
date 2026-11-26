@@ -702,22 +702,23 @@ class PlatformTests(unittest.TestCase):
             self.assertIn("org.freedesktop.impl.portal.FileChooser=enzui;gtk;",
                           (data / "xdg-desktop-portal/enzui-portals.conf").read_text().splitlines())
             self.assertEqual(oct(data.stat().st_mode & 0o777), "0o700")
-            self.assertFalse((data / "dbus-1/services/org.freedesktop.impl.portal.desktop.hyprland.service").exists())
-            hyprland = binaries / "xdg-desktop-portal-enzui-remote"
-            hyprland.write_text("#!/bin/sh\n")
-            hyprland.chmod(0o755)
+            bus = "org.freedesktop.impl.portal.desktop.enzuiremote"
+            activation = Path(f"dbus-1/services/{bus}.service")
+            self.assertFalse((data / activation).exists())
+            remote = binaries / "xdg-desktop-portal-enzui-remote"
+            remote.write_text("#!/bin/sh\n")
+            remote.chmod(0o755)
             shutil.rmtree(data)
             data = platform.portal_registration(runtime, binaries)
-            service = (data / "dbus-1/services/org.freedesktop.impl.portal.desktop.hyprland.service").read_text()
-            self.assertIn("Name=org.freedesktop.impl.portal.desktop.hyprland\n", service)
-            self.assertIn(f"Exec={hyprland.resolve()}\n", service)
-            descriptor = (data / "xdg-desktop-portal/portals/hyprland.portal").read_text()
-            self.assertIn("DBusName=org.freedesktop.impl.portal.desktop.hyprland\n", descriptor)
-            routes = (data / "xdg-desktop-portal/enzui-portals.conf").read_text().splitlines()
-            for interface in ("Screenshot", "ScreenCast", "GlobalShortcuts", "InputCapture"):
-                name = f"org.freedesktop.impl.portal.{interface}"
-                self.assertIn(f"{name};", descriptor)
-                self.assertIn(f"{name}=hyprland;", routes)
+            service = (data / activation).read_text()
+            self.assertIn(f"Name={bus}\n", service)
+            self.assertIn(f"Exec=/usr/bin/env XDPH_BUS_NAME={bus} {remote.resolve()}\n", service)
+            self.assertIn(str(remote.resolve()), platform.privileged_clients(binaries)["ENZUI_PORTAL_EXES"].split(":"))
+            descriptor = (data / "xdg-desktop-portal/portals/enzui-remote.portal").read_text()
+            routes = (data / "xdg-desktop-portal/enzui-portals.conf").read_text()
+            for interface in ("Screenshot", "ScreenCast", "RemoteDesktop", "GlobalShortcuts", "InputCapture"):
+                self.assertIn(f"org.freedesktop.impl.portal.{interface};", descriptor)
+                self.assertIn(f"org.freedesktop.impl.portal.{interface}=enzui-remote;", routes)
 
     def test_saved_displays_start_at_their_remembered_scale(self):
         settings = self.root / "saved-displays.json"

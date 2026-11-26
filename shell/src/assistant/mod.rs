@@ -1,6 +1,9 @@
 //! Assistant corner button and chat panel backed by the harness client.
 
-use enzui_shell::i18n::tr;
+use enzui_shell::{
+    agent_harness::{self, ApprovalMode, Screenshots},
+    i18n::tr,
+};
 mod client;
 mod transcript;
 mod view;
@@ -48,7 +51,13 @@ pub(crate) enum Message {
     History(bool),
     Open(String),
     Toggled(String),
-    Decide(String, bool),
+    Decide(String, bool, bool),
+    ShowApprovals(bool),
+    ChooseApproval(ApprovalMode),
+    ConfirmFullSend,
+    ApprovalChanged(Result<(), String>, ApprovalMode),
+    ChooseScreenshots(Screenshots),
+    ScreenshotsChanged(Result<Value, String>, Screenshots),
     Link(String),
     Copy(String),
     Retry,
@@ -91,6 +100,7 @@ pub(crate) struct Pane {
 pub(crate) struct Running {
     pub serial: u64,
     pub since: Instant,
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 #[derive(Default)]
@@ -111,6 +121,11 @@ pub(crate) struct State {
     pub model: String,
     pub sessions: Vec<SessionRow>,
     pub session: Option<String>,
+    pub approval_mode: ApprovalMode,
+    pub screenshots: Screenshots,
+    pub choosing_approval: bool,
+    pub confirming_full_send: bool,
+    pub approval_busy: bool,
     pub title: String,
     pub transcript: Transcript,
     pub composer: text_editor::Content,
@@ -126,6 +141,17 @@ pub(crate) struct State {
 }
 
 impl State {
+    fn new_approval(&mut self, preferred: ApprovalMode) {
+        self.screenshots = Screenshots::Off;
+        self.confirming_full_send = preferred == ApprovalMode::FullSend;
+        self.choosing_approval = self.confirming_full_send;
+        self.approval_mode = if self.confirming_full_send {
+            ApprovalMode::Ask
+        } else {
+            preferred
+        };
+    }
+
     pub(crate) fn owns(&self, id: window::Id) -> bool {
         self.trigger
             .as_ref()
@@ -179,10 +205,14 @@ fn list() -> Task<ShellMessage> {
 
 fn export(id: String) -> Task<ShellMessage> {
     perform(async move {
-        // A stored chat is reopened before it is shown, so it can continue; one
-        // still open in the service refuses this and stays as it is.
-        let _ = client::request("session.resume", json!({"session_id": id})).await;
-        let result = client::request("session.export", json!({"session_id": id})).await;
+        let result = async {
+            let resumed = client::request("session.resume", json!({"session_id": id})).await?;
+            let mut exported = client::request("session.export", json!({"session_id": id})).await?;
+            exported["approval_mode"] = resumed["approval_mode"].clone();
+            exported["screenshots"] = resumed["screenshots"].clone();
+            Ok(exported)
+        }
+        .await;
         Message::Loaded(id, result)
     })
 }
@@ -387,14 +417,19 @@ impl Shell {
             Message::Close => self.close_assistant(),
             Message::Sessions(Ok(sessions)) => {
                 self.assistant.sessions = sessions;
-                if self.assistant.session.is_none() && !self.assistant.loaded {
+                if self.assistant.session.is_none()
+                    && !self.assistant.loaded
+                    && !self.assistant.approval_busy
+                {
                     self.assistant.loaded = true;
                     // The panel opens on the most recent chat.
                     if let Some(latest) = self.assistant.sessions.first() {
+                        self.assistant.approval_busy = true;
                         self.assistant.session = Some(latest.id.clone());
                         self.assistant.title = latest.title.clone();
                         return export(latest.id.clone());
                     }
+                    self.assistant_new_approval();
                 }
                 self.assistant_title();
                 Task::none()
@@ -409,8 +444,11 @@ impl Shell {
                 {
                     return Task::none();
                 }
+                self.assistant.approval_busy = false;
                 match result {
                     Ok(value) => {
+                        self.assistant.approval_mode = ApprovalMode::read(&value["approval_mode"]);
+                        self.assistant.screenshots = Screenshots::read(&value["screenshots"]);
                         self.assistant
                             .transcript
                             .load(value["items"].as_array().map_or(&[][..], Vec::as_slice));
@@ -432,16 +470,19 @@ impl Shell {
                     }
                 }
             }
-            Message::Created(prompt, result) => match result {
-                Ok(id) => {
-                    self.assistant.session = Some(id.clone());
-                    self.assistant_start(id, prompt)
+            Message::Created(prompt, result) => {
+                self.assistant.approval_busy = false;
+                match result {
+                    Ok(id) => {
+                        self.assistant.session = Some(id.clone());
+                        self.assistant_start(id, prompt)
+                    }
+                    Err(error) => {
+                        self.assistant.error = Some(error);
+                        Task::none()
+                    }
                 }
-                Err(error) => {
-                    self.assistant.error = Some(error);
-                    Task::none()
-                }
-            },
+            }
             Message::Turn(serial, event) => {
                 if self
                     .assistant
@@ -463,6 +504,11 @@ impl Shell {
                     }
                     client::TurnEvent::Finished(result) => {
                         match result {
+                            Ok(status) if status == "cancelled" => {
+                                self.assistant
+                                    .transcript
+                                    .finish(Some(tr("shell-cancelled").into()));
+                            }
                             Ok(_) => self.assistant.transcript.finish(None),
                             Err(error) => self.assistant.transcript.fail(&error),
                         }
@@ -489,6 +535,9 @@ impl Shell {
                 Task::none()
             }
             Message::Send => {
+                if self.assistant.approval_busy || self.assistant.confirming_full_send {
+                    return Task::none();
+                }
                 let text = self.assistant.composer.text().trim().to_owned();
                 if text.is_empty() {
                     return Task::none();
@@ -501,19 +550,23 @@ impl Shell {
                 Some(prompt) if self.assistant.running.is_none() => self.assistant_send(prompt),
                 _ => Task::none(),
             },
-            Message::Stop => match self.assistant.session.clone() {
-                Some(session) if self.assistant.running.is_some() => perform(async move {
-                    Message::Requested(
-                        client::request("turn.cancel", json!({"session_id": session})).await,
-                    )
-                }),
-                _ => Task::none(),
-            },
+            Message::Stop => {
+                if let Some(stop) = self
+                    .assistant
+                    .running
+                    .as_mut()
+                    .and_then(|run| run.stop.take())
+                {
+                    let _ = stop.send(());
+                }
+                Task::none()
+            }
             Message::NewChat => {
-                if self.assistant.running.is_some() {
+                if self.assistant.running.is_some() || self.assistant.approval_busy {
                     return Task::none();
                 }
                 self.assistant.session = None;
+                self.assistant_new_approval();
                 self.assistant.title = String::new();
                 self.assistant.transcript.clear();
                 self.assistant.history = false;
@@ -531,11 +584,17 @@ impl Shell {
             Message::Open(id) => {
                 self.assistant.history = false;
                 if self.assistant.running.is_some()
+                    || self.assistant.approval_busy
                     || self.assistant.session.as_deref() == Some(&id)
                 {
                     return Task::none();
                 }
                 self.assistant.session = Some(id.clone());
+                self.assistant.approval_busy = true;
+                self.assistant.approval_mode = ApprovalMode::Ask;
+                self.assistant.screenshots = Screenshots::Off;
+                self.assistant.choosing_approval = false;
+                self.assistant.confirming_full_send = false;
                 self.assistant.title = self
                     .assistant
                     .sessions
@@ -550,16 +609,78 @@ impl Shell {
                 self.assistant.transcript.toggle(&key);
                 Task::none()
             }
-            Message::Decide(key, allow) => match (
+            Message::Decide(key, allow, remember) => match (
                 self.assistant.session.clone(),
                 self.assistant.transcript.decide(&key, allow),
             ) {
                 (Some(session), Some((request, binding))) => perform(async move {
-                    let result = client::request("approval.resolve", json!({"session_id": session, "request_id": request, "binding": binding, "allow": allow})).await;
+                    let result = client::request("approval.resolve", json!({"session_id": session, "request_id": request, "binding": binding, "allow": allow, "remember": remember})).await;
                     Message::Answered(key, result)
                 }),
                 _ => Task::none(),
             },
+            Message::ShowApprovals(show) => {
+                self.assistant.choosing_approval = show;
+                if !show {
+                    self.assistant.confirming_full_send = false;
+                }
+                Task::none()
+            }
+            Message::ChooseApproval(ApprovalMode::FullSend)
+                if self.assistant.approval_mode != ApprovalMode::FullSend
+                    && self.assistant.running.is_none()
+                    && !self.assistant.approval_busy =>
+            {
+                self.assistant.confirming_full_send = true;
+                Task::none()
+            }
+            Message::ChooseApproval(mode) => self.assistant_apply_approval(mode),
+            Message::ConfirmFullSend if self.assistant.confirming_full_send => {
+                self.assistant_apply_approval(ApprovalMode::FullSend)
+            }
+            Message::ConfirmFullSend => Task::none(),
+            Message::ApprovalChanged(result, mode) => {
+                self.assistant.approval_busy = false;
+                match result {
+                    Ok(()) => self.assistant.approval_mode = mode,
+                    Err(error) => self.assistant.error = Some(error),
+                }
+                Task::none()
+            }
+            Message::ChooseScreenshots(access) => {
+                if self.assistant.running.is_some() || self.assistant.approval_busy {
+                    return Task::none();
+                }
+                if let Some(id) = self.assistant.session.clone() {
+                    self.assistant.approval_busy = true;
+                    perform(async move {
+                        let result = client::request(
+                            "session.set_screenshots",
+                            json!({"session_id": id, "screenshots": access.wire()}),
+                        )
+                        .await;
+                        Message::ScreenshotsChanged(result, access)
+                    })
+                } else {
+                    self.assistant.screenshots = access;
+                    Task::none()
+                }
+            }
+            Message::ScreenshotsChanged(result, access) => {
+                self.assistant.approval_busy = false;
+                match result {
+                    Ok(value) if value["screenshots"] == access.wire() => {
+                        self.assistant.screenshots = access;
+                        self.assistant.error = None;
+                    }
+                    Ok(_) => {
+                        self.assistant.error =
+                            Some(tr("shell-agent-screenshots-unavailable").into());
+                    }
+                    Err(error) => self.assistant.error = Some(error),
+                }
+                Task::none()
+            }
             Message::Link(url) => {
                 if url.starts_with("https://") || url.starts_with("http://") {
                     Task::perform(
@@ -660,8 +781,35 @@ impl Shell {
         list()
     }
 
+    fn assistant_new_approval(&mut self) {
+        self.assistant
+            .new_approval(agent_harness::approval_default());
+    }
+
+    fn assistant_apply_approval(&mut self, mode: ApprovalMode) -> Task<ShellMessage> {
+        if self.assistant.running.is_some() || self.assistant.approval_busy {
+            return Task::none();
+        }
+        self.assistant.choosing_approval = false;
+        self.assistant.confirming_full_send = false;
+        self.assistant.error = None;
+        if let Some(id) = self.assistant.session.clone() {
+            self.assistant.approval_busy = true;
+            perform(async move {
+                Message::ApprovalChanged(client::set_approval_mode(&id, mode).await, mode)
+            })
+        } else {
+            self.assistant.approval_mode = mode;
+            Task::none()
+        }
+    }
+
     fn assistant_send(&mut self, text: String) -> Task<ShellMessage> {
+        if self.assistant.approval_busy || self.assistant.confirming_full_send {
+            return Task::none();
+        }
         self.assistant.history = false;
+        self.assistant.choosing_approval = false;
         self.assistant.away = false;
         if self.assistant.running.is_some() {
             // Mid-turn: the message steers the running turn.
@@ -682,7 +830,12 @@ impl Shell {
             Some(session) => self.assistant_start(session, text),
             None => {
                 self.assistant.transcript.clear();
-                perform(async move { Message::Created(text, client::open().await) })
+                self.assistant.approval_busy = true;
+                let mode = self.assistant.approval_mode;
+                let screenshots = self.assistant.screenshots;
+                perform(
+                    async move { Message::Created(text, client::open(mode, screenshots).await) },
+                )
             }
         }
     }
@@ -691,9 +844,11 @@ impl Shell {
         self.assistant.turn_serial += 1;
         let serial = self.assistant.turn_serial;
         self.assistant.transcript.begin(&prompt);
+        let (stop, cancelled) = tokio::sync::oneshot::channel();
         self.assistant.running = Some(Running {
             serial,
             since: Instant::now(),
+            stop: Some(stop),
         });
         self.assistant.now = Some(Instant::now());
         self.assistant.error = None;
@@ -704,10 +859,13 @@ impl Shell {
                 .collect::<Vec<_>>()
                 .join(" ");
         }
+        let mode = self.assistant.approval_mode;
+        let screenshots = self.assistant.screenshots;
         Task::batch([
-            Task::run(client::turn(session, prompt), move |event| {
-                message(Message::Turn(serial, event))
-            }),
+            Task::run(
+                client::turn(session, prompt, mode, screenshots, cancelled),
+                move |event| message(Message::Turn(serial, event)),
+            ),
             iced::widget::operation::focus(COMPOSER),
             iced::widget::operation::snap_to(
                 TRANSCRIPT,
@@ -879,5 +1037,27 @@ impl Shell {
             return self.close_assistant();
         }
         Task::none()
+    }
+}
+
+#[cfg(test)]
+mod approval_tests {
+    use super::*;
+
+    #[test]
+    fn a_full_send_default_starts_a_new_chat_in_ask_pending_confirmation() {
+        let mut chat = State {
+            approval_mode: ApprovalMode::FullSend,
+            screenshots: Screenshots::Vision,
+            ..State::default()
+        };
+        chat.new_approval(ApprovalMode::FullSend);
+        assert_eq!(chat.approval_mode, ApprovalMode::Ask);
+        assert!(chat.confirming_full_send && chat.choosing_approval);
+        assert_eq!(chat.screenshots, Screenshots::Off);
+
+        chat.new_approval(ApprovalMode::WorkspaceEdits);
+        assert_eq!(chat.approval_mode, ApprovalMode::WorkspaceEdits);
+        assert!(!chat.confirming_full_send && !chat.choosing_approval);
     }
 }

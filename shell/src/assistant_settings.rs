@@ -1,5 +1,5 @@
 use super::{Message as ParentMessage, SettingsApp};
-use enzui_shell::agent_harness::{self, Edit, Server, Summary};
+use enzui_shell::agent_harness::{self, ApprovalMode, Edit, Server, Summary};
 use enzui_shell::i18n::tr;
 use enzui_shell::tr;
 use enzui_widgets::modal_host::ModalHostEvent;
@@ -638,40 +638,22 @@ impl SettingsApp {
             .padding([4, 10]),
         );
         rows = rows.push(
-            iced::widget::container(
-                enz_text(tr("shell-without-asking"))
-                    .size_px(self.text_px(13.0))
-                    .weight_rung(enzui_theme::WeightRung::Semibold)
-                    .into_element(),
-            )
-            .padding([6, 10]),
+            crate::settings_app::settings_row(tr("shell-agent-approval-default"))
+                .subtitle(tr("shell-agent-approval-default-detail"))
+                .subtitle_wrap(true)
+                .value_menu(
+                    summary.approval_default.label().to_owned(),
+                    self.menu.as_deref() == Some("assistant-approval-default"),
+                    ParentMessage::Menu("assistant-approval-default".into(), true),
+                    ParentMessage::Menu("assistant-approval-default".into(), false),
+                    ApprovalMode::ALL
+                        .into_iter()
+                        .map(|mode| (mode.label().to_owned(), edit(Edit::ApprovalDefault(mode))))
+                        .collect(),
+                )
+                .enabled(live)
+                .into_element(),
         );
-        for (key, title, on) in [
-            (
-                "allow_writes",
-                tr("shell-change-files-in-these-folders"),
-                summary.writes,
-            ),
-            (
-                "allow_commands",
-                tr("shell-run-commands-in-a-sandbox"),
-                summary.commands,
-            ),
-            (
-                "allow_network",
-                tr("shell-use-the-network-from-commands"),
-                summary.network,
-            ),
-        ] {
-            rows = rows.push(
-                crate::settings_app::settings_row(title)
-                    .switch(on, move |on| {
-                        ParentMessage::Assistant(Message::Edit(Edit::Flag(key, on)))
-                    })
-                    .enabled(live)
-                    .into_element(),
-            );
-        }
         rows = rows.push(
             iced::widget::container(
                 enz_text(tr("shell-skill-folders"))
@@ -754,12 +736,17 @@ impl SettingsApp {
             .padding([6, 10]),
         );
         rows = rows.push(
-            crate::settings_app::settings_row(if summary.servers.is_empty() { tr("shell-no-servers") } else { tr("shell-add-a-tool-server") })
-                .subtitle(tr("shell-a-program-it-runs-as-you-or-a-web-address-every-tool-call-still-asks-you-fir"))
-                .subtitle_wrap(true)
-                .action(tr("shell-add"), ParentMessage::Assistant(Message::OpenServer))
-                .enabled(live && summary.servers.len() < 8)
-                .into_element(),
+            crate::settings_app::settings_row(if summary.servers.is_empty() {
+                tr("shell-no-servers")
+            } else {
+                tr("shell-add-a-tool-server")
+            })
+            .action(
+                tr("shell-add"),
+                ParentMessage::Assistant(Message::OpenServer),
+            )
+            .enabled(live && summary.servers.len() < 8)
+            .into_element(),
         );
         for (name, enabled, target) in &summary.servers {
             let name_owned = name.clone();
@@ -915,9 +902,7 @@ impl SettingsApp {
             (
                 heading(
                     tr("shell-add-a-tool-server"),
-                    tr(
-                        "shell-the-assistant-can-use-its-tools-in-new-sessions-each-tool-call-still-asks-yo",
-                    ),
+                    tr("shell-changes-reach-the-service-when-it-starts-again"),
                 ),
                 body.into(),
                 footer,

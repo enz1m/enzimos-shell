@@ -26,7 +26,11 @@ fn home() -> Option<PathBuf> {
 
 #[must_use]
 pub fn config_path() -> Option<PathBuf> {
-    Some(home()?.join(".config/enzimos/agent-harness.json"))
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| Some(home()?.join(".config")))?;
+    Some(config.join("enzimos/agent-harness.json"))
 }
 
 #[must_use]
@@ -59,7 +63,7 @@ pub fn starter() -> Value {
         "gateway_socket": format!("/run/user/{uid}/enzimos-ai-gateway/service.sock"),
         "providers": ["local"],
         "default_provider": "local",
-        "profiles": {"default": {"workspace_roots": [], "allow_writes": false, "allow_commands": false, "allow_network": false}},
+        "profiles": {"default": {"workspace_roots": []}},
         "skill_directories": [skills],
         "writable_skill_directories": [skills],
         "mcp_servers": {}
@@ -183,6 +187,105 @@ fn save_at(path: &Path, home: &Path, value: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// The tool approval mode requested by the user.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ApprovalMode {
+    #[default]
+    Ask,
+    WorkspaceEdits,
+    FullSend,
+}
+
+impl ApprovalMode {
+    /// The modes offered in the approval selector.
+    pub const ALL: [Self; 3] = [Self::Ask, Self::WorkspaceEdits, Self::FullSend];
+
+    /// Decode a service value, using Ask for missing or unrecognized values.
+    #[must_use]
+    pub fn read(value: &Value) -> Self {
+        match value.as_str() {
+            Some("workspace_edits") => Self::WorkspaceEdits,
+            Some("full_send") => Self::FullSend,
+            _ => Self::Ask,
+        }
+    }
+
+    /// Stable key shared by the preference file and harness protocol.
+    #[must_use]
+    pub fn wire(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::WorkspaceEdits => "workspace_edits",
+            Self::FullSend => "full_send",
+        }
+    }
+
+    /// Localized label for Settings and chat controls.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        tr(match self {
+            Self::Ask => "shell-agent-approval-ask",
+            Self::WorkspaceEdits => "shell-agent-approval-edits",
+            Self::FullSend => "shell-agent-approval-full",
+        })
+    }
+}
+
+/// Preference for a new conversation.
+#[must_use]
+pub fn approval_default() -> ApprovalMode {
+    load().ok().flatten().map_or(ApprovalMode::Ask, |config| {
+        summary(&config).approval_default
+    })
+}
+
+/// Live screenshot sharing preference for a conversation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Screenshots {
+    /// The model has no screenshot tool.
+    #[default]
+    Off,
+    /// Send a text summary.
+    Text,
+    /// Include the image in the model request.
+    Vision,
+}
+
+impl Screenshots {
+    /// The available screenshot choices.
+    pub const ALL: [Self; 3] = [Self::Off, Self::Text, Self::Vision];
+
+    /// Read the service setting, defaulting to Off.
+    #[must_use]
+    pub fn read(value: &Value) -> Self {
+        match value.as_str() {
+            Some("text") => Self::Text,
+            Some("vision") => Self::Vision,
+            _ => Self::Off,
+        }
+    }
+
+    /// Stable key in the harness protocol.
+    #[must_use]
+    pub fn wire(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Text => "text",
+            Self::Vision => "vision",
+        }
+    }
+
+    /// Localized label for the screenshot selector.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        tr(match self {
+            Self::Off => "shell-agent-screenshots-off",
+            Self::Text => "shell-agent-screenshots-text",
+            Self::Vision => "shell-agent-screenshots-vision",
+        })
+    }
+}
+
 /// One change to the configuration; unknown keys are kept as they are.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Edit {
@@ -190,7 +293,7 @@ pub enum Edit {
     Model(String),
     AddRoot(String),
     RemoveRoot(String),
-    Flag(&'static str, bool),
+    ApprovalDefault(ApprovalMode),
     AddSkills(String),
     RemoveSkills(String),
     ServerEnabled(String, bool),
@@ -360,14 +463,8 @@ pub fn apply(config: &mut Value, edit: &Edit) -> Result<(), String> {
                 roots.push(json!(path));
             }
         }
-        Edit::Flag(key, on) => {
-            if !["allow_writes", "allow_commands", "allow_network"].contains(key) {
-                return Err(tr("shell-unknown-setting").into());
-            }
-            if !config["profiles"]["default"].is_object() {
-                config["profiles"]["default"] = json!({});
-            }
-            config["profiles"]["default"][*key] = json!(on);
+        Edit::ApprovalDefault(mode) => {
+            config["enzui"]["approval_default"] = json!(mode.wire());
         }
         Edit::AddSkills(path) | Edit::RemoveSkills(path) => {
             let path = absolute_directory(path)?;
@@ -425,9 +522,7 @@ pub struct Summary {
     pub provider: String,
     pub model: String,
     pub roots: Vec<String>,
-    pub writes: bool,
-    pub commands: bool,
-    pub network: bool,
+    pub approval_default: ApprovalMode,
     pub skills: Vec<String>,
     /// Skill folders where Settings may create new skills.
     pub writable_skills: Vec<String>,
@@ -448,7 +543,6 @@ pub fn summary(config: &Value) -> Summary {
             .collect::<Vec<_>>()
     };
     let profile = &config["profiles"]["default"];
-    let flag = |key: &str| profile[key].as_bool().unwrap_or(false);
     let servers = config["mcp_servers"]
         .as_object()
         .into_iter()
@@ -479,9 +573,7 @@ pub fn summary(config: &Value) -> Summary {
             .to_owned(),
         model: config["enzui"]["model"].as_str().unwrap_or("").to_owned(),
         roots: texts(&profile["workspace_roots"]),
-        writes: flag("allow_writes"),
-        commands: flag("allow_commands"),
-        network: flag("allow_network"),
+        approval_default: ApprovalMode::read(&config["enzui"]["approval_default"]),
         skills: texts(&config["skill_directories"]),
         writable_skills: texts(&config["writable_skill_directories"]),
         servers,
@@ -551,8 +643,15 @@ pub fn connect() -> Result<UnixStream, String> {
 /// The `turn.start` request line, with the skills chosen for this turn as
 /// `(name, sha256)`; the harness refuses one that changed since it was listed.
 #[must_use]
-pub fn turn_request(session_id: &str, prompt: &str, skills: &[(String, String)]) -> Vec<u8> {
-    let mut body = json!({"schema_version": 1, "method": "turn.start", "session_id": session_id, "prompt": prompt});
+pub fn turn_request(
+    session_id: &str,
+    prompt: &str,
+    skills: &[(String, String)],
+    mode: ApprovalMode,
+    screenshots: Screenshots,
+) -> Vec<u8> {
+    let mut body = json!({"schema_version": 1, "method": "turn.start", "session_id": session_id, "prompt": prompt,
+        "approval_mode": mode.wire(), "screenshots": screenshots.wire()});
     if !skills.is_empty() {
         body["skills"] = skills
             .iter()
@@ -715,7 +814,11 @@ mod tests {
             config["future"] = json!({"kept": true});
             config["mcp_servers"]["docs"] = json!({"enabled": true, "transport": "http", "url": "https://example.org/mcp?token=x", "authorization": "Bearer secret"});
             apply(&mut config, &Edit::AddRoot("/home/ann/Projects/".into())).unwrap();
-            apply(&mut config, &Edit::Flag("allow_writes", true)).unwrap();
+            apply(
+                &mut config,
+                &Edit::ApprovalDefault(ApprovalMode::WorkspaceEdits),
+            )
+            .unwrap();
             apply(&mut config, &Edit::Model("qwen3".into())).unwrap();
             apply(&mut config, &Edit::ServerEnabled("docs".into(), false)).unwrap();
             assert!(
@@ -723,10 +826,10 @@ mod tests {
                 "only approved providers"
             );
             assert!(apply(&mut config, &Edit::AddRoot("relative".into())).is_err());
-            assert!(apply(&mut config, &Edit::Flag("allow_everything", true)).is_err());
             let shown = summary(&config);
             assert_eq!(shown.roots, ["/home/ann/Projects"]);
-            assert!(shown.writes && !shown.commands && shown.model == "qwen3");
+            assert_eq!(shown.approval_default, ApprovalMode::WorkspaceEdits);
+            assert_eq!(shown.model, "qwen3");
             assert_eq!(
                 shown.servers,
                 [(
@@ -888,12 +991,20 @@ mod tests {
             let chosen: Vec<_> = (0..10)
                 .map(|i| (format!("skill-{i}"), sha.clone()))
                 .collect();
-            let line = turn_request("s1", "hello", &chosen);
+            let line = turn_request(
+                "s1",
+                "hello",
+                &chosen,
+                ApprovalMode::FullSend,
+                Screenshots::Vision,
+            );
             let body: Value = serde_json::from_slice(&line[..line.len() - 1]).unwrap();
+            assert_eq!(body["approval_mode"], "full_send");
+            assert_eq!(body["screenshots"], "vision");
             assert_eq!(body["skills"].as_array().unwrap().len(), MAX_TURN_SKILLS);
             assert_eq!(body["skills"][0], json!({"name": "skill-0", "sha256": sha}));
-            let plain: Value =
-                serde_json::from_slice(&turn_request("s1", "hello", &[])[..]).unwrap();
+            let plain = turn_request("s1", "hello", &[], ApprovalMode::Ask, Screenshots::Off);
+            let plain: Value = serde_json::from_slice(&plain).unwrap();
             assert!(plain.get("skills").is_none(), "no field without a choice");
             let listed = json!([
                 {"name": "release-notes", "description": "Notes", "sha256": sha},

@@ -1,10 +1,10 @@
 use super::{
-    COMPOSER, Message, TRANSCRIPT, message,
+    COMPOSER, Message, Screenshots, TRANSCRIPT, message,
     transcript::{Body, Decision, Row, ToolStatus},
 };
 use crate::{Message as ShellMessage, Shell, region};
-use enzui_shell::i18n::tr;
 use enzui_shell::tr;
+use enzui_shell::{agent_harness::ApprovalMode, i18n::tr};
 use enzui_theme::Palette;
 use enzui_widgets::{
     button::{ButtonKind, ButtonSize, enz_button},
@@ -353,6 +353,9 @@ impl Shell {
                     }),
                 );
             }
+            if state.choosing_approval {
+                content = content.push(self.assistant_approvals(&palette));
+            }
             content = content.push(self.assistant_composer(&palette));
         }
         // The body leaves room for the fillets beside a join and a radius
@@ -407,11 +410,20 @@ impl Shell {
                 .ellipsis(iced::widget::text::Ellipsis::End)
                 .into_element(),
             space().width(Length::Fill),
+            if !state.history && state.approval_mode == ApprovalMode::FullSend {
+                enz_text(ApprovalMode::FullSend.label())
+                    .size_px(SMALL)
+                    .weight(Weight::Semibold)
+                    .color(self.tokens().palette.danger)
+                    .into_element()
+            } else {
+                space().width(Length::Shrink).into()
+            },
             enz_toolbar_icon("square-pen", message(Message::NewChat))
                 .tokens(self.icon_tokens())
                 .aria_label(tr("shell-new-chat"))
                 .tooltip(tr("shell-new-chat"))
-                .enabled(state.running.is_none())
+                .enabled(state.running.is_none() && !state.approval_busy)
                 .into_element(),
             enz_toolbar_icon("x", message(Message::Close))
                 .tokens(self.icon_tokens())
@@ -640,6 +652,71 @@ impl Shell {
         layers.width(Length::Fill).height(Length::Fill).into()
     }
 
+    fn assistant_approvals(&self, palette: &Palette) -> Element<'_, ShellMessage> {
+        let state = &self.assistant;
+        if state.confirming_full_send {
+            return column![
+                enz_text(tr("shell-agent-full-send-warning"))
+                    .size_px(SMALL)
+                    .wrap(true)
+                    .color(palette.danger)
+                    .into_element(),
+                row![
+                    enz_button(tr("shell-cancel"), message(Message::ShowApprovals(false)))
+                        .kind(ButtonKind::Secondary)
+                        .size(ButtonSize::Sm)
+                        .into_element(),
+                    enz_button(
+                        tr("shell-agent-confirm-full-send"),
+                        message(Message::ConfirmFullSend)
+                    )
+                    .kind(ButtonKind::Accent)
+                    .size(ButtonSize::Sm)
+                    .into_element(),
+                ]
+                .spacing(6),
+            ]
+            .spacing(6)
+            .into();
+        }
+        let mut options = column![].spacing(4);
+        for mode in ApprovalMode::ALL {
+            options = options.push(
+                enz_button(mode.label(), message(Message::ChooseApproval(mode)))
+                    .kind(if mode == state.approval_mode {
+                        ButtonKind::Secondary
+                    } else {
+                        ButtonKind::Quiet
+                    })
+                    .size(ButtonSize::Sm)
+                    .enabled(!state.approval_busy)
+                    .into_element(),
+            );
+        }
+        let mut screenshots = column![
+            enz_text(tr("shell-agent-screenshots-caption"))
+                .size_px(SMALL)
+                .color(palette.text_muted)
+                .wrap(true)
+                .into_element()
+        ]
+        .spacing(4);
+        for access in Screenshots::ALL {
+            screenshots = screenshots.push(
+                enz_button(access.label(), message(Message::ChooseScreenshots(access)))
+                    .kind(if state.screenshots == access {
+                        ButtonKind::Secondary
+                    } else {
+                        ButtonKind::Quiet
+                    })
+                    .size(ButtonSize::Sm)
+                    .enabled(!state.approval_busy)
+                    .into_element(),
+            );
+        }
+        column![options, screenshots].spacing(8).into()
+    }
+
     fn assistant_composer(&self, palette: &Palette) -> Element<'_, ShellMessage> {
         let state = &self.assistant;
         let running = state.running.is_some();
@@ -665,6 +742,25 @@ impl Shell {
                     .into_element(),
             );
         }
+        let mut leading = vec![
+            enz_button(
+                state.approval_mode.label(),
+                message(Message::ShowApprovals(!state.choosing_approval)),
+            )
+            .kind(if state.approval_mode == ApprovalMode::FullSend {
+                ButtonKind::Secondary
+            } else {
+                ButtonKind::Quiet
+            })
+            .size(ButtonSize::Sm)
+            .enabled(!running && !state.approval_busy)
+            .into_element(),
+        ];
+        if state.screenshots != Screenshots::Off {
+            leading.push(enz_icon("camera").size(13.0).tint(muted).into_element());
+        } else if !state.model.is_empty() && state.approval_mode != ApprovalMode::WorkspaceEdits {
+            leading.push(model.into());
+        }
         let composer = enz_composer(&state.composer, |action| message(Message::Edit(action)))
             .placeholder(if running {
                 enzui_shell::i18n::current().text("shell-steer-the-reply")
@@ -675,11 +771,7 @@ impl Shell {
             .busy(running && empty)
             .on_send(message(Message::Send))
             .on_stop(message(Message::Stop))
-            .rail_leading(if state.model.is_empty() {
-                vec![]
-            } else {
-                vec![model.into()]
-            })
+            .rail_leading(leading)
             .rail_trailing(trailing)
             .id(COMPOSER)
             .aria_label(enzui_shell::i18n::tr("shell-message-the-assistant"));
@@ -1087,17 +1179,36 @@ fn assistant_row<'a>(
                         space().width(Length::Fill),
                         enz_button(
                             tr("shell-deny"),
-                            message(Message::Decide(key.clone(), false))
+                            message(Message::Decide(key.clone(), false, false))
                         )
                         .kind(ButtonKind::Quiet)
                         .size(ButtonSize::Sm)
                         .enabled(idle)
                         .into_element(),
-                        enz_button(tr("shell-allow"), message(Message::Decide(key, true)))
-                            .kind(ButtonKind::Accent)
+                        if tool == "screenshot" {
+                            space().width(Length::Shrink).into()
+                        } else {
+                            enz_button(
+                                tr("shell-agent-allow-for-session"),
+                                message(Message::Decide(key.clone(), true, true)),
+                            )
+                            .kind(ButtonKind::Secondary)
                             .size(ButtonSize::Sm)
                             .enabled(idle)
-                            .into_element(),
+                            .into_element()
+                        },
+                        enz_button(
+                            tr(if tool == "screenshot" {
+                                "shell-agent-allow-screenshots"
+                            } else {
+                                "shell-allow-once"
+                            }),
+                            message(Message::Decide(key, true, false))
+                        )
+                        .kind(ButtonKind::Accent)
+                        .size(ButtonSize::Sm)
+                        .enabled(idle)
+                        .into_element(),
                     ]
                     .spacing(6)
                     .into()

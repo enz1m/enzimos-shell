@@ -1,13 +1,15 @@
 //! One-connection-per-request harness client; a streamed turn retains its connection until
 //! completion.
 
-use enzui_shell::agent_harness;
+use enzui_shell::agent_harness::{self, ApprovalMode};
 use enzui_shell::i18n::tr;
 use enzui_shell::tr;
 use iced::futures::SinkExt;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
+
+use super::Screenshots;
 
 const MAX_FRAME: usize = 1 << 20;
 
@@ -39,8 +41,8 @@ fn owns_harness() -> bool {
 }
 
 /// Open a session in the first folder configured in Settings › Agents.
-pub(super) async fn open() -> Result<String, String> {
-    let fields = if socket() == agent_harness::socket_path() {
+pub(super) async fn open(mode: ApprovalMode, screenshots: Screenshots) -> Result<String, String> {
+    let mut fields = if socket() == agent_harness::socket_path() {
         tokio::task::spawn_blocking(|| {
             let config = agent_harness::load()?.unwrap_or_else(agent_harness::starter);
             let setup = agent_harness::summary(&config);
@@ -65,12 +67,42 @@ pub(super) async fn open() -> Result<String, String> {
     } else {
         json!({})
     };
+    fields["approval_mode"] = json!(if mode == ApprovalMode::FullSend {
+        ApprovalMode::Ask.wire()
+    } else {
+        mode.wire()
+    });
+    fields["screenshots"] = json!(screenshots.wire());
     let created = request("session.create", fields).await?;
-    created["session_id"]
+    let id = created["session_id"]
         .as_str()
         .or_else(|| created["id"].as_str())
         .map(str::to_owned)
-        .ok_or_else(|| tr("shell-a-new-chat-could-not-be-started").into())
+        .ok_or_else(|| tr("shell-a-new-chat-could-not-be-started").to_owned())?;
+    if mode == ApprovalMode::FullSend
+        && let Err(error) = set_approval_mode(&id, mode).await
+    {
+        let _ = request("session.close", json!({"session_id": id})).await;
+        return Err(error);
+    }
+    Ok(id)
+}
+
+pub(super) async fn set_approval_mode(id: &str, mode: ApprovalMode) -> Result<(), String> {
+    let result = request(
+        "session.set_approval_mode",
+        json!({
+            "session_id": id,
+            "approval_mode": mode.wire(),
+            "confirm_full_send": mode == ApprovalMode::FullSend,
+        }),
+    )
+    .await?;
+    if result["approval_mode"] == mode.wire() {
+        Ok(())
+    } else {
+        Err(tr("shell-agent-approval-mode-unavailable").into())
+    }
 }
 
 /// The model a session uses, as the composer names it.
@@ -176,16 +208,19 @@ pub(crate) enum TurnEvent {
 pub(super) fn turn(
     session: String,
     prompt: String,
+    mode: ApprovalMode,
+    screenshots: Screenshots,
+    cancelled: tokio::sync::oneshot::Receiver<()>,
 ) -> impl iced::futures::Stream<Item = TurnEvent> {
     iced::stream::channel(
         64,
         async move |mut output: iced::futures::channel::mpsc::Sender<TurnEvent>| {
-            let result = async {
+            let exchange = async {
                 let mut stream = connect().await?;
                 stream
                     .write_all(&frame(
                         "turn.start",
-                        json!({"session_id": session, "prompt": prompt}),
+                        json!({"session_id": session, "prompt": prompt, "approval_mode": mode.wire(), "screenshots": screenshots.wire()}),
                     ))
                     .await
                     .map_err(|_| tr("shell-the-assistant-did-not-accept-the-message"))?;
@@ -204,8 +239,12 @@ pub(super) fn turn(
                             .to_owned());
                     }
                 }
-            }
-            .await;
+            };
+            let result = tokio::select! {
+                biased;
+                _ = cancelled => Ok("cancelled".to_owned()),
+                result = exchange => result,
+            };
             let _ = output.send(TurnEvent::Finished(result)).await;
         },
     )

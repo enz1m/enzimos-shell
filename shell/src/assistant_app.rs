@@ -1,6 +1,6 @@
 //! Assistant window for one harness session; closing cancels its turn and pending approvals.
 
-use enzui_shell::agent_harness;
+use enzui_shell::agent_harness::{self, ApprovalMode, Screenshots};
 use enzui_shell::i18n::{self, tr};
 use enzui_shell::tr;
 use enzui_theme::EnzTheme;
@@ -62,13 +62,17 @@ enum Message {
     Send,
     Opened(Result<String, String>),
     Event(Event),
-    Approve(String, bool),
-    Answered(Result<(), String>),
+    Approve(String, bool, bool),
+    ShowPermissions(bool),
+    ChooseApproval(ApprovalMode),
+    EnableFullSend,
+    ChooseScreenshots(Screenshots),
+    PermissionsChanged(Result<(ApprovalMode, Screenshots), String>),
     Resolved(String, bool, Result<(), String>),
     Cancel,
     New,
     Resume(String),
-    Resumed(Result<(String, Vec<Item>), String>),
+    Resumed(Result<(String, Vec<Item>, ApprovalMode, Screenshots), String>),
     Skill(String),
     Noop,
 }
@@ -78,6 +82,7 @@ struct Setup {
     roots: Vec<String>,
     model: String,
     provider: String,
+    approval_default: ApprovalMode,
     saved: Vec<(String, String)>,
     // `Err` when the harness could not list them; turns still work without.
     skills: Result<Vec<agent_harness::Skill>, String>,
@@ -97,6 +102,12 @@ struct Assistant {
     prompt: String,
     pending_prompt: Option<String>,
     running: bool,
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    approval_mode: ApprovalMode,
+    screenshots: Screenshots,
+    show_permissions: bool,
+    confirm_full_send: bool,
+    changing_permissions: bool,
     error: Option<String>,
     // Skills added to each turn, as listed: (name, sha256).
     chosen: Vec<(String, String)>,
@@ -133,6 +144,7 @@ fn ready() -> Task<Message> {
                 roots: summary.roots,
                 model: summary.model,
                 provider: summary.provider,
+                approval_default: summary.approval_default,
                 saved,
                 skills,
             })
@@ -141,13 +153,20 @@ fn ready() -> Task<Message> {
     )
 }
 
-fn turn(session: String, prompt: String, skills: Vec<(String, String)>) -> Task<Message> {
+fn turn(
+    session: String,
+    prompt: String,
+    skills: Vec<(String, String)>,
+    mode: ApprovalMode,
+    screenshots: Screenshots,
+    stop: tokio::sync::oneshot::Receiver<()>,
+) -> Task<Message> {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
     const MAX_FRAME: usize = 1 << 20;
     let stream = iced::stream::channel(
         64,
         async move |mut output: iced::futures::channel::mpsc::Sender<Event>| {
-            let result = async {
+            let exchange = async {
                 let stream = agent_harness::connect()?;
                 stream
                     .set_nonblocking(true)
@@ -155,7 +174,13 @@ fn turn(session: String, prompt: String, skills: Vec<(String, String)>) -> Task<
                 let mut stream = tokio::net::UnixStream::from_std(stream)
                     .map_err(|_| tr("shell-the-service-connection-failed"))?;
                 stream
-                    .write_all(&agent_harness::turn_request(&session, &prompt, &skills))
+                    .write_all(&agent_harness::turn_request(
+                        &session,
+                        &prompt,
+                        &skills,
+                        mode,
+                        screenshots,
+                    ))
                     .await
                     .map_err(|_| tr("shell-the-service-did-not-accept-the-turn"))?;
                 let mut reader = tokio::io::BufReader::new(&mut stream);
@@ -188,8 +213,12 @@ fn turn(session: String, prompt: String, skills: Vec<(String, String)>) -> Task<
                         ));
                     }
                 }
-            }
-            .await;
+            };
+            let result = tokio::select! {
+                biased;
+                _ = stop => Ok("cancelled".to_owned()),
+                result = exchange => result,
+            };
             let _ = output.send(Event::Finished(result)).await;
         },
     );
@@ -242,10 +271,65 @@ impl Assistant {
                 prompt: String::new(),
                 pending_prompt: None,
                 running: false,
+                stop: None,
+                approval_mode: ApprovalMode::Ask,
+                screenshots: Screenshots::Off,
+                show_permissions: false,
+                confirm_full_send: false,
+                changing_permissions: false,
                 error: None,
                 chosen: Vec::new(),
             },
             ready(),
+        )
+    }
+    fn start_turn(&mut self, session: String, prompt: String) -> Task<Message> {
+        let (stop, cancelled) = tokio::sync::oneshot::channel();
+        self.stop = Some(stop);
+        turn(
+            session,
+            prompt,
+            self.chosen.clone(),
+            self.approval_mode,
+            self.screenshots,
+            cancelled,
+        )
+    }
+
+    fn configure(&mut self, mode: ApprovalMode, screenshots: Screenshots) -> Task<Message> {
+        if self.running || self.changing_permissions {
+            return Task::none();
+        }
+        self.confirm_full_send = false;
+        self.error = None;
+        let Some(session_id) = self.session.clone() else {
+            self.approval_mode = mode;
+            self.screenshots = screenshots;
+            return Task::none();
+        };
+        let mode_changed = mode != self.approval_mode;
+        if !mode_changed && screenshots == self.screenshots {
+            return Task::none();
+        }
+        self.changing_permissions = true;
+        Task::perform(
+            blocking(move || {
+                if mode_changed {
+                    agent_harness::request(
+                        "session.set_approval_mode",
+                        json!({"session_id": session_id,
+                        "approval_mode": mode.wire(), "confirm_full_send": mode == ApprovalMode::FullSend}),
+                    )?;
+                } else {
+                    agent_harness::request(
+                        "session.set_screenshots",
+                        json!({"session_id": session_id,
+                        "screenshots": screenshots.wire()}),
+                    )?;
+                }
+                Ok((mode, screenshots))
+            }),
+            Message::PermissionsChanged,
         )
     }
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -259,6 +343,18 @@ impl Assistant {
                     self.items.push(Item::Note(
                         tr("shell-a-chosen-skill-changed-or-was-removed-choose-it-again").into(),
                     ));
+                }
+                if self.session.is_none()
+                    && self.items.is_empty()
+                    && let Ok(ready) = &setup
+                {
+                    self.confirm_full_send = ready.approval_default == ApprovalMode::FullSend;
+                    self.show_permissions = self.confirm_full_send;
+                    self.approval_mode = if self.confirm_full_send {
+                        ApprovalMode::Ask
+                    } else {
+                        ready.approval_default
+                    };
                 }
                 self.setup = Some(setup);
                 Task::none()
@@ -280,16 +376,23 @@ impl Assistant {
                 self.prompt = text;
                 Task::none()
             }
-            Message::Send if !self.running && !self.prompt.trim().is_empty() => {
+            Message::Send
+                if !self.running
+                    && !self.changing_permissions
+                    && !self.confirm_full_send
+                    && matches!(self.setup, Some(Ok(_)))
+                    && !self.prompt.trim().is_empty() =>
+            {
                 let prompt = std::mem::take(&mut self.prompt);
                 self.items.push(Item::User(
                     prompt.clone(),
                     self.chosen.iter().map(|(name, _)| name.clone()).collect(),
                 ));
                 self.running = true;
+                self.show_permissions = false;
                 self.error = None;
                 match self.session.clone() {
-                    Some(session) => turn(session, prompt, self.chosen.clone()),
+                    Some(session) => self.start_turn(session, prompt),
                     None => {
                         let Some(Ok(setup)) = &self.setup else {
                             return Task::none();
@@ -305,19 +408,41 @@ impl Assistant {
                             return Task::none();
                         }
                         let (model, provider) = (setup.model.clone(), setup.provider.clone());
+                        let mode = self.approval_mode;
+                        let screenshots = self.screenshots;
                         self.pending_prompt = Some(prompt);
                         Task::perform(
                             blocking(move || {
+                                let initial = if mode == ApprovalMode::FullSend {
+                                    ApprovalMode::Ask
+                                } else {
+                                    mode
+                                };
                                 let reply = agent_harness::request(
                                     "session.create",
-                                    json!({"workspace": workspace, "model": model, "provider": provider}),
+                                    json!({
+                                        "workspace": workspace, "model": model, "provider": provider,
+                                        "approval_mode": initial.wire(), "screenshots": screenshots.wire(),
+                                    }),
                                 )?;
-                                reply["session_id"]
-                                    .as_str()
-                                    .map(str::to_owned)
-                                    .ok_or_else(|| {
-                                        tr("shell-the-service-did-not-open-a-session").to_owned()
-                                    })
+                                let id = reply["session_id"].as_str().ok_or_else(|| {
+                                    tr("shell-the-service-did-not-open-a-session").to_owned()
+                                })?;
+                                if mode == ApprovalMode::FullSend
+                                    && let Err(error) = agent_harness::request(
+                                        "session.set_approval_mode",
+                                        json!({
+                                            "session_id": id, "approval_mode": mode.wire(), "confirm_full_send": true,
+                                        }),
+                                    )
+                                {
+                                    let _ = agent_harness::request(
+                                        "session.close",
+                                        json!({"session_id": id}),
+                                    );
+                                    return Err(error);
+                                }
+                                Ok(id.to_owned())
                             }),
                             Message::Opened,
                         )
@@ -328,8 +453,12 @@ impl Assistant {
             Message::Opened(Ok(session)) => {
                 self.session = Some(session.clone());
                 match self.pending_prompt.take() {
-                    Some(prompt) => turn(session, prompt, self.chosen.clone()),
-                    None => Task::none(),
+                    Some(prompt) => self.start_turn(session, prompt),
+                    None => {
+                        self.running = false;
+                        self.items.push(Item::Note(tr("shell-cancelled").into()));
+                        Task::none()
+                    }
                 }
             }
             Message::Opened(Err(error)) => {
@@ -344,6 +473,7 @@ impl Assistant {
             }
             Message::Event(Event::Finished(result)) => {
                 self.running = false;
+                self.stop = None;
                 for item in &mut self.items {
                     if let Item::Approval { decision, .. } = item
                         && matches!(decision, Decision::Pending | Decision::Sending(_))
@@ -366,7 +496,7 @@ impl Assistant {
                 }
                 Task::none()
             }
-            Message::Approve(request, allow) => {
+            Message::Approve(request, allow, remember) => {
                 let Some(session) = self.session.clone() else {
                     return Task::none();
                 };
@@ -392,7 +522,7 @@ impl Assistant {
                 let id = request.clone();
                 Task::perform(
                     blocking(move || {
-                        agent_harness::request("approval.resolve", json!({"session_id": session, "request_id": request, "binding": binding, "allow": allow})).map(drop)
+                        agent_harness::request("approval.resolve", json!({"session_id": session, "request_id": request, "binding": binding, "allow": allow, "remember": remember})).map(drop)
                     }),
                     move |result| Message::Resolved(id.clone(), allow, result),
                 )
@@ -419,25 +549,49 @@ impl Assistant {
                 }
                 Task::none()
             }
-            Message::Answered(result) => {
-                if let Err(error) = result {
-                    self.error = Some(error);
+            Message::ShowPermissions(show) => {
+                self.show_permissions = show;
+                if !show {
+                    self.confirm_full_send = false;
+                }
+                Task::none()
+            }
+            Message::ChooseApproval(ApprovalMode::FullSend)
+                if self.approval_mode != ApprovalMode::FullSend =>
+            {
+                self.confirm_full_send = true;
+                Task::none()
+            }
+            Message::ChooseApproval(mode) => self.configure(mode, self.screenshots),
+            Message::EnableFullSend if self.confirm_full_send => {
+                self.configure(ApprovalMode::FullSend, self.screenshots)
+            }
+            Message::EnableFullSend => Task::none(),
+            Message::ChooseScreenshots(screenshots) => {
+                self.configure(self.approval_mode, screenshots)
+            }
+            Message::PermissionsChanged(result) => {
+                self.changing_permissions = false;
+                match result {
+                    Ok((mode, screenshots)) => {
+                        self.approval_mode = mode;
+                        self.screenshots = screenshots;
+                    }
+                    Err(error) => self.error = Some(error),
                 }
                 Task::none()
             }
             Message::Cancel => {
-                let Some(session) = self.session.clone() else {
-                    return Task::none();
-                };
-                Task::perform(
-                    blocking(move || {
-                        agent_harness::request("turn.cancel", json!({"session_id": session}))
-                            .map(drop)
-                    }),
-                    Message::Answered,
-                )
+                if let Some(stop) = self.stop.take() {
+                    let _ = stop.send(());
+                }
+                self.pending_prompt = None;
+                Task::none()
             }
-            Message::New if !self.running => {
+            Message::New if !self.running && !self.changing_permissions => {
+                self.screenshots = Screenshots::Off;
+                self.show_permissions = false;
+                self.confirm_full_send = false;
                 let closing = self.session.take();
                 self.items.clear();
                 self.error = None;
@@ -454,38 +608,59 @@ impl Assistant {
                 close.chain(ready())
             }
             Message::New => Task::none(),
-            Message::Resume(session) if !self.running && self.session.is_none() => Task::perform(
-                blocking(move || {
-                    agent_harness::request("session.resume", json!({"session_id": session}))?;
-                    let saved =
-                        agent_harness::request("session.export", json!({"session_id": session}))?;
-                    let items = saved["messages"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|message| {
-                            let content = message["content"]
-                                .as_str()
-                                .filter(|text| !text.trim().is_empty())?
-                                .to_owned();
-                            match message["role"].as_str()? {
-                                "user" => Some(Item::User(content, Vec::new())),
-                                "assistant" => Some(Item::Reply(content)),
-                                _ => None,
-                            }
-                        })
-                        .collect();
-                    Ok((session, items))
-                }),
-                Message::Resumed,
-            ),
+            Message::Resume(session)
+                if !self.running && !self.changing_permissions && self.session.is_none() =>
+            {
+                self.changing_permissions = true;
+                Task::perform(
+                    blocking(move || {
+                        let resumed = agent_harness::request(
+                            "session.resume",
+                            json!({"session_id": session}),
+                        )?;
+                        let saved = agent_harness::request(
+                            "session.export",
+                            json!({"session_id": session}),
+                        )?;
+                        let items = saved["messages"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|message| {
+                                let content = message["content"]
+                                    .as_str()
+                                    .filter(|text| !text.trim().is_empty())?
+                                    .to_owned();
+                                match message["role"].as_str()? {
+                                    "user" => Some(Item::User(content, Vec::new())),
+                                    "assistant" => Some(Item::Reply(content)),
+                                    _ => None,
+                                }
+                            })
+                            .collect();
+                        Ok((
+                            session,
+                            items,
+                            ApprovalMode::read(&resumed["approval_mode"]),
+                            Screenshots::read(&resumed["screenshots"]),
+                        ))
+                    }),
+                    Message::Resumed,
+                )
+            }
             Message::Resume(_) => Task::none(),
-            Message::Resumed(Ok((session, items))) => {
+            Message::Resumed(Ok((session, items, mode, screenshots))) => {
+                self.changing_permissions = false;
+                self.show_permissions = false;
+                self.confirm_full_send = false;
+                self.approval_mode = mode;
+                self.screenshots = screenshots;
                 self.session = Some(session);
                 self.items = items;
                 Task::none()
             }
             Message::Resumed(Err(error)) => {
+                self.changing_permissions = false;
                 self.error = Some(error);
                 Task::none()
             }
@@ -620,8 +795,17 @@ impl Assistant {
                     card = card.push(match decision {
                         Decision::Pending => row![
                             iced::widget::space().width(Length::Fill),
-                            enz_button(enzui_shell::i18n::tr("shell-deny"), Message::Approve(request.clone(), false)).kind(ButtonKind::Secondary).into_element(),
-                            enz_button(tr("shell-allow-once"), Message::Approve(request.clone(), true)).kind(ButtonKind::Primary).enabled(*complete).into_element(),
+                            enz_button(enzui_shell::i18n::tr("shell-deny"), Message::Approve(request.clone(), false, false)).kind(ButtonKind::Secondary).into_element(),
+                            if tool == "screenshot" {
+                                iced::widget::space().width(Length::Shrink).into()
+                            } else {
+                                enz_button(tr("shell-agent-allow-for-session"), Message::Approve(request.clone(), true, true))
+                                    .kind(ButtonKind::Secondary).enabled(*complete).into_element()
+                            },
+                            enz_button(
+                                tr(if tool == "screenshot" { "shell-agent-allow-screenshots" } else { "shell-allow-once" }),
+                                Message::Approve(request.clone(), true, false)
+                            ).kind(ButtonKind::Primary).enabled(*complete).into_element(),
                         ]
                         .spacing(8)
                         .into(),
@@ -644,16 +828,59 @@ impl Assistant {
         let action = if self.running {
             enz_button(tr("shell-cancel"), Message::Cancel).kind(ButtonKind::Secondary).into_element()
         } else {
-            enz_button(tr("shell-send"), Message::Send).kind(ButtonKind::Primary).enabled(matches!(self.setup, Some(Ok(_))) && !self.prompt.trim().is_empty()).into_element()
+            enz_button(tr("shell-send"), Message::Send).kind(ButtonKind::Primary).enabled(matches!(self.setup, Some(Ok(_))) && !self.confirm_full_send && !self.changing_permissions && !self.prompt.trim().is_empty()).into_element()
         };
         let header = row![
             enz_text(enzui_shell::i18n::tr("shell-assistant")).size(TextSize::Title3).into_element(),
             iced::widget::space().width(Length::Fill),
-            enz_button(tr("shell-new-session"), Message::New).kind(ButtonKind::Quiet).size(ButtonSize::Sm).icon("plus").enabled(!self.running).into_element(),
+            if self.approval_mode == ApprovalMode::FullSend {
+                enz_text(ApprovalMode::FullSend.label()).color(palette.danger).into_element()
+            } else {
+                iced::widget::space().width(Length::Shrink).into()
+            },
+            enz_button(tr("shell-new-session"), Message::New).kind(ButtonKind::Quiet).size(ButtonSize::Sm).icon("plus").enabled(!self.running && !self.changing_permissions).into_element(),
         ]
         .align_y(iced::Alignment::Center)
         .padding([10, 16]);
         let composer = row![container(field).width(Length::Fill), action].spacing(8).align_y(iced::Alignment::Center).padding([10, 16]);
+        let permissions: Element<'_, Message> = if self.show_permissions {
+            if self.confirm_full_send {
+                column![
+                    muted(tr("shell-agent-full-send-warning").into()),
+                    row![
+                        enz_button(tr("shell-cancel"), Message::ShowPermissions(false)).kind(ButtonKind::Secondary).into_element(),
+                        enz_button(tr("shell-agent-confirm-full-send"), Message::EnableFullSend).kind(ButtonKind::Accent).into_element(),
+                    ].spacing(8),
+                ].spacing(6).padding([6, 16]).into()
+            } else {
+                let modes = ApprovalMode::ALL.into_iter().map(|mode| {
+                    enz_filter_chip(mode.label(), self.approval_mode == mode, Message::ChooseApproval(mode))
+                        .enabled(!self.changing_permissions).into_element()
+                });
+                let access = Screenshots::ALL.into_iter().map(|access| {
+                    enz_filter_chip(access.label(), self.screenshots == access, Message::ChooseScreenshots(access))
+                        .enabled(!self.changing_permissions).into_element()
+                });
+                column![
+                    iced::widget::row(modes).spacing(6).wrap(),
+                    muted(tr("shell-agent-screenshots-caption").into()),
+                    iced::widget::row(access).spacing(6).wrap(),
+                ].spacing(6).padding([6, 16]).into()
+            }
+        } else {
+            iced::widget::space().height(0).into()
+        };
+        let mode = container(row![
+            enz_button(self.approval_mode.label(), Message::ShowPermissions(!self.show_permissions))
+                .kind(if self.approval_mode == ApprovalMode::FullSend { ButtonKind::Secondary } else { ButtonKind::Quiet })
+                .enabled(!self.running && !self.changing_permissions)
+                .size(ButtonSize::Sm).into_element(),
+            if self.screenshots != Screenshots::Off {
+                muted(self.screenshots.label().to_owned())
+            } else {
+                iced::widget::space().width(Length::Shrink).into()
+            }
+        ].spacing(8).align_y(iced::Alignment::Center)).padding([0, 16]);
         let skills: Element<'_, Message> = match &self.setup {
             Some(Ok(Setup { skills: Ok(skills), .. })) if !skills.is_empty() => {
                 let full = self.chosen.len() >= agent_harness::MAX_TURN_SKILLS;
@@ -675,7 +902,7 @@ impl Assistant {
             Some(Ok(Setup { skills: Err(error), .. })) => container(muted(tr!("shell-skills-are-unavailable-2", "arg0" => error.clone()))).padding([6, 16]).into(),
             _ => iced::widget::space().height(0).into(),
         };
-        container(column![header, transcript, skills, composer])
+        container(column![header, transcript, skills, permissions, mode, composer])
             .width(Length::Fill)
             .height(Length::Fill)
             .style(move |_| container::Style { background: Some(palette.background.into()), ..Default::default() })

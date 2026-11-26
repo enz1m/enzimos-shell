@@ -823,21 +823,16 @@ def portal_registration(runtime, binaries):
     (data / "xdg-desktop-portal/portals").mkdir(parents=True, mode=0o700)
     (data / "dbus-1/services").mkdir(parents=True, mode=0o700)
     (data / "xdg-desktop-portal/portals/enzui.portal").write_bytes((ROOT / "config/portal/enzui.portal").read_bytes())
-    routes = (ROOT / "config/portal/enzui-portals.conf").read_text()
+    (data / "xdg-desktop-portal/enzui-portals.conf").write_bytes((ROOT / "config/portal/enzui-portals.conf").read_bytes())
     (data / "dbus-1/services/org.freedesktop.impl.portal.desktop.enzui.service").write_text(
         f"[D-BUS Service]\nName=org.freedesktop.impl.portal.desktop.enzui\nExec={portal}\n")
-    hyprland = (binaries / "xdg-desktop-portal-enzui-remote").resolve()
-    if hyprland.is_file() and os.access(hyprland, os.X_OK):
-        name = "org.freedesktop.impl.portal.desktop.hyprland"
-        interfaces = tuple("org.freedesktop.impl.portal." + interface for interface in
-                           ("Screenshot", "ScreenCast", "GlobalShortcuts", "InputCapture"))
-        (data / "xdg-desktop-portal/portals/hyprland.portal").write_text(
-            f"[portal]\nDBusName={name}\nInterfaces={';'.join(interfaces)};\nUseIn=enzUI;Hyprland;\n")
-        (data / f"dbus-1/services/{name}.service").write_text(
-            f"[D-BUS Service]\nName={name}\nExec={hyprland}\n")
-        for interface in interfaces:
-            routes = routes.replace(f"{interface}=enzui-remote;", f"{interface}=hyprland;")
-    (data / "xdg-desktop-portal/enzui-portals.conf").write_text(routes)
+    remote = (binaries / "xdg-desktop-portal-enzui-remote").resolve()
+    if remote.is_file() and os.access(remote, os.X_OK):
+        description = ROOT / "config/portal/enzui-remote.portal"
+        (data / "xdg-desktop-portal/portals/enzui-remote.portal").write_bytes(description.read_bytes())
+        bus = "org.freedesktop.impl.portal.desktop.enzuiremote"
+        (data / f"dbus-1/services/{bus}.service").write_text(
+            f"[D-BUS Service]\nName={bus}\nExec=/usr/bin/env XDPH_BUS_NAME={bus} {remote}\n")
     return data
 
 def preview_data_dirs(portal_data):

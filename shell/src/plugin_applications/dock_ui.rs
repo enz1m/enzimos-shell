@@ -1015,6 +1015,14 @@ impl Shell {
         } else {
             f32::from(p.icon_size)
         };
+        use iced::widget::tooltip::Position as Tooltip;
+        let tooltip = match p.position {
+            Position::Left => Tooltip::Right,
+            Position::Right => Tooltip::Left,
+            Position::Top => Tooltip::Bottom,
+            Position::Bar if self.bar == enzui_shell::settings::BarEdge::Top => Tooltip::Bottom,
+            _ => Tooltip::Top,
+        };
         let mut buttons = Vec::new();
         for entry in &self.dock.entries {
             let group = &entry.group;
@@ -1190,11 +1198,7 @@ impl Shell {
             let button: Element<'_, Message> = if running && p.hover_previews {
                 button.into()
             } else {
-                enzui_widgets::tooltip::enz_tooltip(
-                    button.into(),
-                    group.title.clone(),
-                    iced::widget::tooltip::Position::Top,
-                )
+                enzui_widgets::tooltip::enz_tooltip(button.into(), group.title.clone(), tooltip)
             };
             buttons.push(
                 enz_context_menu_host(button, &entry.model, &self.dock.closed, move |event| {

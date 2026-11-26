@@ -82,7 +82,8 @@ return restores only outputs the idle worker requested off and re-arms timers.
 
 The shell chooses the top-left physical output: lowest y, then x, then compositor
 ID. `ENZREMOTE-*` loan outputs are excluded from shell placement and wallpaper.
-Other desktop outputs receive wallpaper without shell reservations.
+Other desktop outputs receive a static backdrop without shell reservations.
+The live wallpaper renderer follows the primary output.
 
 Startup uses conservative pixel-based scaling rather than physical-size/PPI
 metadata. Saved settings apply afterwards. Logical geometry accounts for scale
@@ -91,8 +92,13 @@ survive client disconnect and later rule refreshes.
 
 New floating clients fit within their output's work area after their first
 committed geometry. Existing clients retain their geometry unless an output change
-strands them outside it. Shell, sidebar-held, pinned and fullscreen windows retain
-their dedicated policies. Tiling restores saved floating geometry when disabled.
+strands them outside it. Tiling restores saved floating geometry when disabled.
+
+When an output disconnects, its workspaces move to a surviving output. If the
+disconnected output had focus, its active workspace is shown on the survivor.
+Reconnecting an output restores its remembered workspaces and active workspace.
+Pinned windows stay on the survivor. Windows held by a removed sidebar return to
+the active desktop of their surviving output.
 
 Output removal, resolution, rotation or scale changes trigger shell relocation without
 restarting the compositor or application sessions. Lock surfaces cover every

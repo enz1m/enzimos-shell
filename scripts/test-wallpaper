@@ -228,6 +228,66 @@ class WallpaperTests(unittest.TestCase):
         status = json.loads((profile / "wallpaper-status.json").read_text())
         self.assertEqual((status["request"]["color"], status["error"]), ("#445566", None))
 
+    def test_primary_change_relocates_live_wallpaper_and_keeps_the_shared_backdrop(self):
+        runtime, profile, binaries, scenes = (self.root / name for name in ("runtime", "profile", "bin", "scenes"))
+        for directory in (runtime, profile, binaries, scenes / "scene"):
+            directory.mkdir(mode=0o700, parents=True)
+        (scenes / "scene/scene.toml").touch()
+        started = self.root / "started"
+        for name, output in (("enzui-wallpaper", "backdrop"), ("enzwall", "$4")):
+            renderer = binaries / name
+            renderer.write_text(f'#!/bin/sh\nprintf "%s %s\\n" "$$" "{output}" >> "{started}"\necho ready\nexec sleep 30\n')
+            renderer.chmod(0o700)
+        settings = profile / "settings.json"
+        worker.platform.publish(settings, {"wallpaper": {"kind": "live", "scene": "scene"}})
+        worker.platform.publish(runtime / "launch.json", {"runtime": str(runtime), "settings": str(settings),
+                                                         "shell_bin_dir": str(binaries), "xdg_runtime": str(runtime)})
+        worker.platform.publish(runtime / "output.json", {"output": "LEFT"})
+        compositor = subprocess.Popen(["sleep", "30"])
+        self.addCleanup(lambda: (compositor.kill(), compositor.wait()))
+        identity = {"pid": compositor.pid, "start": worker.platform.start_ticks(compositor.pid), "display": "wayland-owned", "instance": "owned"}
+
+        def renderers():
+            return [line.split() for line in started.read_text().splitlines()] if started.exists() else []
+
+        def layers(*_):
+            return json.dumps({
+                output: {"levels": {"0": [{"pid": int(pid), "w": 1, "h": 1} for pid, target in renderers()
+                                          if target in (output, "backdrop")]}}
+                for output in ("LEFT", "RIGHT")
+            })
+
+        def relocate():
+            status = profile / "wallpaper-status.json"
+            for count in (2, 3):
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    children = renderers()
+                    if len(children) == count and status.exists() and json.loads(status.read_text())["pid"] == int(children[-1][0]):
+                        break
+                    time.sleep(.02)
+                if count == 2:
+                    worker.platform.publish(runtime / "output.json", {"output": "RIGHT"})
+            compositor.kill()
+
+        driver = threading.Thread(target=relocate)
+        handlers = signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)
+        try:
+            with mock.patch.dict(os.environ, {"ENZUI_HYPR_RUNROOT": str(runtime), "WAYLAND_DISPLAY": "wayland-owned"}), \
+                    mock.patch.object(worker, "LIVE_SCENES", scenes), \
+                    mock.patch.object(worker.platform, "compositor", return_value=identity), \
+                    mock.patch.object(worker.platform, "control", side_effect=layers):
+                driver.start()
+                worker.run()
+        finally:
+            driver.join()
+            signal.set_wakeup_fd(-1)
+            signal.signal(signal.SIGTERM, handlers[0])
+            signal.signal(signal.SIGINT, handlers[1])
+        self.assertEqual([output for _, output in renderers()], ["backdrop", "LEFT", "RIGHT"])
+        for pid, _ in renderers():
+            self.assertFalse(Path(f"/proc/{pid}").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

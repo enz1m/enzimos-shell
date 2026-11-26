@@ -128,9 +128,9 @@ def live_request(path, line):
     return json.loads(reply or b"{}")
 
 
-def live_arguments(value, config, identity, socket_path):
+def live_arguments(value, config, identity, output, socket_path):
     return [str(Path(config["shell_bin_dir"]) / "enzwall"), "run", str(LIVE_SCENES / value["scene"]),
-            "--output", platform.desktop_output(config), "--namespace", "enzui-live-wallpaper", "--smooth", value["motion"],
+            "--output", output, "--namespace", "enzui-live-wallpaper", "--smooth", value["motion"],
             "--socket", str(socket_path),
             *([] if value["pause_idle"] else ["--idle-timeout", "0"]),
             "--hyprland", str(Path(config["xdg_runtime"]) / "hypr" / identity["instance"]), "--ready"] + (["--hide-clock"] if value["hide_clock"] else []) + (["--hide-date"] if value["hide_date"] else [])
@@ -198,6 +198,7 @@ def run():
     status_path = settings.with_name("wallpaper-status.json")
     stopping = False
     current = None
+    backdrop = None
     requested = None
     unreadable = False
     parsed = None
@@ -206,7 +207,7 @@ def run():
     ended_logs = set()
     # Use per-renderer control sockets to avoid collisions during replacement.
     sockets = {}
-    shown_scene = {}
+    shown_scene, shown_output = {}, {}
     shown_idle = {}
     serial = [0]
 
@@ -229,6 +230,7 @@ def run():
         logs.pop(child.pid, None)
         ended_logs.discard(child.pid)
         shown_scene.pop(child.pid, None)
+        shown_output.pop(child.pid, None)
         shown_idle.pop(child.pid, None)
         live_socket = sockets.pop(child.pid, None)
         if live_socket is not None:
@@ -262,10 +264,10 @@ def run():
             platform.publish(status_path, value)
             last_status = value
 
-    def start(value):
+    def start(value, output, reuse_live=True):
         identity_now = platform.compositor(config)
         live = value["kind"] == "live"
-        if live and current is not None and current.poll() is None and current.pid in sockets:
+        if live and reuse_live and current is not None and current.poll() is None and shown_output.get(current.pid) == output:
             # Reuse a live renderer for scene crossfades and motion-only changes.
             try:
                 same = shown_scene.get(current.pid) == value["scene"]
@@ -283,7 +285,7 @@ def run():
         if live:
             serial[0] += 1
             live_socket = runtime / f"enzwall-{serial[0]}.sock"
-            args = live_arguments(value, config, identity_now, live_socket)
+            args = live_arguments(value, config, identity_now, output, live_socket)
         else:
             args = arguments(value, ROOT / "assets/wallpaper.png", Path(config["shell_bin_dir"]) / "enzui-wallpaper", image, animate)
         try:
@@ -300,6 +302,7 @@ def run():
         if live:
             sockets[candidate.pid] = live_socket
             shown_scene[candidate.pid] = value["scene"]
+            shown_output[candidate.pid] = output
             shown_idle[candidate.pid] = (value["pause_idle"],value["hide_clock"],value["hide_date"],value.get("language", "auto"))
         logs[candidate.pid] = bytearray()
         os.set_blocking(candidate.stderr.fileno(), False)
@@ -320,7 +323,7 @@ def run():
                     except BlockingIOError:
                         pass
                 layers = json.loads(platform.control(config, identity, "-j", "layers"))
-                levels = layers.get(platform.desktop_output(config), {}).get("levels", {})
+                levels = layers.get(output, {}).get("levels", {})
                 mapped = any(layer.get("pid") == candidate.pid and layer.get("w", 0) > 0 and layer.get("h", 0) > 0 for group in levels.values() for layer in group)
                 if mapped and ready and not failed(candidate):
                     return candidate
@@ -334,7 +337,7 @@ def run():
     def pause(timeout):
         """Sleeps until the settings may have changed, the compositor or renderer ends, the
         renderer logs, a stop is requested or `timeout` passes."""
-        if changes.fd is None:
+        if any(watch.fd is None for watch in watches):
             timeout = min(timeout, SETTINGS_POLL_INTERVAL)
         deadline = time.monotonic() + timeout
         while not stopping:
@@ -344,8 +347,10 @@ def run():
                 processes.append((current.pid, None))
                 if current.pid in logs and current.pid not in ended_logs and len(logs[current.pid]) <= 16384:
                     readable.append(current.stderr.fileno())
-            if changes.fd is not None:
-                readable.append(changes.fd)
+            if backdrop is not None and backdrop.poll() is None:
+                processes.append((backdrop.pid, None))
+            watched = {watch.fd: watch for watch in watches if watch.fd is not None}
+            readable.extend(watched)
             ready = platform.wait_for_exit(processes, max(0, deadline - time.monotonic()), readable)
             if signal_read in ready:
                 while True:
@@ -353,7 +358,8 @@ def run():
                         os.read(signal_read, 64)
                     except BlockingIOError:
                         break
-            if ready == [changes.fd] and not changes.changed():
+            changes_seen = [watched[fd].changed() for fd in ready if fd in watched]
+            if changes_seen and len(changes_seen) == len(ready) and not any(changes_seen):
                 continue
             return
 
@@ -361,16 +367,22 @@ def run():
     signal.set_wakeup_fd(signal_write)
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    changes = SettingsChanges(settings)
+    watches = [SettingsChanges(settings)]
+    if not config.get("output"):
+        watches.append(SettingsChanges(runtime / "output.json"))
     try:
         while not stopping and platform.live(identity["pid"], identity["start"]):
             try:
+                output = platform.desktop_output(config)
                 try:
                     info = settings.stat()
                     seen = (info.st_ino, info.st_mtime_ns, info.st_size, info.st_mode)
                 except FileNotFoundError:
                     seen = None
-                if seen == parsed and not unreadable and current is not None and current.poll() is None:
+                live = requested is not None and requested["kind"] == "live"
+                output_changed = live and current is not None and current.pid in sockets and shown_output[current.pid] != output
+                backdrop_lost = live and current is not None and current.pid in sockets and (backdrop is None or backdrop.poll() is not None)
+                if seen == parsed and not unreadable and current is not None and current.poll() is None and not output_changed and not backdrop_lost:
                     if failed(current):
                         status(requested, "Wallpaper rendering failed; choose the image again or retry")
                     pause(SETTINGS_SAFETY_INTERVAL)
@@ -385,24 +397,37 @@ def run():
                 if unreadable and wanted == requested and current is not None and current.poll() is None:
                     status(wanted, None)
                 unreadable = False
-                if wanted != requested or current is None or current.poll() is not None:
+                if wanted != requested or current is None or current.poll() is not None or output_changed or backdrop_lost:
                     requested = wanted
                     try:
-                        candidate = start(wanted)
+                        replaced_backdrop = False
+                        if wanted["kind"] == "live" and (current is None or current.pid in sockets or current.poll() is not None):
+                            if backdrop is None or backdrop.poll() is not None:
+                                retire(backdrop)
+                                backdrop = start(preferences({}), output)
+                                replaced_backdrop = True
+                        candidate = start(wanted, output, reuse_live=not replaced_backdrop)
                         previous, current = current, candidate
                         if previous is not candidate:
-                            retire(previous)
+                            if wanted["kind"] == "live" and previous is not None and previous.pid not in sockets and previous.poll() is None:
+                                retire(backdrop)
+                                backdrop = previous
+                            else:
+                                retire(previous)
+                        if wanted["kind"] != "live":
+                            retire(backdrop)
+                            backdrop = None
                         status(wanted, None)
                     except Exception as error:
                         if current is None:
-                            current = start(preferences({}))
+                            current, backdrop = (backdrop, None) if backdrop is not None else (start(preferences({}), output), None)
                         status(wanted, str(error))
                 elif failed(current):
                     status(wanted, "Wallpaper rendering failed; choose the image again or retry")
             except (OSError, ValueError, RuntimeError):
                 if current is None:
                     try:
-                        current = start(preferences({}))
+                        current = start(preferences({}), platform.desktop_output(config))
                     except Exception:
                         pass
                 unreadable = True
@@ -413,7 +438,9 @@ def run():
                 time.sleep(.1)
     finally:
         retire(current)
-        changes.close()
+        retire(backdrop)
+        for watch in watches:
+            watch.close()
 
 
 if __name__ == "__main__":

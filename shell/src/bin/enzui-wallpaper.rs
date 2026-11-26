@@ -187,7 +187,6 @@ struct Wallpaper {
     settings: Preferences,
     screens: Vec<Screen>,
     announced: bool,
-    closed: bool,
 }
 
 impl Wallpaper {
@@ -387,6 +386,7 @@ impl OutputHandler for Wallpaper {
         output: wl_output::WlOutput,
     ) {
         self.screens.retain(|s| s.output != output);
+        self.announce();
     }
 }
 
@@ -399,9 +399,7 @@ impl ShmHandler for Wallpaper {
 impl LayerShellHandler for Wallpaper {
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
         self.screens.retain(|s| &s.layer != layer);
-        if self.screens.is_empty() {
-            self.closed = true;
-        }
+        self.announce();
     }
     fn configure(
         &mut self,
@@ -471,12 +469,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings,
         screens: Vec::new(),
         announced: false,
-        closed: false,
     };
-    while !state.closed {
+    loop {
         queue.blocking_dispatch(&mut state)?;
     }
-    Ok(())
 }
 
 #[cfg(test)]

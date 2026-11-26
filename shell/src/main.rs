@@ -1064,6 +1064,7 @@ impl Shell {
             | Message::ToggleTheme
             | Message::DragMaximizeReady(..)
             | Message::TitleBarThemeApplied(..)
+            | Message::CompositorConfigReloaded
             | Message::ControlsAnchor(..)
             | Message::ControlsPrepared(..)
             | Message::ControlsReflowed(..)

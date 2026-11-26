@@ -768,6 +768,10 @@ impl Shell {
                 self.update_frame();
                 self.save_setting(SettingChange::Light(self.light))
             }
+            Message::CompositorConfigReloaded => {
+                self.titlebar_theme = None;
+                self.titlebar_theme()
+            }
             Message::TitleBarThemeApplied(result) => {
                 if let Err(error) = result {
                     eprintln!("title bar theme: {error}");

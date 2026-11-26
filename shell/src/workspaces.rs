@@ -127,12 +127,18 @@ pub fn window_events(socket: Option<std::path::PathBuf>) -> impl iced::futures::
     event_stream(&(socket, Events::Windows))
 }
 
+/// Emits on compositor config reload and when the event socket connects.
+pub fn config_reloads(socket: Option<std::path::PathBuf>) -> iced::Subscription<()> {
+    iced::Subscription::run_with((socket, Events::Config), event_stream)
+}
+
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Events {
     Desktop,
     Focus,
     Windows,
     Dock,
+    Config,
 }
 
 fn event_stream(
@@ -146,6 +152,7 @@ fn event_stream(
         Events::Focus => focus_event,
         Events::Windows => window_event,
         Events::Dock => dock_event,
+        Events::Config => |line| line == b"configreloaded>>\n",
     };
     iced::stream::channel(4, async move |mut output| {
         let Some(socket) = socket else {

@@ -97,6 +97,8 @@ impl Shell {
             self.media_subscription(),
             self.search_subscription(),
             self.dock_subscription(),
+            enzui_shell::workspaces::config_reloads(self.compositor.event_socket())
+                .map(|()| Message::CompositorConfigReloaded),
             self.compositor
                 .desktop_changes()
                 .map(|()| Message::DesktopChanged),

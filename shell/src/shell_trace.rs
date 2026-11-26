@@ -107,6 +107,7 @@ impl Message {
             Self::SettingsLaunched(..) => "SettingsLaunched",
             Self::DragMaximizeReady(..) => "DragMaximizeReady",
             Self::TitleBarThemeApplied(..) => "TitleBarThemeApplied",
+            Self::CompositorConfigReloaded => "CompositorConfigReloaded",
             Self::ControlConnections(..) => "ControlConnections",
             Self::RefreshAudioDevices => "RefreshAudioDevices",
             Self::AudioDevices(..) => "AudioDevices",

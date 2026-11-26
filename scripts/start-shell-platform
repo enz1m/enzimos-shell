@@ -800,8 +800,8 @@ def privileged_clients(binaries, dev_tools=None):
     that ask before sharing (enzUI's portal fork for screenshots, with the grim
     and hyprpicker it starts itself, screen sharing and, after its own dialog,
     remote control), Settings, Welcome and the Phone Link host for
-    compositor control, Fcitx5 and dictation as input methods, and for disposable dev
-    previews only, tools named explicitly."""
+    compositor control, Fcitx5 as input method, Dictation for text commits,
+    and tools named explicitly for disposable previews."""
     remote = str((binaries / "xdg-desktop-portal-enzui-remote").resolve())
     values = {"ENZUI_PRIVILEGED_CLIENTS": "enforce", "ENZUI_SHELL_EXE": str((binaries / "enzui-shell").resolve()),
               "ENZUI_PORTAL_EXES": remote,
@@ -809,7 +809,8 @@ def privileged_clients(binaries, dev_tools=None):
               "ENZUI_PORTAL_HELPER_EXES": "/usr/bin/grim:/usr/bin/hyprpicker",
               "ENZUI_CONTROL_EXES": ":".join([*(str((binaries / name).resolve()) for name in ("enzui-settings", "enzui-welcome")),
                                               PHONE_LINK_HOST]),
-              "ENZUI_IME_EXES": "/usr/bin/fcitx5:/usr/bin/enzimos-dictation"}
+              "ENZUI_IME_EXES": "/usr/bin/fcitx5",
+              "ENZUI_TEXT_COMMIT_EXES": "/usr/bin/enzimos-dictation"}
     if dev_tools:
         values["ENZUI_DEV_PRIVILEGED_EXES"] = dev_tools
     return values

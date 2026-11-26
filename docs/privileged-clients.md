@@ -2,8 +2,8 @@
 
 With `ENZUI_PRIVILEGED_CLIENTS=enforce`, the compositor filters screen-capture,
 virtual-input, input-method and input-capture globals, restricts compositor
-control requests and reserves `dev.enzui.*` application ids. The implementation
-lives in the [Hyprland fork](https://github.com/enz1m/enzim-hyprland).
+control requests and reserves `dev.enzui.*` application ids. The compositor also
+filters the text-commit global in every session. The implementation lives in the [Hyprland fork](https://github.com/enz1m/enzim-hyprland).
 
 ## Threat model
 
@@ -23,7 +23,8 @@ and binary tree. Portal service-instance attestation is separate from executable
 | Portal executables | Capture and input capture | Startup-approved executable inode |
 | Remote-desktop portal | Input | Startup-approved executable inode; its own consent flow still governs sessions |
 | Portal helpers | Capture | Approved helper inode and an uninjected approved portal parent |
-| Input method | Input method | Startup-approved executable inode (`ENZUI_IME_EXES`: Fcitx5, and dictation to type its text) |
+| Input method | Input method and virtual keyboard | Startup-approved executable inode (`ENZUI_IME_EXES`: Fcitx5) |
+| Dictation | Commit text into the focused text-input-v3 field | Startup-approved executable inode (`ENZUI_TEXT_COMMIT_EXES`: Dictation) |
 | Root grants | Named capture/input | Matching UID and exact/subtree `/system.slice/…` cgroup from a protected public grant |
 | Explicit preview dev tools | Capture, input, input method, input capture and control | Startup-approved executable inode; QA only |
 
@@ -32,8 +33,20 @@ The capture family includes `zwlr_screencopy_manager_v1`,
 `ext_output_image_capture_source_manager_v1` and
 `ext_foreign_toplevel_image_capture_source_manager_v1`. Input includes
 `zwlr_virtual_pointer_manager_v1` and `zwp_virtual_keyboard_manager_v1`.
-Input method is `zwp_input_method_manager_v2`; input capture is
+Input method is `zwp_input_method_manager_v2`. Input capture is
 `hyprland_input_capture_manager_v1`.
+
+Dictation uses `enzui_text_commit_v1` to send text through the compositor's
+text-input relay while Fcitx5 holds the input-method seat. An IME binding
+requires exclusive ownership of the seat even when opened on demand. The
+text-commit route works with any seat owner and uses one request and one
+acknowledgment. It exposes no keyboard events or text from the field. The
+compositor declines delivery during active IME composition or while locked.
+
+Fcitx5 needs a virtual keyboard to forward keys it does not consume. The
+input-method allowlist exposes the keyboard manager alongside the input
+method. The keyboard accepts keymaps, modifiers and keys from the input
+method while it holds the keyboard grab and the session is unlocked.
 
 ## Compositor control
 
@@ -98,8 +111,8 @@ capture/input by rewriting an allowlist. On executable routes, nonempty
 `LD_PRELOAD`/`LD_AUDIT` and a differing nonempty `LD_LIBRARY_PATH` refuse
 admission. Root grants continue to trust root's unit environment.
 
-Locking disconnects admitted clients except the registered shell and input
-methods. New portal and ordinary helper clients are refused while locked;
+Locking disconnects clients admitted for capture or virtual input, apart from
+the registered shell. The input-method and text-commit connections can stay open. New portal and ordinary helper clients are refused while locked;
 unlocking requires a fresh connection. While locked, the input method receives
 no keys and no lock-screen field state, and active input capture is released and
 cannot start again until unlock. Root grants stay in

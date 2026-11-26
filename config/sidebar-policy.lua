@@ -161,8 +161,9 @@ local function update_visibility(g)
     for _,w in ipairs(hl.get_windows())do
         if w.mapped and not w.hidden and w.pid~=s.owner and not shell_classes[w.class] and w.monitor and w.monitor.name==s.output and not remote(w)
             and w.workspace and type(w.workspace.id)=="number" and (w.pinned or (workspace and w.workspace.id==workspace.id)) then
-            fullscreen=fullscreen or w.fullscreen==2
-            if behavior.visibility=="fullscreen" then covered=covered or w.fullscreen==2
+            local fills_output=w.fullscreen==2 or (enzui_fullscreen_covers and enzui_fullscreen_covers(w))==true
+            fullscreen=fullscreen or fills_output
+            if behavior.visibility=="fullscreen" then covered=covered or fills_output
             elseif behavior.visibility=="overlap" then
                 covered=covered or enzui_sidebar_capsule_overlaps({x=g.rail_x,y=g.rail_y,width=g.rail_w,height=g.rail_h},{x=w.at.x,y=w.at.y,width=w.size.x,height=w.size.y})
             end

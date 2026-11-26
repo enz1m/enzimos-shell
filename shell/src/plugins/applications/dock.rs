@@ -630,7 +630,8 @@ impl crate::compositor::Compositor {
             {
                 continue;
             }
-            if value["tags"].as_array().is_some_and(|tags| {
+            let tags = value["tags"].as_array();
+            if tags.is_some_and(|tags| {
                 tags.iter().any(|t| {
                     t.as_str()
                         .is_some_and(|t| t.starts_with("enzremote-guard-"))
@@ -676,7 +677,10 @@ impl crate::compositor::Compositor {
                     width,
                     height,
                 },
-                fullscreen: value["fullscreen"].as_i64() == Some(2),
+                fullscreen: value["fullscreen"].as_i64() == Some(2)
+                    || tags.is_some_and(|tags| {
+                        tags.iter().any(|tag| tag == "enzui-borderless-fullscreen")
+                    }),
                 minimized: value["hidden"] == true || workspace <= 0,
             });
         }

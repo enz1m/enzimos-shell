@@ -33,7 +33,7 @@ local function enzui_fit_windows(monitor,reserved,panels,only)
     end
     for _,w in ipairs(hl.get_windows()) do
         if (not only or (w.address == only.address and w.pid == only.pid)) and w.mapped and w.floating and not w.pinned and not skip[w.pid] and not held[w.address]
-            and not (type(w.fullscreen)=="number" and w.fullscreen>0)
+            and not w.borderless_fullscreen and not (type(w.fullscreen)=="number" and w.fullscreen>0)
             and w.monitor and w.monitor.name==monitor.name and w.workspace and type(w.workspace.id)=="number" and w.workspace.id>0 then
             local width,height=math.min(w.size.x,w0),math.min(w.size.y,h0)
             local x=math.max(x0,math.min(w.at.x,x0+w0-width))

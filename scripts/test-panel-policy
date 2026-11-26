@@ -87,6 +87,14 @@ panel.class="dev.enzui.Desktop";panel.monitor=primary;panel.tags={}
 panel.pid=8
 app.class="dev.enzui.Settings";app.pid=9;app.fullscreen=1;app.workspace=desktop;app.tags={}
 local events={}
+local refresh
+function hl.timer(callback) assert(not refresh); refresh=callback; return {} end
+local function settle()
+    local callback=refresh
+    refresh=nil
+    callback()
+end
+function hl.dsp.event(value) return {kind="event", value=value} end
 function hl.on(event,callback) events[event]=callback end
 function hl.get_active_workspace(output) return outputs[output] end
 function hl.get_windows() return {panel,trigger,external_panel,app} end
@@ -123,4 +131,25 @@ app.pid=9;app.tags={"enzui-sidebar-app"};events["window.open"](app)
 assert(#app.tags==1 and not enzui_desktop_fullscreen())
 app.tags={"enzremote-preview"};events["window.open"](app)
 assert(#app.tags==1 and not enzui_desktop_fullscreen())
-print("Fullscreen chrome follows the active desktop on each output.")
+app.tags={};app.fullscreen=0;app.borderless_fullscreen=true;active=app
+events["window.active"](app)
+events["window.borderless_fullscreen"](app)
+assert(enzui_fullscreen_focused() and not enzui_fullscreen_chrome_hidden(external_panel))
+settle()
+assert(enzui_fullscreen_chrome_hidden(external_panel) and enzui_fullscreen_covers(app))
+assert(not enzui_fullscreen_chrome_hidden(panel) and dispatched[#dispatched].value=="enzui-dock-changed")
+active=panel;events["window.active"](panel);settle()
+assert(not enzui_fullscreen_covers(app) and not enzui_fullscreen_chrome_hidden(external_panel))
+active=app;events["window.active"](app);settle()
+app.borderless_fullscreen=false;events["window.borderless_fullscreen"](app);settle()
+assert(not enzui_fullscreen_focused() and not enzui_fullscreen_chrome_hidden(external_panel))
+
+local taps=0
+for _,key in ipairs({"SUPER + Super_L","SUPER + Super_R"}) do
+    hl.bind(key,function() taps=taps+1 end,{release=true})
+    app.fullscreen=2;assert(call(key).pass_event and taps==0)
+    app.fullscreen=0;app.borderless_fullscreen=true;assert(call(key).pass_event and taps==0)
+    active=panel;call(key);assert(taps==1)
+    active=app;taps=0
+end
+print("Fullscreen chrome follows the active desktop on each output and fullscreen focus suppresses lone Super.")

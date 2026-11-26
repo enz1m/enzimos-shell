@@ -164,3 +164,19 @@ banners by default while a fullscreen app occupies the active desktop on the
 shell's output. Held alerts stay in the center, and critical alerts follow the
 normal delivery policy. Direct scanout auto mode admits fullscreen game content.
 The VRR content-type mode covers fullscreen game and video content.
+
+
+A focused floating window also gets fullscreen chrome policy when its logical
+box exactly matches the output and it has no server frame, either by window rule
+or client decoration mode. Maximized, pinned and override-redirect windows are
+excluded. The compositor reports coverage transitions, and the Shell coalesces
+geometry and focus changes before updating chrome. On that output the bar and
+Assistant trigger hide, sidebar and dock edge reveal pause, and notifications
+are held. Borderless windows retain their normal Wayland and fullscreen
+protocol state. Idle inhibition, scanout and VRR use the native fullscreen
+path described above.
+
+`enzui_fullscreen_focused()` checks current focus and geometry synchronously.
+The desktop shortcut map uses it for the Island overview's lone Super release
+bindings. Ordinary desktop bindings, including remapped shortcuts and the
+overview release, use the compositor's keyboard-shortcuts-inhibit check.

@@ -84,6 +84,7 @@ struct Output {
 
 // Screencopy allocates the compositor-requested buffer in a memfd.
 struct Capture {
+    frame: Option<ZwlrScreencopyFrameV1>,
     format: Option<(wl_shm::Format, u32, u32, u32)>,
     memfd: Option<OwnedFd>,
     buffer: Option<wl_buffer::WlBuffer>,
@@ -94,6 +95,7 @@ struct Capture {
 struct Surface {
     output: usize,
     surface: wl_surface::WlSurface,
+    lock_surface: Option<ExtSessionLockSurfaceV1>,
     size: (u32, u32),
     configured: bool,
     gpu: Option<SurfaceGpu>,
@@ -120,7 +122,7 @@ struct Surface {
 // A buffer at the preferred scale, rounded as winit rounds it, shown at the
 // logical size through a viewport.
 struct Fractional {
-    _scale: WpFractionalScaleV1,
+    scale: WpFractionalScaleV1,
     viewport: WpViewport,
     preferred: Option<u32>,
     destination: Option<(u32, u32)>,
@@ -434,26 +436,30 @@ fn add_lock_surface(
 ) {
     let index = state.surfaces.len();
     let surface = compositor.create_surface(qh, ());
-    let scale = state.outputs[index].scale;
-    surface.set_buffer_scale(scale);
+    let output = &state.outputs[index];
+    let scale = output.scale;
     // Requested before the lock surface, so a compositor that knows the
     // output's scale can send it with the first configure.
-    let fractional = match (&state.fractional_scale, &state.viewporter) {
-        (Some(manager), Some(viewporter)) => Some(Fractional {
-            _scale: manager.get_fractional_scale(&surface, qh, index),
+    let fractional = match (&state.fractional_scale, &state.viewporter, output.removed) {
+        (Some(manager), Some(viewporter), false) => Some(Fractional {
+            scale: manager.get_fractional_scale(&surface, qh, index),
             viewport: viewporter.get_viewport(&surface, qh, ()),
             preferred: None,
             destination: None,
         }),
         _ => None,
     };
-    // A removed output's lock surface is never configured.
-    if !state.outputs[index].removed {
-        lock.get_lock_surface(&surface, &state.outputs[index].output, qh, index);
-    }
+    let lock_surface = if output.removed {
+        surface.destroy();
+        None
+    } else {
+        surface.set_buffer_scale(scale);
+        Some(lock.get_lock_surface(&surface, &output.output, qh, index))
+    };
     state.surfaces.push(Surface {
         output: index,
         surface,
+        lock_surface,
         size: (0, 0),
         configured: false,
         gpu: None,
@@ -557,8 +563,11 @@ pub fn run(mode: Mode) -> Result<(), String> {
         && let Some(screencopy) = state.screencopy.clone()
     {
         for (index, output) in state.outputs.iter_mut().enumerate() {
-            screencopy.capture_output(0, &output.output, &qh, index);
+            if output.removed {
+                continue;
+            }
             output.capture = Some(Capture {
+                frame: Some(screencopy.capture_output(0, &output.output, &qh, index)),
                 format: None,
                 memfd: None,
                 buffer: None,
@@ -747,7 +756,7 @@ pub fn run(mode: Mode) -> Result<(), String> {
         });
     let mut revealed = false;
     let mut reported = false;
-    let mut fallback_images = std::collections::BTreeMap::new();
+    let mut fallback_images = std::collections::BTreeMap::<usize, ui::Images>::new();
     let mut last = Instant::now();
     // Surfaces configured after the first wait are prepared like new outputs.
     let mut initial = 0;
@@ -762,6 +771,7 @@ pub fn run(mode: Mode) -> Result<(), String> {
         while state.surfaces.len() < state.outputs.len() {
             add_lock_surface(&mut state, &compositor, &lock, &qh);
         }
+        fallback_images.retain(|&index, _| !state.outputs[index].removed);
         for (index, surface) in state.surfaces.iter_mut().enumerate().skip(initial) {
             if surface.images.is_some() || !surface.configured {
                 continue;

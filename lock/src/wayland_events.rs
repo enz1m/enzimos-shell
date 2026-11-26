@@ -16,8 +16,44 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                 version,
             } => (name, interface, version),
             wl_registry::Event::GlobalRemove { name } => {
-                if let Some(output) = state.outputs.iter_mut().find(|o| o.global == name) {
+                if let Some((index, output)) = state
+                    .outputs
+                    .iter_mut()
+                    .enumerate()
+                    .find(|(_, output)| output.global == name)
+                {
                     output.removed = true;
+                    if output.output.version() >= 3 {
+                        output.output.release();
+                    }
+                    if let Some(capture) = output.capture.take() {
+                        if let Some(frame) = capture.frame {
+                            frame.destroy();
+                        }
+                        if let Some(buffer) = capture.buffer {
+                            buffer.destroy();
+                        }
+                    }
+                    if let Some(surface) = state.surfaces.get_mut(index) {
+                        surface.gpu = None;
+                        surface.images = None;
+                        surface.cache = user_interface::Cache::new();
+                        surface.events.clear();
+                        surface.backdrop = None;
+                        surface.configured = false;
+                        if let Some(lock_surface) = surface.lock_surface.take() {
+                            lock_surface.destroy();
+                        }
+                        if let Some(fractional) = surface.fractional.take() {
+                            fractional.scale.destroy();
+                            fractional.viewport.destroy();
+                        }
+                        surface.surface.destroy();
+                    }
+                    if state.pointer_surface == Some(index) {
+                        state.pointer_surface = None;
+                        state.pointer_origin = None;
+                    }
                 }
                 return;
             }
@@ -126,8 +162,20 @@ impl Dispatch<ZwlrScreencopyFrameV1, usize> for State {
             }
             zwlr_screencopy_frame_v1::Event::Ready { .. } => {
                 capture.done = Some(read_capture(capture));
+                if let Some(frame) = capture.frame.take() {
+                    frame.destroy();
+                }
             }
-            zwlr_screencopy_frame_v1::Event::Failed => capture.done = Some(None),
+            zwlr_screencopy_frame_v1::Event::Failed => {
+                capture.done = Some(None);
+                if let Some(frame) = capture.frame.take() {
+                    frame.destroy();
+                }
+                if let Some(buffer) = capture.buffer.take() {
+                    buffer.destroy();
+                }
+                capture.memfd = None;
+            }
             _ => {}
         }
         // Version 1 and 2 frames have no buffer_done; they copy right away.
@@ -240,12 +288,12 @@ impl Dispatch<ExtSessionLockSurfaceV1, usize> for State {
             width,
             height,
         } = event
+            && let Some(surface) = state.surfaces.get_mut(*index)
+            && surface.lock_surface.as_ref() == Some(lock_surface)
         {
             lock_surface.ack_configure(serial);
-            if let Some(surface) = state.surfaces.get_mut(*index) {
-                surface.size = (width.max(1), height.max(1));
-                surface.configured = true;
-            }
+            surface.size = (width.max(1), height.max(1));
+            surface.configured = true;
         }
     }
 }

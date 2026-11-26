@@ -4,6 +4,16 @@ use enzui_shell::i18n::tr;
 use enzui_shell::search::Category;
 use iced::Task;
 
+pub(super) const FIELD_SIZE: enzui_widgets::suggestion_list::SuggestionSize =
+    enzui_widgets::suggestion_list::SuggestionSize::Lg;
+pub(super) const CARD_OUTER_PADDING: f32 = 8.0;
+pub(super) const CARD_PADDING: iced::Padding = iced::Padding {
+    top: 8.0,
+    right: 8.0,
+    bottom: 4.0,
+    left: 8.0,
+};
+
 pub(crate) fn message(value: Message) -> ShellMessage {
     ShellMessage::QuickSearch(value)
 }

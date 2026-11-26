@@ -2,8 +2,8 @@ use super::{
     model::{HeightMotion, Message},
     results,
     support::{
-        RECOMMENDED_HEIGHT, SEARCH_CHROME, message, perform, result_capacity, row_pitch,
-        source_chord,
+        CARD_OUTER_PADDING, CARD_PADDING, FIELD_SIZE, RECOMMENDED_HEIGHT, SEARCH_CHROME, message,
+        perform, result_capacity, row_pitch, source_chord,
     },
 };
 use crate::{Message as ShellMessage, Shell};
@@ -106,7 +106,9 @@ impl Shell {
     }
     /// The card's height before anything is typed, as it rests under the bar.
     pub(crate) fn search_resting_height(&self) -> f32 {
-        if self.search.blank_apps() {
+        if self.search.overview {
+            FIELD_SIZE.tokens().height + CARD_PADDING.y() + 2.0 * CARD_OUTER_PADDING
+        } else if self.search.blank_apps() {
             BLANK_HEIGHT
         } else {
             112.0

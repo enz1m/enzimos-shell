@@ -1,3 +1,4 @@
+use super::support::{CARD_OUTER_PADDING, CARD_PADDING, FIELD_SIZE};
 use super::{Message, message, source_chord};
 use crate::{Message as ShellMessage, Shell};
 use enzui_shell::i18n::tr;
@@ -11,7 +12,6 @@ use enzui_widgets::{
     pressable::{PressableStyle, enz_pressable},
     search_field::enz_search_field,
     semantics_container::SemanticsContainer,
-    suggestion_list::SuggestionSize,
     text::{TextSize, enz_text},
     text_field::enz_text_field,
     toolbar_icon::enz_toolbar_icon,
@@ -87,12 +87,12 @@ impl Shell {
             .palette(input_palette)
             .id("quick-search-input")
             .radius(input_radius)
-            .size(SuggestionSize::Lg)
+            .size(FIELD_SIZE)
             .active_descendant(active)
             .width(Length::Fill)
             .enabled(state.alias.is_none() && !state.action_busy)
             .into_element();
-        let input_size = SuggestionSize::Lg.tokens();
+        let input_size = FIELD_SIZE.tokens();
         let composing_icon = container(
             enz_icon("action.search")
                 .size(18.0)
@@ -543,7 +543,8 @@ impl Shell {
         let card_radius = f32::from(self.metrics.radius);
         // Keep the app rows at their final layout and reveal them through the
         // space above the footer. The footer itself uses the current height.
-        let settled = self.search_surface_size().height - join - 16.0 - CARD_PADDING.y();
+        let settled =
+            self.search_surface_size().height - join - 2.0 * CARD_OUTER_PADDING - CARD_PADDING.y();
         let content: Element<'_, ShellMessage> = if let Some(footer) = footer {
             use super::support::{FOOTER_GAP, FOOTER_HEIGHT};
             column![
@@ -569,7 +570,9 @@ impl Shell {
             .id("quick-search-visible-card")
             .padding(CARD_PADDING)
             .width(Length::Fill)
-            .height(Length::Fixed((paint_height - join - 16.0).max(0.0)))
+            .height(Length::Fixed(
+                (paint_height - join - 2.0 * CARD_OUTER_PADDING).max(0.0),
+            ))
             .clip(true)
             .style(move |_| {
                 if island.is_some() {
@@ -605,7 +608,7 @@ impl Shell {
         let content: Element<'_, ShellMessage> = if let Some(island) = island {
             let body = container(
                 container(card)
-                    .padding(8)
+                    .padding(CARD_OUTER_PADDING)
                     .width(Length::Fill)
                     .height(Length::Fill),
             )
@@ -649,7 +652,13 @@ impl Shell {
                     shadow: self.panel_shadow(),
                     glass: self.panel_glass(),
                 },
-                Some(("quick-search-visible-card".into(), 16.0 + join)),
+                Some(enzui_shell::presentation::FitHeight {
+                    targets: vec![(
+                        "quick-search-visible-card".into(),
+                        2.0 * CARD_OUTER_PADDING + join,
+                    )],
+                    minimum: if state.overview { 0.0 } else { 180.0 },
+                }),
             )
         } else {
             if let Some(input) = self.surface_inputs.get(&id) {
@@ -659,7 +668,7 @@ impl Shell {
             // padding the card's shadow falls into.
             let animated: Element<'_, ShellMessage> = motion(
                 container(card)
-                    .padding(8)
+                    .padding(CARD_OUTER_PADDING)
                     .width(Length::Fill)
                     .height(Length::Fill),
                 state.visible,
@@ -676,15 +685,6 @@ impl Shell {
         })
     }
 }
-
-// `top` composited over `base`, opaque.
-/// The card's padding: less at its foot, under the last row.
-const CARD_PADDING: iced::Padding = iced::Padding {
-    top: 8.0,
-    right: 8.0,
-    bottom: 4.0,
-    left: 8.0,
-};
 
 fn over(base: iced::Color, top: iced::Color) -> iced::Color {
     let mix = |b: f32, t: f32| b + (t - b) * top.a;

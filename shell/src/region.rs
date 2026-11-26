@@ -1,4 +1,5 @@
 use crate::Message;
+use enzui_shell::presentation::FitHeight;
 use enzui_widgets::motion::SlideDirection;
 use iced::{
     Element, Length,
@@ -36,20 +37,23 @@ pub(crate) fn view_fitted<'a>(
     theme: &iced::Theme,
     reveal: enzui_shell::reveal::Reveal,
     input: Option<enzui_shell::surface_input::SurfaceInput>,
-    extent: Option<(iced::advanced::widget::Id, f32)>,
+    fit: Option<FitHeight>,
     glass: Option<enzui_theme::MaterialStyle>,
     expressive: Option<enzui_theme::ExpressiveMotion>,
 ) -> Element<'a, Message> {
-    let fit = extent.map(|value| vec![value]).or_else(|| {
+    let fit = fit.or_else(|| {
         matches!(&hidden, Message::ControlsHidden(_)).then(|| {
             let inset = enzui_shell::panel_style::INSET * 2.0 + reveal.join();
-            vec![
-                (
-                    "control-grid-extent".into(),
-                    inset + enzui_shell::control_layout::ACTIONS_ROW,
-                ),
-                ("control-body-extent".into(), inset),
-            ]
+            FitHeight {
+                targets: vec![
+                    (
+                        "control-grid-extent".into(),
+                        inset + enzui_shell::control_layout::ACTIONS_ROW,
+                    ),
+                    ("control-body-extent".into(), inset),
+                ],
+                minimum: 180.0,
+            }
         })
     });
     let margins = reveal.margins();
@@ -103,7 +107,7 @@ pub(crate) fn popup(content: Element<'_, Message>, popup: Popup) -> Element<'_, 
 pub(crate) fn popup_fitted<'a>(
     content: Element<'a, Message>,
     popup: Popup,
-    extent: Option<(iced::advanced::widget::Id, f32)>,
+    fit: Option<FitHeight>,
 ) -> Element<'a, Message> {
     view_fitted(
         content,
@@ -123,7 +127,7 @@ pub(crate) fn popup_fitted<'a>(
             popup.shadow,
         ),
         popup.input,
-        extent,
+        fit,
         popup.glass,
         popup.expressive,
     )

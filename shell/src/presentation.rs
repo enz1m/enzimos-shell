@@ -72,6 +72,14 @@ pub fn attached_source<'a, Message: Clone + 'a>(
         expressive: None,
     })
 }
+/// Measures a panel from its laid-out children.
+pub struct FitHeight {
+    /// Widget IDs and the space each measurement needs beyond its bounds.
+    pub targets: Vec<(widget::Id, f32)>,
+    /// The smallest combined panel and shadow height in logical pixels.
+    pub minimum: f32,
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "The view composes independent state and actions supplied by its caller."
@@ -83,7 +91,7 @@ pub fn attached_fitted<'a, Message: Clone + 'a>(
     theme: &iced::Theme,
     hidden: Option<Message>,
     reveal: crate::reveal::Reveal,
-    fit: Option<Vec<(widget::Id, f32)>>,
+    fit: Option<FitHeight>,
     input: Option<crate::surface_input::SurfaceInput>,
     glass: Option<enzui_theme::MaterialStyle>,
     expressive: Option<enzui_theme::ExpressiveMotion>,
@@ -143,7 +151,7 @@ struct Slide<'a, Message> {
     theme: iced::Theme,
     hidden: Option<Message>,
     reveal: Option<crate::reveal::Reveal>,
-    fit: Option<Vec<(widget::Id, f32)>>,
+    fit: Option<FitHeight>,
     input: Option<crate::surface_input::SurfaceInput>,
     // The compositor's liquid glass for an island panel's body.
     glass: Option<enzui_theme::MaterialStyle>,
@@ -298,12 +306,12 @@ fn offset(direction: SlideDirection, size: Size, progress: f32) -> Vector {
         SlideDirection::Right => Vector::new(size.width * remaining, 0.0),
     }
 }
-fn fitted_height(canvas: f32, candidates: impl IntoIterator<Item = f32>) -> f32 {
+fn fitted_height(canvas: f32, minimum: f32, candidates: impl IntoIterator<Item = f32>) -> f32 {
     candidates
         .into_iter()
         .filter(|height| height.is_finite())
         .reduce(f32::max)
-        .map_or(canvas, |height| height.max(180.0).min(canvas))
+        .map_or(canvas, |height| height.max(minimum).min(canvas))
 }
 
 impl<Message: Clone> Widget<Message, iced::Theme, iced::Renderer> for Slide<'_, Message> {
@@ -343,8 +351,8 @@ impl<Message: Clone> Widget<Message, iced::Theme, iced::Renderer> for Slide<'_, 
         let size = tree.children[0].size;
         let mut extent = size;
         if let Some(fit) = &self.fit {
-            let mut candidates = Vec::with_capacity(fit.len());
-            for (id, extra) in fit {
+            let mut candidates = Vec::with_capacity(fit.targets.len());
+            for (id, extra) in &fit.targets {
                 let mut measurement = MeasureHeight {
                     id: id.clone(),
                     height: None,
@@ -367,7 +375,7 @@ impl<Message: Clone> Widget<Message, iced::Theme, iced::Renderer> for Slide<'_, 
                     candidates.push(height + extra + margins.top + margins.bottom);
                 }
             }
-            extent.height = fitted_height(size.height, candidates);
+            extent.height = fitted_height(size.height, fit.minimum, candidates);
         }
         let state = tree.state.downcast_mut::<SlideState>();
         state.extent = extent;

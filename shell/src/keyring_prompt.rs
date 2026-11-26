@@ -25,6 +25,7 @@ pub enum Event {
         id: u64,
         label: String,
         create: bool,
+        activation: Option<SecretText>,
     },
     Retry {
         id: u64,
@@ -47,15 +48,26 @@ struct Prompter {
     next: std::sync::atomic::AtomicU64,
 }
 
+struct Prompt<'a> {
+    request: OwnedObjectPath,
+    label: &'a str,
+    create: bool,
+    activation_token: &'a str,
+}
+
 impl Prompter {
     async fn begin(
         &self,
-        request: OwnedObjectPath,
-        label: &str,
-        create: bool,
+        prompt: Prompt<'_>,
         header: Header<'_>,
         connection: &zbus::Connection,
     ) -> zbus::fdo::Result<()> {
+        let Prompt {
+            request,
+            label,
+            create,
+            activation_token,
+        } = prompt;
         let sender = header
             .sender()
             .ok_or_else(|| zbus::fdo::Error::AccessDenied("Missing sender".into()))?
@@ -96,12 +108,21 @@ impl Prompter {
         let pending = Arc::clone(&self.pending);
         let connection = connection.clone();
         let label = label.to_owned();
+        let activation = (!activation_token.is_empty()
+            && activation_token.len() <= 4096
+            && !activation_token.chars().any(char::is_control))
+        .then(|| SecretText::new(activation_token.to_owned()));
         tokio::spawn(async move {
             let work = conversation(
                 &connection,
                 &sender,
                 request.as_str(),
-                Event::Begin { id, label, create },
+                Event::Begin {
+                    id,
+                    label,
+                    create,
+                    activation,
+                },
                 &events,
                 receiver,
             );
@@ -147,9 +168,18 @@ impl Prompter {
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> zbus::fdo::Result<()> {
-        let _ = (window_id, activation_token);
-        self.begin(request, collection_name, false, header, connection)
-            .await
+        let _ = window_id;
+        self.begin(
+            Prompt {
+                request,
+                label: collection_name,
+                create: false,
+                activation_token,
+            },
+            header,
+            connection,
+        )
+        .await
     }
     async fn create_collection_prompt(
         &self,
@@ -160,9 +190,18 @@ impl Prompter {
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> zbus::fdo::Result<()> {
-        let _ = (window_id, activation_token);
-        self.begin(request, collection_name, true, header, connection)
-            .await
+        let _ = window_id;
+        self.begin(
+            Prompt {
+                request,
+                label: collection_name,
+                create: true,
+                activation_token,
+            },
+            header,
+            connection,
+        )
+        .await
     }
 }
 

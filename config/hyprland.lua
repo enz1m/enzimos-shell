@@ -35,6 +35,7 @@ hl.config({
     input = { follow_mouse = 2, float_switch_override_focus = 0 },
     render = { direct_scanout = "auto" },
     misc = {
+        protect_fullscreen_focus = true,
         vrr = "fullscreen_game",
         -- Allow a replacement client to recover the prompt while compositor enforcement remains
         -- active.

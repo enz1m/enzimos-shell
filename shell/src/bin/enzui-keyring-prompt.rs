@@ -59,13 +59,19 @@ impl App {
         }
     }
     fn open(&mut self, event: Event) -> Task<Message> {
-        let Event::Begin { id, label, create } = event else {
+        let Event::Begin {
+            id,
+            label,
+            create,
+            activation,
+        } = event
+        else {
             return Task::none();
         };
         self.light = enzui_shell::settings::Store::from_environment()
             .and_then(|s| s.load().ok())
             .is_some_and(|s| s.light);
-        let (window, open) = window::open(window::Settings {
+        let settings = window::Settings {
             size: iced::Size::new(460.0, if create { 370.0 } else { 300.0 }),
             resizable: false,
             decorations: false,
@@ -75,7 +81,17 @@ impl App {
                 ..Default::default()
             },
             ..Default::default()
-        });
+        };
+        let (window, open) = match activation {
+            Some(token) => window::open_with_activation(
+                settings,
+                window::ActivationToken::for_platform(
+                    window::ActivationPlatform::Wayland,
+                    token.expose_secret().to_owned(),
+                ),
+            ),
+            None => window::open(settings),
+        };
         self.current = Some(Dialog {
             id,
             label,

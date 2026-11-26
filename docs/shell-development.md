@@ -168,8 +168,9 @@ The VRR content-type mode covers fullscreen game and video content.
 
 A focused floating window also gets fullscreen chrome policy when its logical
 box exactly matches the output and it has no server frame, either by window rule
-or client decoration mode. Maximized, pinned and override-redirect windows are
-excluded. The compositor reports coverage transitions, and the Shell coalesces
+or client decoration mode. A managed XWayland client that requests this exact
+box at map time can enter floating mode with that placement. Explicit placement
+rules still apply. Maximized, pinned and override-redirect windows are excluded. The compositor reports coverage transitions, and the Shell coalesces
 geometry and focus changes before updating chrome. On that output the bar and
 Assistant trigger hide, sidebar and dock edge reveal pause, and notifications
 are held. Borderless windows retain their normal Wayland and fullscreen
@@ -180,3 +181,18 @@ path described above.
 The desktop shortcut map uses it for the Island overview's lone Super release
 bindings. Ordinary desktop bindings, including remapped shortcuts and the
 overview release, use the compositor's keyboard-shortcuts-inhibit check.
+
+The installed desktop enables `misc:protect_fullscreen_focus`. A floating
+pinned dialog with `stay_focused`, or a floating transient/modal dialog from a
+background app, stays hidden and out of input routing while a game has focus.
+The compositor shows waiting dialogs when focus leaves fullscreen, with
+session locks and already-active modal prompts taking priority. A background
+activation waits and is then processed under the normal activation policy,
+which marks the window as needing attention by default.
+
+A fresh xdg-activation token tied to input delivered to the focused app can
+present a prompt immediately. This also covers tokens delivered before the
+prompt's first map. The keyring prompter forwards the token from the credential
+service. Other brokers that receive no validated token wait, and the original
+service can still cancel or time out its request. A modal attached to the
+focused application itself follows the compositor's normal transient policy.

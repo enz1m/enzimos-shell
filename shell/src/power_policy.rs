@@ -24,26 +24,62 @@ async fn set_displays(compositor: Option<&crate::compositor::Compositor>, on: bo
         .await;
 }
 
-/// Holds the policy for `lid`; changing it takes the inhibitors afresh.
+/// Watches sleep signals independently of changes to the lid preference.
 pub fn subscription(lid: LidAction) -> iced::Subscription<String> {
-    iced::Subscription::run_with(lid, stream)
+    iced::Subscription::batch([
+        iced::Subscription::run(sleep_stream),
+        iced::Subscription::run_with(lid, lid_stream),
+    ])
+}
+
+fn sleep_stream() -> impl iced::futures::Stream<Item = String> {
+    use iced::futures::SinkExt;
+    iced::stream::channel(1, async |mut output| {
+        loop {
+            if let Err(error) = run_sleep().await
+                && output.send(error).await.is_err()
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    })
 }
 
 #[allow(
     clippy::trivially_copy_pass_by_ref,
     reason = "Subscription::run_with borrows the concrete hashed input."
 )]
-fn stream(lid: &LidAction) -> impl iced::futures::Stream<Item = String> + use<> {
+fn lid_stream(lid: &LidAction) -> impl iced::futures::Stream<Item = String> + use<> {
     use iced::futures::SinkExt;
     let lid = *lid;
     iced::stream::channel(1, async move |mut output| {
-        if let Err(error) = run(lid).await {
+        if let Err(error) = run_lid(lid).await {
             let _ = output.send(error).await;
         }
     })
 }
 
-async fn run(lid: LidAction) -> Result<(), String> {
+const LOCK_RETRY: Duration = Duration::from_millis(200);
+
+async fn lock_before_deadline(
+    mut lock: impl AsyncFnMut(Duration) -> Result<(), String>,
+    deadline: tokio::time::Instant,
+) -> Result<(), String> {
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match lock(remaining).await {
+            Ok(()) => return Ok(()),
+            Err(error) if tokio::time::Instant::now() + LOCK_RETRY >= deadline => {
+                tokio::time::sleep_until(deadline).await;
+                return Err(error);
+            }
+            Err(_) => tokio::time::sleep(LOCK_RETRY).await,
+        }
+    }
+}
+
+async fn run_sleep() -> Result<(), String> {
     let connection = zbus::Connection::system()
         .await
         .map_err(|_| tr("shell-no-system-bus"))?;
@@ -79,19 +115,6 @@ async fn run(lid: LidAction) -> Result<(), String> {
         },
         None => None,
     };
-    let upower = zbus::Proxy::new(
-        &connection,
-        "org.freedesktop.UPower",
-        "/org/freedesktop/UPower",
-        "org.freedesktop.UPower",
-    )
-    .await
-    .ok();
-    let mut lid_changes = match &upower {
-        Some(p) => Some(p.receive_property_changed::<bool>("LidIsClosed").await),
-        None => None,
-    };
-
     let compositor = crate::compositor::Compositor::from_environment().ok();
     // logind sleeps once delay inhibitors close or this limit passes.
     let delay_limit = manager
@@ -106,35 +129,35 @@ async fn run(lid: LidAction) -> Result<(), String> {
         "delay",
     )
     .await;
-    // Keeps logind from suspending on the lid when the preference says not to.
-    let _lid_block = if lid == LidAction::LockSuspend {
-        None
-    } else {
-        inhibit(
-            &manager,
-            "handle-lid-switch",
-            tr("shell-the-lid-setting-is-handled-by-enzui"),
-            "block",
-        )
-        .await
-    };
+    let mut lock_failed = false;
     loop {
         tokio::select! {
             signal = sleeping.next() => {
                 let Some(signal) = signal else { return Ok(()) };
-                let starting: bool = signal.body().deserialize().unwrap_or(false);
+                let Ok(starting) = signal.body().deserialize::<bool>() else { continue };
                 if starting {
-                    let _ = crate::session_lock::lock_within(delay_limit).await;
-                    // The session freezes when the delay closes, but the kernel
-                    // can take seconds more before the panel goes dark; the
-                    // frozen lock screen and cursor would stay up until then.
-                    set_displays(compositor.as_ref(), false).await;
+                    let deadline = tokio::time::Instant::now() + delay_limit;
+                    lock_failed = match lock_before_deadline(crate::session_lock::lock_for_sleep, deadline).await {
+                        Ok(()) => {
+                            let _ = tokio::time::timeout_at(deadline, set_displays(compositor.as_ref(), false)).await;
+                            false
+                        }
+                        Err(error) => {
+                            eprintln!("enzui-shell: lock before sleep: {error}");
+                            true
+                        }
+                    };
                     delay = None;
                 } else {
-                    set_displays(compositor.as_ref(), true).await;
                     if delay.is_none() {
                         delay = inhibit(&manager, "sleep", tr("shell-locking-the-screen-before-sleep"), "delay").await;
                     }
+                    if lock_failed
+                        && let Err(error) = crate::session_lock::lock_for_sleep(crate::session_lock::SLEEP_LOCK_LIMIT).await
+                    {
+                        eprintln!("enzui-shell: lock on resume: {error}");
+                    }
+                    set_displays(compositor.as_ref(), true).await;
                 }
             }
             request = async {
@@ -147,19 +170,82 @@ async fn run(lid: LidAction) -> Result<(), String> {
                     lock_requests = None;
                     continue;
                 }
-                let _ = crate::session_lock::lock().await;
-            }
-            closed = async {
-                match lid_changes.as_mut() {
-                    Some(changes) => changes.next().await,
-                    None => std::future::pending().await,
-                }
-            } => {
-                let Some(change) = closed else { lid_changes = None; continue };
-                if change.get().await.unwrap_or(false) && lid == LidAction::Lock {
-                    let _ = crate::session_lock::lock().await;
-                }
+                tokio::spawn(crate::session_lock::lock());
             }
         }
+    }
+}
+
+async fn run_lid(lid: LidAction) -> Result<(), String> {
+    if lid == LidAction::LockSuspend {
+        return Ok(());
+    }
+    let connection = zbus::Connection::system()
+        .await
+        .map_err(|_| tr("shell-no-system-bus"))?;
+    let manager = zbus::Proxy::new(
+        &connection,
+        "org.freedesktop.login1",
+        "/org/freedesktop/login1",
+        "org.freedesktop.login1.Manager",
+    )
+    .await
+    .map_err(|_| tr("shell-logind-is-not-available"))?;
+    let upower = zbus::Proxy::new(
+        &connection,
+        "org.freedesktop.UPower",
+        "/org/freedesktop/UPower",
+        "org.freedesktop.UPower",
+    )
+    .await
+    .map_err(|_| tr("shell-logind-is-not-available"))?;
+    let mut changes = upower.receive_property_changed::<bool>("LidIsClosed").await;
+    let _lid_block = inhibit(
+        &manager,
+        "handle-lid-switch",
+        tr("shell-the-lid-setting-is-handled-by-enzui"),
+        "block",
+    )
+    .await
+    .ok_or_else(|| tr("shell-logind-is-not-available"))?;
+    while let Some(change) = changes.next().await {
+        if lid == LidAction::Lock && change.get().await.unwrap_or(false) {
+            let _ = crate::session_lock::lock().await;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn retries_failed_lock_within_the_delay() {
+        let mut calls = 0;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        lock_before_deadline(
+            async |remaining| {
+                assert!(!remaining.is_zero());
+                calls += 1;
+                if calls == 1 {
+                    Err("startup failed".into())
+                } else {
+                    Ok(())
+                }
+            },
+            deadline,
+        )
+        .await
+        .unwrap();
+        assert_eq!(calls, 2);
+    }
+
+    #[tokio::test]
+    async fn keeps_the_delay_until_its_deadline_when_lock_start_fails() {
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(20);
+        let result = lock_before_deadline(async |_| Err("startup failed".into()), deadline).await;
+        assert_eq!(result.unwrap_err(), "startup failed");
+        assert!(tokio::time::Instant::now() >= deadline);
     }
 }

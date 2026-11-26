@@ -724,9 +724,7 @@ impl SystemControls {
             }
             Action::Eject(drive) => crate::drives::eject_mounted(drive).await?,
             Action::Suspend if self.allow_power => {
-                if crate::session_lock::command().is_some() {
-                    crate::session_lock::lock().await?;
-                }
+                crate::session_lock::lock_for_sleep(crate::session_lock::SLEEP_LOCK_LIMIT).await?;
                 self.run("systemctl", &["suspend"]).await?;
             }
             Action::Suspend => {

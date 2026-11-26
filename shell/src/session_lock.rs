@@ -60,20 +60,35 @@ pub async fn lock() -> Result<(), String> {
     lock_within(LOCK_DEADLINE).await
 }
 
-/// Locks the session, waiting at most `limit` for the compositor to confirm it.
-/// A lock still starting at the deadline keeps starting in the background.
+/// Locks the session, waiting at most `limit` for compositor confirmation.
 ///
 /// # Errors
-/// Fails when the lock screen cannot start or is not confirmed within `limit`.
+/// Fails if the lock cannot start or has not confirmed by the deadline.
 pub async fn lock_within(limit: Duration) -> Result<(), String> {
+    start_lock(limit, false).await
+}
+
+/// Locks the session for sleep, starting a new lock with an opaque first frame.
+///
+/// # Errors
+/// Fails if the lock cannot start or has not confirmed by the deadline.
+pub async fn lock_for_sleep(limit: Duration) -> Result<(), String> {
+    start_lock(limit, true).await
+}
+
+/// Maximum wait for a lock before a sleep request initiated by the shell.
+pub const SLEEP_LOCK_LIMIT: Duration = LOCK_DEADLINE;
+
+async fn start_lock(limit: Duration, sleeping: bool) -> Result<(), String> {
     lock_with(
         command().ok_or_else(|| tr("shell-the-enzui-lock-screen-is-not-installed"))?,
         limit,
+        sleeping,
     )
     .await
 }
 
-async fn lock_with(program: PathBuf, limit: Duration) -> Result<(), String> {
+async fn lock_with(program: PathBuf, limit: Duration, sleeping: bool) -> Result<(), String> {
     let mut outcome = {
         let mut attempt = ATTEMPT
             .lock()
@@ -88,10 +103,10 @@ async fn lock_with(program: PathBuf, limit: Duration) -> Result<(), String> {
         {
             Some(pending) => pending.clone(),
             None => {
-                let (child, lines) = launch(&program)?;
+                let (child, lines) = launch(&program, sleeping)?;
                 let (sender, receiver) = watch::channel(None);
                 STARTING.store(true, Ordering::Release);
-                tokio::spawn(acquire(program, child, lines, sender));
+                tokio::spawn(acquire(program, child, lines, sender, sleeping));
                 *attempt = Some(receiver.clone());
                 receiver
             }
@@ -108,10 +123,13 @@ async fn lock_with(program: PathBuf, limit: Duration) -> Result<(), String> {
 
 type Lines = tokio::io::Lines<BufReader<tokio::process::ChildStdout>>;
 
-fn launch(program: &PathBuf) -> Result<(tokio::process::Child, Lines), String> {
+fn launch(program: &PathBuf, sleeping: bool) -> Result<(tokio::process::Child, Lines), String> {
     let mut command = tokio::process::Command::new(program);
     if CRASHED.load(Ordering::Acquire) {
         command.env("ENZUI_LOCK_SOFTWARE", "1");
+    }
+    if sleeping {
+        command.env("ENZUI_LOCK_FOR_SLEEP", "1");
     }
     let mut child = command
         .stdin(std::process::Stdio::null())
@@ -132,7 +150,7 @@ fn launch(program: &PathBuf) -> Result<(tokio::process::Child, Lines), String> {
 async fn spawn(
     program: &PathBuf,
 ) -> Result<(tokio::process::Child, Lines, Option<String>), String> {
-    let (child, mut lines) = launch(program)?;
+    let (child, mut lines) = launch(program, false)?;
     // One CPU and software rendering can take several seconds to first frame.
     let first = match tokio::time::timeout(Duration::from_secs(15), lines.next_line()).await {
         Ok(Ok(line)) => line,
@@ -166,6 +184,7 @@ async fn acquire(
     mut child: tokio::process::Child,
     mut lines: Lines,
     outcome: watch::Sender<Outcome>,
+    sleeping: bool,
 ) {
     let deadline = tokio::time::Instant::now() + STARTUP_LIMIT;
     let mut retried = false;
@@ -177,7 +196,7 @@ async fn acquire(
             && tokio::time::timeout(Duration::from_secs(1), child.wait())
                 .await
                 .is_ok_and(|status| status.is_ok_and(note_crash))
-            && let Ok((next, next_lines)) = launch(&program)
+            && let Ok((next, next_lines)) = launch(&program, sleeping)
         {
             retried = true;
             (child, lines) = (next, next_lines);
@@ -316,7 +335,7 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&crashing, std::fs::Permissions::from_mode(0o700)).unwrap();
-        lock_with(crashing, LOCK_DEADLINE).await.unwrap();
+        lock_with(crashing, LOCK_DEADLINE, false).await.unwrap();
         assert!(!locked());
 
         let starts = directory.path().join("starts");
@@ -324,19 +343,21 @@ mod tests {
         std::fs::write(
             &program,
             format!(
-                "#!/bin/sh\necho start >> '{}'\nsleep 0.5\necho locked\nexec sleep 5\n",
+                "#!/bin/sh\necho \"$ENZUI_LOCK_FOR_SLEEP\" >> '{}'\nsleep 0.5\necho locked\nexec sleep 5\n",
                 starts.display()
             ),
         )
         .unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let expired = lock_with(program.clone(), Duration::from_millis(50)).await;
+        let expired = lock_with(program.clone(), Duration::from_millis(50), true).await;
         assert!(expired.is_err() && !locked());
-        let first = tokio::spawn(lock_with(program.clone(), LOCK_DEADLINE));
-        lock_with(program.clone(), LOCK_DEADLINE).await.unwrap();
+        let first = tokio::spawn(lock_with(program.clone(), LOCK_DEADLINE, false));
+        lock_with(program.clone(), LOCK_DEADLINE, false)
+            .await
+            .unwrap();
         assert!(locked() && HELD.load(Ordering::Acquire));
         first.await.unwrap().unwrap();
-        lock_with(program, LOCK_DEADLINE).await.unwrap();
-        assert_eq!(std::fs::read_to_string(&starts).unwrap().lines().count(), 1);
+        lock_with(program, LOCK_DEADLINE, true).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&starts).unwrap(), "1\n");
     }
 }

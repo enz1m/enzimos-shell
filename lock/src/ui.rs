@@ -126,7 +126,7 @@ pub(crate) struct Ui {
 
 const INTRO: Duration = Duration::from_millis(520);
 // Delay wallpaper sharpening until the desktop crossfade finishes.
-const FOCUS_PULL: Duration = Duration::from_millis(1100);
+pub(crate) const FOCUS_PULL: Duration = Duration::from_millis(1100);
 const OUTRO: Duration = Duration::from_millis(520);
 const SHAKE: Duration = Duration::from_millis(420);
 pub(crate) const PROMPT_IDLE: Duration = Duration::from_secs(20);

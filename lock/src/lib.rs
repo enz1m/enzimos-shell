@@ -207,6 +207,17 @@ struct SurfaceGpu {
     physical: (u32, u32),
 }
 
+impl SurfaceGpu {
+    fn software(physical: (u32, u32)) -> Self {
+        Self {
+            surface: None,
+            renderer: iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(renderer_settings())),
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            physical,
+        }
+    }
+}
+
 struct Gpu {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
@@ -299,6 +310,19 @@ const REVEAL_WAIT: Duration = Duration::from_secs(1);
 const CAPTURED_REVEAL_WAIT: Duration = Duration::from_secs(5);
 /// How long a confirmed lock waits for an opaque frame on every output before reporting.
 const OPAQUE_WAIT: Duration = Duration::from_secs(3);
+
+fn lock_can_report(
+    sleeping: bool,
+    acknowledged: Option<Duration>,
+    outputs: impl IntoIterator<Item = (bool, bool)>,
+) -> bool {
+    acknowledged.is_some_and(|elapsed| {
+        (!sleeping && elapsed >= OPAQUE_WAIT)
+            || outputs
+                .into_iter()
+                .all(|(configured, opaque)| opaque || (!sleeping && !configured))
+    })
+}
 
 struct SurfaceReveal {
     removed: bool,
@@ -554,12 +578,16 @@ pub fn run(mode: Mode) -> Result<(), String> {
     }
 
     // Session-lock xray fades over the live desktop instead of a captured frame.
+    let sleeping =
+        mode == Mode::Lock && std::env::var("ENZUI_LOCK_FOR_SLEEP").as_deref() == Ok("1");
     let xray = mode == Mode::Lock
+        && !sleeping
         && (std::env::var("ENZUI_LOCK_XRAY").as_deref() == Ok("1") || hyprland_xray());
 
     // Remote-session outputs are locked too, but not shown the capture.
     // The greeter has no desktop to capture; it starts from black.
     if mode == Mode::Lock
+        && !sleeping
         && !xray
         && let Some(screencopy) = state.screencopy.clone()
     {
@@ -706,17 +734,20 @@ pub fn run(mode: Mode) -> Result<(), String> {
         let placeholder =
             handle(desktop.unwrap_or_else(|| background::Picture::solid(width, height, [0, 0, 0])));
         surface.images = Some(ui::Images {
-            desktop: (mode == Mode::Lock && !xray).then(|| placeholder.clone()),
+            desktop: (mode == Mode::Lock && !xray && !sleeping).then(|| placeholder.clone()),
             wallpaper: placeholder.clone(),
             soft: placeholder,
-            has_clock: true,
-            has_date: true,
+            has_clock: !sleeping,
+            has_date: !sleeping,
             light: false,
         });
     }
-    // Until the backdrop is ready only the captured desktop is shown.
     let reveal_from = Instant::now();
-    ui.started = reveal_from + Duration::from_secs(3600);
+    ui.started = if sleeping {
+        reveal_from - ui::FOCUS_PULL
+    } else {
+        reveal_from + Duration::from_secs(3600)
+    };
     let (auth_tx, auth_rx) = mpsc::channel::<bool>();
     // Fingerprint unlock beside the password, on the lock screen only: a
     // sign-in needs the password, which unlocks saved credentials.
@@ -749,7 +780,7 @@ pub fn run(mode: Mode) -> Result<(), String> {
             });
             read
         });
-    let mut revealed = false;
+    let mut revealed = sleeping;
     let mut reported = false;
     let mut fallback_images = std::collections::BTreeMap::<usize, ui::Images>::new();
     let mut last = Instant::now();
@@ -1092,17 +1123,7 @@ pub fn run(mode: Mode) -> Result<(), String> {
                     .ok()
                     .flatten()
                 });
-                let target = hardware.unwrap_or_else(|| {
-                    eprintln!("enzui-lock: output {index} uses tiny-skia");
-                    SurfaceGpu {
-                        surface: None,
-                        renderer: iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
-                            renderer_settings(),
-                        )),
-                        format: wgpu::TextureFormat::Bgra8Unorm,
-                        physical,
-                    }
-                });
+                let target = hardware.unwrap_or_else(|| SurfaceGpu::software(physical));
                 surface.gpu = Some(target);
             }
             let target = surface
@@ -1166,7 +1187,8 @@ pub fn run(mode: Mode) -> Result<(), String> {
             surface.frame_pending = Some(now);
             if let (Some(gpu), Some(output)) = (&gpu, &target.surface) {
                 match output.get_current_texture() {
-                    wgpu::CurrentSurfaceTexture::Success(frame) => {
+                    wgpu::CurrentSurfaceTexture::Success(frame)
+                    | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
                         let view = frame
                             .texture
                             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -1194,7 +1216,21 @@ pub fn run(mode: Mode) -> Result<(), String> {
                         gpu.queue.present(frame);
                         surface.opaque |= covering;
                     }
-                    _ => target.format = configure(gpu, output, physical, xray),
+                    wgpu::CurrentSurfaceTexture::Outdated => {
+                        target.format = configure(gpu, output, physical, xray);
+                        surface.drawn = None;
+                    }
+                    wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Validation => {
+                        eprintln!(
+                            "enzui-lock: falling back to software after a lock surface error"
+                        );
+                        surface.gpu = Some(SurfaceGpu::software(physical));
+                        surface.drawn = None;
+                    }
+                    wgpu::CurrentSurfaceTexture::Timeout
+                    | wgpu::CurrentSurfaceTexture::Occluded => {
+                        surface.drawn = None;
+                    }
                 }
             } else if let iced::Renderer::Secondary(renderer) = &mut target.renderer {
                 software::present(
@@ -1213,17 +1249,19 @@ pub fn run(mode: Mode) -> Result<(), String> {
                 surface.opaque |= covering;
             }
         }
-        // `locked` releases the shell's sleep inhibitor, so it waits until the
-        // desktop is hidden on every output, not just covered by a transparent frame.
         if !reported
-            && state.locked.is_some_and(|at| {
-                at.elapsed() >= OPAQUE_WAIT
-                    || state
-                        .surfaces
-                        .iter()
-                        .all(|s| s.opaque || !s.configured || state.outputs[s.output].removed)
-            })
+            && lock_can_report(
+                sleeping,
+                state.locked.map(|at| at.elapsed()),
+                state.surfaces.iter().filter_map(|surface| {
+                    (!state.outputs[surface.output].removed)
+                        .then_some((surface.configured, surface.opaque))
+                }),
+            )
         {
+            connection
+                .flush()
+                .map_err(|_| tr("shell-lost-the-compositor"))?;
             reported = true;
             say("locked");
         }
@@ -1319,7 +1357,12 @@ pub fn run(mode: Mode) -> Result<(), String> {
         // A live wallpaper's frames wake the loop themselves.
         let frame = if redraw || state.held.is_some() {
             Duration::from_millis(8)
-        } else if animating {
+        } else if animating
+            || state
+                .surfaces
+                .iter()
+                .any(|s| s.gpu.is_some() && s.drawn.is_none())
+        {
             // A frame callback wakes the loop for the next frame.
             if state.surfaces.iter().any(|s| s.frame_pending.is_some()) {
                 FRAME_FALLBACK
@@ -1386,6 +1429,25 @@ fn hyprland_xray() -> bool {
 #[cfg(test)]
 mod wake_tests {
     use super::drain_open;
+
+    #[test]
+    fn sleep_lock_needs_an_opaque_frame_for_every_remaining_output() {
+        use super::{OPAQUE_WAIT, lock_can_report};
+        let elapsed = Some(OPAQUE_WAIT);
+        assert!(!lock_can_report(true, None, [(true, true)]));
+        assert!(!lock_can_report(
+            true,
+            elapsed,
+            [(true, true), (false, false)]
+        ));
+        assert!(!lock_can_report(
+            true,
+            elapsed,
+            [(true, true), (true, false)]
+        ));
+        assert!(lock_can_report(true, elapsed, [(true, true)]));
+        assert!(lock_can_report(false, elapsed, [(true, false)]));
+    }
 
     #[test]
     fn a_wake_pipe_is_dropped_once_its_writer_closes() {

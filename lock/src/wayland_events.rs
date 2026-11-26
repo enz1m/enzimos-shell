@@ -292,7 +292,11 @@ impl Dispatch<ExtSessionLockSurfaceV1, usize> for State {
             && surface.lock_surface.as_ref() == Some(lock_surface)
         {
             lock_surface.ack_configure(serial);
-            surface.size = (width.max(1), height.max(1));
+            let size = (width.max(1), height.max(1));
+            if surface.size != size {
+                surface.opaque = false;
+            }
+            surface.size = size;
             surface.configured = true;
         }
     }

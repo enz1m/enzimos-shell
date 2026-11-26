@@ -719,6 +719,26 @@ class PlatformTests(unittest.TestCase):
                 self.assertIn(f"{name};", descriptor)
                 self.assertIn(f"{name}=hyprland;", routes)
 
+    def test_saved_displays_start_at_their_remembered_scale(self):
+        settings = self.root / "saved-displays.json"
+        settings.write_text(json.dumps({"displays": [
+            {"enabled": True, "key": "Panasonic Industry Company|VVX14T092N00|0x89210600", "width": 2256, "height": 1504,
+             "refresh_mhz": 60001, "rotation": "normal", "scale": 1.5, "x": 0, "y": 0},
+            {"enabled": True, "key": "port:HDMI-A-1", "width": 1920, "height": 1080, "refresh_mhz": 60000,
+             "rotation": "left", "scale": 1, "x": 1504, "y": 0},
+            {"enabled": True, "key": "Bad\"|x\n|y", "width": 1920, "height": 1080, "refresh_mhz": 60000, "scale": 1, "x": 0, "y": 0},
+            {"enabled": False, "key": "Off|Mon|1", "width": 1920, "height": 1080, "refresh_mhz": 60000, "scale": 1, "x": 0, "y": 0},
+            {"enabled": True, "key": "A|B|C", "width": 1920, "height": 1080, "refresh_mhz": 60000, "scale": 9, "x": 0, "y": 0}]}))
+        lua = platform.saved_displays_lua(settings).decode()
+        self.assertIn('hl.monitor({ output = "desc:Panasonic Industry Company VVX14T092N00 0x89210600", mode = "2256x1504@60.001", position = "auto", scale = 1.5, transform = 0, reserved = { top = 36 } })', lua)
+        self.assertIn('hl.monitor({ output = "HDMI-A-1", mode = "1920x1080@60", position = "auto", scale = 1.0, transform = 3, reserved = { top = 36 } })', lua)
+        self.assertEqual(lua.count("hl.monitor("), 2)
+        self.assertIn('enzui_saved_display_outputs = { ["desc:Panasonic Industry Company VVX14T092N00 0x89210600"] = true, ["HDMI-A-1"] = true }', lua)
+        self.assertEqual(platform.saved_displays_lua(self.root / "missing.json"), b"")
+        config = platform.runtime_config(platform.ROOT / "config/hyprland.lua", False, installed=True, settings=settings)
+        self.assertIn(b"enzui_saved_display_outputs", config)
+        self.assertNotIn(b"enzui_saved_display_outputs", platform.runtime_config(platform.ROOT / "config/hyprland.lua", False, installed=False, settings=settings))
+
     def test_privileged_clients_name_the_shell_and_only_explicit_dev_tools(self):
         values = platform.privileged_clients(self.root)
         self.assertEqual(values["ENZUI_PRIVILEGED_CLIENTS"], "enforce")

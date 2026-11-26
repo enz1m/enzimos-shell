@@ -583,10 +583,49 @@ def compositor_state_homes(environ=None):
     return homes
 
 
-def runtime_config(source, headless, installed=False):
+SAVED_DISPLAY_TRANSFORMS = {"normal": 0, "right": 1, "upside_down": 2, "left": 3}
+
+
+def saved_displays_lua(settings):
+    """Monitor rules for the Shell's remembered display layouts, so each known
+    display comes up at its saved mode, scale and rotation in its first modeset
+    instead of changing scale after the first frames."""
+    try:
+        displays = json.loads(Path(settings).read_text()).get("displays") if settings else None
+    except (OSError, ValueError, AttributeError):
+        return b""
+    rows, outputs = [], []
+    for entry in displays if isinstance(displays, list) else []:
+        if len(rows) >= 32 or not isinstance(entry, dict) or entry.get("enabled") is not True:
+            continue
+        key, width, height, refresh = entry.get("key"), entry.get("width"), entry.get("height"), entry.get("refresh_mhz")
+        scale, transform = entry.get("scale"), SAVED_DISPLAY_TRANSFORMS.get(entry.get("rotation", "normal"))
+        if not (isinstance(key, str) and 0 < len(key) <= 320 and key.isprintable() and transform is not None
+                and all(type(value) is int for value in (width, height, refresh))
+                and 1 <= width <= 16384 and 1 <= height <= 16384 and 1000 <= refresh <= 1_000_000
+                and type(scale) in (int, float) and 0.5 <= scale <= 4.0):
+            continue
+        if key.startswith("port:"):
+            output = key[5:]
+        else:
+            parts = key.split("|")
+            if len(parts) != 3:
+                continue
+            output = "desc:" + " ".join(part.strip() for part in parts if part.strip())
+        mode = f"{width}x{height}@{refresh / 1000:g}"
+        outputs.append(f"[{json.dumps(output, ensure_ascii=False)}] = true")
+        rows.append(f'hl.monitor({{ output = {json.dumps(output, ensure_ascii=False)}, mode = {json.dumps(mode)}, position = "auto", '
+                    f'scale = {float(scale)!r}, transform = {transform}, reserved = {{ top = 36 }} }})')
+    if not rows:
+        return b""
+    return ("\n" + "\n".join(rows) + f"\nenzui_saved_display_outputs = {{ {', '.join(outputs)} }}\n").encode()
+
+
+def runtime_config(source, headless, installed=False, settings=None):
     content = source.read_bytes()
     if installed and source.name == "hyprland.lua":
         content += b'\nhl.monitor({ output = "", mode = "preferred", position = "auto", scale = 1, reserved = { top = 36 } })\n'
+        content += saved_displays_lua(settings)
         # Apply system keyboard settings before the first frame; account overrides follow shell
         # startup.
         content += SYSTEM_KEYBOARD_LUA
@@ -619,7 +658,7 @@ def inner(path, digest):
         for source in (ROOT / "config").glob("*.lua"):
             destination = runtime / "config" / source.name
             with destination.open("xb") as out:
-                out.write(runtime_config(source, bool(config.get("headless")), bool(config.get("installed"))))
+                out.write(runtime_config(source, bool(config.get("headless")), bool(config.get("installed")), config.get("settings")))
         bus, bus_identity = session_bus(config)
         with (runtime / "session-bus").open("xb") as out:
             out.write(bus.encode())

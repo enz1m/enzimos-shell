@@ -16,9 +16,16 @@ local function desktop_scale(monitor)
     return 1
 end
 
+-- Displays the Shell remembers start from their saved monitor rule, which the
+-- launcher writes, and keep it (`enzui_saved_display_outputs`).
+local function remembered(monitor)
+    local saved = enzui_saved_display_outputs or {}
+    return saved[monitor.name] or saved["desc:" .. (monitor.description or "")]
+end
+
 hl.on("hyprland.start", function()
     for _, monitor in ipairs(hl.get_monitors()) do
-        if not monitor.name:match("^ENZREMOTE%-") then
+        if not monitor.name:match("^ENZREMOTE%-") and not remembered(monitor) then
             local scale = desktop_scale(monitor)
             if scale ~= monitor.scale then
                 hl.monitor({output = monitor.name, scale = scale})

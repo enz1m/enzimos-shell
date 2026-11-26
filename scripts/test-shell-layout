@@ -157,3 +157,11 @@ dofile(arg[0]:match("^(.*)/").."/../config/desktop-scale.lua")
 startup()
 assert(scaled["eDP-1"] == 2)
 assert(scaled["HDMI-1"] == nil and scaled["HDMI-2"] == nil and scaled["ENZREMOTE-1"] == nil)
+
+-- A display with a saved monitor rule keeps it rather than switching after the first frame.
+scaled = {}
+panels[1].description = "Panasonic Industry Company VVX14T092N00 0x89210600"
+enzui_saved_display_outputs = {["desc:Panasonic Industry Company VVX14T092N00 0x89210600"] = true}
+startup()
+assert(scaled["eDP-1"] == nil)
+enzui_saved_display_outputs = nil

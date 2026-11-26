@@ -1,12 +1,12 @@
 //! Scheduled compositor night-light transform without geolocation.
-//! Releases the transform while off and remains off when another client owns it.
+//! Releases the transform while off and waits when another client owns it.
 
 use enzui_shell::i18n::tr;
 use serde::{Deserialize, Serialize};
 use std::sync::mpsc;
 use std::time::Duration;
 use wayland_client::{
-    Connection, Dispatch, QueueHandle,
+    Connection, Dispatch, Proxy, QueueHandle,
     protocol::{wl_output, wl_registry},
 };
 
@@ -178,7 +178,7 @@ pub fn matrix(kelvin: f64) -> [f64; 3] {
 
 #[derive(Default)]
 struct State {
-    outputs: Vec<wl_output::WlOutput>,
+    outputs: Vec<(u32, wl_output::WlOutput)>,
     // Global name and version.
     manager: Option<(u32, u32)>,
     blocked: bool,
@@ -203,13 +203,21 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                 "wl_output" => {
                     state
                         .outputs
-                        .push(registry.bind(name, version.min(4), qh, ()));
+                        .push((name, registry.bind(name, version.min(4), qh, ())));
                     state.changed = true;
                 }
                 "hyprland_ctm_control_manager_v1" => state.manager = Some((name, version)),
                 _ => {}
             },
-            wl_registry::Event::GlobalRemove { .. } => state.changed = true,
+            wl_registry::Event::GlobalRemove { name } => {
+                if let Some(index) = state.outputs.iter().position(|(id, _)| *id == name) {
+                    let (_, output) = state.outputs.swap_remove(index);
+                    if output.version() >= 3 {
+                        output.release();
+                    }
+                    state.changed = true;
+                }
+            }
             _ => {}
         }
     }
@@ -293,8 +301,9 @@ fn run(targets: &mpsc::Receiver<u16>) -> Result<(), String> {
         .map_err(|_| tr("shell-the-display-server-stopped-responding"))?;
     let mut bound: Option<HyprlandCtmControlManagerV1> = None;
     let (mut current, mut target) = (f64::from(NEUTRAL), NEUTRAL);
+    let mut waiting_for_transform = false;
     loop {
-        let fading = (current - f64::from(target)).abs() > 0.5;
+        let fading = !waiting_for_transform && (current - f64::from(target)).abs() > 0.5;
         match targets.recv_timeout(if fading {
             Duration::from_millis(40)
         } else {
@@ -307,8 +316,31 @@ fn run(targets: &mpsc::Receiver<u16>) -> Result<(), String> {
         queue
             .roundtrip(&mut state)
             .map_err(|_| tr("shell-the-display-server-stopped-responding"))?;
+        if target == NEUTRAL {
+            waiting_for_transform = false;
+        } else if bound.is_none() {
+            let (name, version) = state
+                .manager
+                .ok_or_else(|| tr("shell-the-compositor-has-no-colour-transform-control"))?;
+            state.blocked = false;
+            let manager: HyprlandCtmControlManagerV1 = registry.bind(name, version.min(2), &qh, ());
+            queue
+                .roundtrip(&mut state)
+                .map_err(|_| tr("shell-the-display-server-stopped-responding"))?;
+            waiting_for_transform = state.blocked;
+            if waiting_for_transform {
+                manager.destroy();
+                connection
+                    .flush()
+                    .map_err(|_| tr("shell-the-display-server-stopped-responding"))?;
+                continue;
+            }
+            bound = Some(manager);
+            state.changed = true;
+        }
+
         let before = current;
-        // About a second and a half from neutral to 4000 K.
+        // A step of 70 K at 40 ms fades from neutral to 4000 K in about 1.5 s.
         let step = 70.0;
         current = if current < f64::from(target) {
             (current + step).min(f64::from(target))
@@ -316,7 +348,6 @@ fn run(targets: &mpsc::Receiver<u16>) -> Result<(), String> {
             (current - step).max(f64::from(target))
         };
         if current >= f64::from(NEUTRAL) - 0.5 {
-            // Neutral: let go of the transform, which resets it.
             if let Some(manager) = bound.take() {
                 manager.destroy();
                 connection
@@ -325,29 +356,13 @@ fn run(targets: &mpsc::Receiver<u16>) -> Result<(), String> {
             }
             continue;
         }
-        if bound.is_none() {
-            let (name, version) = state
-                .manager
-                .ok_or_else(|| tr("shell-the-compositor-has-no-colour-transform-control"))?;
-            // Version 2 says when another client holds the transform.
-            bound = Some(registry.bind(name, version.min(2), &qh, ()));
-            state.changed = true;
-            queue
-                .roundtrip(&mut state)
-                .map_err(|_| tr("shell-the-display-server-stopped-responding"))?;
-        }
-        if state.blocked {
-            if let Some(manager) = bound.take() {
-                manager.destroy();
-            }
-            return Err(tr("shell-another-app-controls-the-screen-colours").into());
-        }
-        if (current - before).abs() < f64::EPSILON && !std::mem::take(&mut state.changed) {
+        let outputs_changed = std::mem::take(&mut state.changed);
+        if (current - before).abs() < f64::EPSILON && !outputs_changed {
             continue;
         }
         if let Some(manager) = &bound {
             let [r, g, b] = matrix(current);
-            for output in &state.outputs {
+            for (_, output) in &state.outputs {
                 manager.set_ctm_for_output(output, r, 0.0, 0.0, 0.0, g, 0.0, 0.0, 0.0, b);
             }
             manager.commit();

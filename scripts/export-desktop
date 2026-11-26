@@ -302,6 +302,9 @@ def main():
     for name in EXECUTABLES:
         copy(bin_dir / name, lib / "bin" / name, 0o755)
         track(lib / "bin" / name, "shell")
+    primary_paste = at(prefix / "share/glib-2.0/schemas/90-enzimos-primary-paste.gschema.override")
+    copy(ROOT / "config/glib-2.0/90-enzimos-primary-paste.gschema.override", primary_paste, 0o644)
+    track(primary_paste, "shell")
     # User and system MIME defaults take precedence over desktop-specific defaults.
     mimeapps = at(prefix / "share/applications/enzui-mimeapps.list")
     mimeapps.parent.mkdir(parents=True, exist_ok=True)

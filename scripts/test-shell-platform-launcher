@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import errno
 import fcntl
 import importlib.machinery
 import importlib.util
@@ -7,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -288,6 +290,8 @@ class PlatformTests(unittest.TestCase):
             self.assertLess(self.supervised(config, compositor, shell[0]), 5)
         self.assertEqual(len(calls), 1)
         command.assert_not_called()
+        self.assertEqual(json.loads(platform.read_private(runtime / "shell-exit.json")),
+                         {"pid": shell[0].pid, "returncode": -signal.SIGKILL})
         relaunched = json.loads(platform.read_private(runtime / "shell.pid"))
         self.assertEqual(json.loads(platform.read_private(runtime / "ready.json")), {**ready, "shell_pid": relaunched, "shell_start": platform.start_ticks(relaunched)})
 
@@ -328,20 +332,19 @@ class PlatformTests(unittest.TestCase):
         launch.assert_not_called()
         command.assert_not_called()
 
-    def installed_runtime(self, shell_start_offset=0):
+    def installed_runtime(self, shell_start_offset=0, shell_duration=30):
         runtime = self.root / "installed"
         runtime.mkdir()
-        compositor, shell = self.process(), self.process()
+        compositor, shell = self.process(), self.process(shell_duration)
         ready = {"shell_pid": shell[0].pid, "shell_start": shell[1] + shell_start_offset, "output": "owned-output"}
         platform.publish(runtime / "ready.json", ready)
         config = {"runtime": str(runtime), "installed": True, "shell_bin_dir": str(self.root), "build": str(self.root)}
         return runtime, config, compositor, shell
 
     def test_installed_shell_relaunch_budget_spares_output_moves_and_then_ends_the_login(self):
-        runtime, config, compositor, shell = self.installed_runtime()
+        runtime, config, compositor, shell = self.installed_runtime(shell_duration=.3)
         (runtime / "outputs-changed").touch()
         calls, launch = self.relaunching(runtime, seconds=.3)
-        self.after(.2, shell[0].kill)
         with mock.patch.object(platform, "launch_shell", side_effect=launch), mock.patch.object(platform, "primary_output", return_value="moved-output"), \
                 mock.patch.object(platform, "control_binary", return_value="owned-control"), mock.patch.object(platform, "command") as command:
             self.assertLess(self.supervised(config, compositor, shell[0]), 10)
@@ -349,6 +352,7 @@ class PlatformTests(unittest.TestCase):
         self.assertFalse((runtime / "outputs-changed").exists())
         self.assertEqual(json.loads(platform.read_private(runtime / "output.json")), {"output": "moved-output"})
         self.assertEqual(json.loads(platform.read_private(runtime / "ended.json")), {"reason": "shell-keeps-exiting"})
+        self.assertFalse((runtime / "shell-exit.json").exists())
         command.assert_called_once_with(["owned-control", "-i", "owned-instance", "dispatch", "hl.dsp.exit()"])
         self.assertIsNone(compositor[0].poll())
 
@@ -528,6 +532,8 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual(platform.desktop_failure(runtime, xdg, cache, None, False), "startup-failed")
         (xdg / "hypr/sig_1_2/hyprland.lock").unlink()
         self.assertEqual(platform.desktop_failure(runtime, xdg, cache, "shell-keeps-exiting", True), "shell-keeps-exiting")
+        platform.record_shell_exit(runtime, mock.Mock(pid=42, returncode=-signal.SIGABRT))
+        self.assertEqual(platform.desktop_failure(runtime, xdg, cache, "compositor-exited", True), "shell-exited-abnormally")
 
     def test_failure_diagnostics_are_bounded_private_and_pruned(self):
         runtime, xdg, cache = self.ended_desktop(report=True)
@@ -547,6 +553,34 @@ class PlatformTests(unittest.TestCase):
         for _ in range(platform.FAILURE_BUNDLES + 2):
             platform.retain_failure_diagnostics(runtime, xdg, cache, parent, "compositor-crashed")
         self.assertEqual(len(list(parent.iterdir())), platform.FAILURE_BUNDLES)
+
+    def test_failed_diagnostics_keep_the_previous_log_and_hide_incomplete_bundles(self):
+        runtime, xdg, cache = self.ended_desktop()
+        state = self.root / "state"
+        state.mkdir()
+        log = state / "last-desktop.log"
+        log.write_text("preceding startup log")
+        with mock.patch.object(platform.os, "fsync", side_effect=OSError(errno.ENOSPC, "full")):
+            platform.save_desktop_diagnostics(runtime, xdg, cache, state, "compositor-exited", True)
+        self.assertEqual(log.read_text(), "preceding startup log")
+        self.assertEqual(list((state / "desktop-failures").iterdir()), [])
+        self.assertCountEqual(list(state.iterdir()), [log, state / "desktop-failures"])
+
+    def test_retirement_removes_only_the_dead_owned_compositor_instance(self):
+        child, ticks = self.process()
+        runtime, xdg, _ = self.ended_desktop(pid=child.pid)
+        platform.publish(runtime / "hyprland.pid.start", ticks)
+        instance = xdg / "hypr/sig_1_2"
+        instance.parent.chmod(0o700)
+        sibling = instance.with_name("another-session")
+        sibling.mkdir()
+        platform.retire_compositor_instance(runtime, xdg)
+        self.assertTrue(instance.is_dir())
+        child.kill()
+        child.wait()
+        platform.retire_compositor_instance(runtime, xdg)
+        self.assertFalse(instance.exists())
+        self.assertTrue(sibling.is_dir())
 
     def test_failure_diagnostics_skip_linked_or_missing_logs(self):
         runtime, xdg, cache = self.ended_desktop()
@@ -724,6 +758,7 @@ class PlatformTests(unittest.TestCase):
                 platform.inner(str(path),digest)
             compositor.assert_not_called()
         self.assertEqual(json.loads((runtime/"failed.json").read_text())["error"],failure)
+        self.assertFalse((Path(config["profile"]) / "active.json").exists())
         self.assertIsNone(platform.desktop_failure(runtime,self.root/"xdg",None,"compositor-exited",True))
         self.assertEqual(platform.desktop_failure(runtime,self.root/"xdg",None,None,False),"startup-failed")
         bundle=platform.retain_failure_diagnostics(runtime,self.root/"xdg",None,self.root/"failures","startup-failed")

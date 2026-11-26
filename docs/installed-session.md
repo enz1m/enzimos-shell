@@ -62,13 +62,15 @@ The supervisor relaunches a failed shell while preserving the compositor and
 applications; more than three crash restarts in a minute ends an installed login.
 A primary-output relocation is a planned restart and does not consume that budget.
 
-The per-login runtime directory and its logs are removed when the desktop ends;
-`$XDG_STATE_HOME/enzui/last-desktop.log` keeps the startup log. When the
-compositor crashes or is killed (it left its crash report or instance lock), the
-shell keeps exiting, or startup fails, the launcher also keeps bounded excerpts
-of the startup, compositor, compositor-internal and shell logs and the crash
-report's head under `$XDG_STATE_HOME/enzui/desktop-failures/`. Bundles are owner-only, stay on
-the device and only the newest five are kept. An orderly logout keeps none.
+The launcher removes the per-login runtime directory when the desktop ends and
+retires the dead compositor's verified instance directory after collecting
+diagnostics. `$XDG_STATE_HOME/enzui/last-desktop.log` keeps the startup log tail.
+After a compositor crash, an abnormal Shell exit or a startup failure, the
+launcher saves a bundle under `$XDG_STATE_HOME/enzui/desktop-failures/` with
+bounded log excerpts, the latest abnormal Shell exit status and the head of
+any compositor crash report available for that session. Bundles are owner-only,
+stay on the device and only the newest five are kept. A full state volume can
+prevent diagnostics from being saved. Runtime cleanup still runs.
 Normal previews preserve apps after shell exit; a review started with
 `--exit-with-shell` closes its own apps with the shell.
 

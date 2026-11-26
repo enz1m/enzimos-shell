@@ -51,7 +51,10 @@ def read_private(path, limit=32768):
 
 
 def publish(path, value):
-    data = json.dumps(value, separators=(",", ":")).encode()
+    publish_bytes(path, json.dumps(value, separators=(",", ":")).encode())
+
+
+def publish_bytes(path, data):
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as out:
@@ -621,7 +624,8 @@ def inner(path, digest):
         with (runtime / "session-bus").open("xb") as out:
             out.write(bus.encode())
         publish(runtime / "session-bus-peer.json", bus_identity)
-        publish(profile / "active.json", {"unit": config["unit"], "runtime": config["runtime"], "supervisor": os.getpid(), "start": start_ticks(os.getpid())})
+        if not config.get("installed"):
+            publish(profile / "active.json", {"unit": config["unit"], "runtime": config["runtime"], "supervisor": os.getpid(), "start": start_ticks(os.getpid())})
         os.environ.update(ENZUI_SHELL_LAUNCHER_PID=str(os.getpid()), ENZUI_SHELL_LAUNCHER_START=str(start_ticks(os.getpid())))
         try:
             identity = prepare_desktop(config)
@@ -636,6 +640,15 @@ def inner(path, digest):
 
 
 SHELL_RESTART_DELAY = 1
+
+
+def record_shell_exit(runtime, child):
+    if child is None or not child.returncode:
+        return
+    try:
+        publish(runtime / "shell-exit.json", {"pid": child.pid, "returncode": child.returncode})
+    except OSError as error:
+        print("Cannot record shell exit:", error, file=sys.stderr, flush=True)
 
 
 def shell_restart_delay(identity):
@@ -659,6 +672,8 @@ def supervise(config, identity):
             publish(runtime / "ended.json", {"reason": "shell-exited", "whole_session_cleanup": True})
             return
         if not config.get("exit_with_shell", False) and shell and not restart_paused and OWNED_SHELL is not None and OWNED_SHELL.returncode is not None:
+            if OWNED_SHELL.pid == shell["shell_pid"]:
+                record_shell_exit(runtime, OWNED_SHELL)
             now = time.monotonic()
             restarts = [at for at in restarts if now - at < 60] + [now]
             if len(restarts) > 3:
@@ -686,24 +701,28 @@ def supervise_installed(config, identity):
     runtime = Path(config["runtime"])
     restarts = []
     while live(identity["pid"], identity["start"]):
-        if OWNED_SHELL is not None:
-            OWNED_SHELL.poll()
         ready = json.loads(read_private(runtime / "ready.json"))
         if live(ready["shell_pid"], ready["shell_start"]):
             wait_for_exit([(identity["pid"], identity["start"]), (ready["shell_pid"], ready["shell_start"])])
             continue
+        child = OWNED_SHELL if OWNED_SHELL is not None and OWNED_SHELL.pid == ready["shell_pid"] else None
+        status = child.poll() if child is not None else None
         now = time.monotonic()
         # The shell leaves this marker just before exiting, so it is read only after an exit.
         # Output-change markers request relocation without consuming the crash retry budget.
         moved = runtime / "outputs-changed"
-        relocated = moved.exists()
-        if relocated:
+        if moved.exists():
             moved.unlink()
+            relocated = status == 0
+        else:
+            relocated = False
+        if relocated:
             try:
                 publish(runtime / "output.json", {"output": primary_output(config, identity)})
             except RuntimeError:
                 pass
         else:
+            record_shell_exit(runtime, child)
             restarts = [at for at in restarts if now - at < 60] + [now]
         if len(restarts) > 3:
             publish(runtime / "ended.json", {"reason": "shell-keeps-exiting"})
@@ -1019,41 +1038,30 @@ def installed(args):
                "-p", "StandardOutput=append:" + str(runtime / "startup.log"), "-p", "StandardError=append:" + str(runtime / "startup.log"),
                "--working-directory=" + str(Path.home()), "-p", "KillMode=control-group", "-p", "SendSIGKILL=yes", "-p", "TimeoutStopSec=10s", "-p", "Restart=no",
                "/usr/bin/env", "-i", *(f"{key}={value}" for key, value in clean.items()), sys.executable, str(Path(__file__).resolve()), "--inner", str(path), digest]
-    command(options)
     stopping = []
     def stop(*_):
         stopping.append(True)
-    for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
-        signal.signal(signum, stop)
-    try:
-        wait, settled = installed_waiter(unit)
-        wait_installed_unit(unit, stopping, sleep=wait, settled=settled)
-    finally:
-        subprocess.run(["systemctl", "--user", "stop", unit], capture_output=True)
-        subprocess.run(["systemctl", "--user", "stop", *INPUT_METHOD_UNITS], capture_output=True)
-        if config.get("installed"):
-            stop_session_target()
-    ended = runtime / "ended.json"
-    reason = json.loads(read_private(ended)).get("reason") if ended.exists() else None
-    compositor_exited = reason == "compositor-exited"
-    started = (runtime / "ready.json").exists()
     state = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "enzui"
-    state.mkdir(mode=0o700, parents=True, exist_ok=True)
-    log = state / "last-desktop.log"
     try:
-        shutil.copyfile(runtime / "startup.log", log)
-    except FileNotFoundError:
-        pass
-    failure = desktop_failure(runtime, xdg, clean.get("ENZUI_HYPR_CACHE_HOME"), reason, started)
-    if failure:
+        command(options)
+        for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+            signal.signal(signum, stop)
         try:
-            kept = retain_failure_diagnostics(runtime, xdg, clean.get("ENZUI_HYPR_CACHE_HOME"), state / "desktop-failures", failure)
-            print("Desktop ended abnormally (" + failure + "); diagnostics kept in " + str(kept), file=sys.stderr)
-        except (OSError, RuntimeError, ValueError) as error:
-            print("Desktop ended abnormally (" + failure + "); diagnostics not kept:", error, file=sys.stderr)
-    shutil.rmtree(runtime, ignore_errors=True)
-    if not compositor_exited and not started:
-        raise RuntimeError("The desktop did not start; see " + str(log))
+            wait, settled = installed_waiter(unit)
+            wait_installed_unit(unit, stopping, sleep=wait, settled=settled)
+        finally:
+            subprocess.run(["systemctl", "--user", "stop", unit], capture_output=True)
+            subprocess.run(["systemctl", "--user", "stop", *INPUT_METHOD_UNITS], capture_output=True)
+            stop_session_target()
+        ended = runtime / "ended.json"
+        reason = json.loads(read_private(ended)).get("reason") if ended.exists() else None
+        started = (runtime / "ready.json").exists()
+        save_desktop_diagnostics(runtime, xdg, clean.get("ENZUI_HYPR_CACHE_HOME"), state, reason, started)
+        if reason != "compositor-exited" and not started:
+            raise RuntimeError("The desktop did not start; see " + str(state / "last-desktop.log"))
+    finally:
+        retire_compositor_instance(runtime, xdg)
+        shutil.rmtree(runtime, ignore_errors=True)
 
 
 FAILURE_EXCERPT_BYTES = 64 * 1024
@@ -1072,6 +1080,31 @@ def ended_compositor(runtime, xdg):
     return pid, xdg / "hypr" / instance
 
 
+def stale_compositor_lock(instance, pid):
+    try:
+        return read_private(instance / "hyprland.lock", 512).split(b"\n", 1)[0].strip() == str(pid).encode()
+    except (OSError, RuntimeError):
+        return False
+
+
+def retire_compositor_instance(runtime, xdg):
+    pid, instance = ended_compositor(runtime, xdg)
+    if instance is None:
+        return
+    try:
+        ticks = int(read_private(runtime / "hyprland.pid.start", 32))
+        for directory in (instance.parent, instance):
+            info = directory.lstat()
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+                return
+        if not live(pid, ticks) and stale_compositor_lock(instance, pid):
+            shutil.rmtree(instance)
+    except FileNotFoundError:
+        pass
+    except (OSError, RuntimeError, ValueError) as error:
+        print("Cannot retire compositor instance:", error, file=sys.stderr)
+
+
 def desktop_failure(runtime, xdg, cache_home, reason, started):
     pid, instance = ended_compositor(runtime, xdg)
     if pid and cache_home and Path(cache_home).is_absolute() and (Path(cache_home) / f"hyprlandCrashReport{pid}.txt").is_file():
@@ -1079,16 +1112,29 @@ def desktop_failure(runtime, xdg, cache_home, reason, started):
     # A failed startup stops the unit, which may kill the compositor before its cleanup.
     if reason != "compositor-exited" and not started:
         return "startup-failed"
-    if pid:
-        # Hyprland removes the lock only on orderly exit.
-        try:
-            if read_private(instance / "hyprland.lock", 512).split(b"\n", 1)[0].strip() == str(pid).encode():
-                return "compositor-ended-abnormally"
-        except (OSError, RuntimeError):
-            pass
+    if pid and stale_compositor_lock(instance, pid):
+        return "compositor-ended-abnormally"
     if reason == "shell-keeps-exiting":
         return reason
+    if (runtime / "shell-exit.json").exists():
+        return "shell-exited-abnormally"
     return None
+
+
+def save_desktop_diagnostics(runtime, xdg, cache_home, state, reason, started):
+    try:
+        if (excerpt := owned_excerpt(runtime / "startup.log", FAILURE_EXCERPT_BYTES)) is not None:
+            state.mkdir(mode=0o700, parents=True, exist_ok=True)
+            publish_bytes(state / "last-desktop.log", excerpt[0])
+    except OSError as error:
+        print("Cannot save desktop startup log:", error, file=sys.stderr)
+    failure = desktop_failure(runtime, xdg, cache_home, reason, started)
+    if failure:
+        try:
+            kept = retain_failure_diagnostics(runtime, xdg, cache_home, state / "desktop-failures", failure)
+            print("Desktop failure (" + failure + "); diagnostics kept in " + str(kept), file=sys.stderr)
+        except (OSError, RuntimeError, ValueError) as error:
+            print("Desktop failure (" + failure + "); diagnostics not kept:", error, file=sys.stderr)
 
 
 def owned_excerpt(path, limit, head=False):
@@ -1110,30 +1156,33 @@ def retain_failure_diagnostics(runtime, xdg, cache_home, parent, failure, now=No
     pid, instance = ended_compositor(runtime, xdg)
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(now))
     bundle = parent / f"{stamp}-{secrets.token_hex(4)}"
-    bundle.mkdir(mode=0o700)
     sources = {"startup.log": (runtime / "startup.log", FAILURE_EXCERPT_BYTES, False),
                "compositor.log": (runtime / "hyprland.log", FAILURE_EXCERPT_BYTES, False),
-               "shell.log": (runtime / "shell.log", FAILURE_EXCERPT_BYTES, False)}
+               "shell.log": (runtime / "shell.log", FAILURE_EXCERPT_BYTES, False),
+               "shell-exit.json": (runtime / "shell-exit.json", 4096, True)}
     if instance:
         sources["compositor-internal.log"] = (instance / "hyprland.log", FAILURE_INTERNAL_LOG_BYTES, False)
     if pid and cache_home and Path(cache_home).is_absolute():
         # The report's backtrace precedes its log tail.
         sources["crash-report.txt"] = (Path(cache_home) / f"hyprlandCrashReport{pid}.txt", FAILURE_EXCERPT_BYTES, True)
     files = {}
-    for name, (source, limit, head) in sources.items():
-        excerpt = owned_excerpt(source, limit, head)
-        if excerpt is None:
-            continue
-        data, cut = excerpt
-        with private_file(bundle / name, create=True) as out:
-            out.write(data)
-        files[name] = {"bytes": len(data), "truncated": cut}
     manifest = {"schema": 1, "failure": failure, "compositor_pid": pid, "ended": stamp, "files": files}
     try:
         manifest["startup_error"] = str(json.loads(read_private(runtime / "failed.json")).get("error", ""))[:300]
     except (OSError, RuntimeError, ValueError, AttributeError):
         pass
-    publish(bundle / "manifest.json", manifest)
+    with tempfile.TemporaryDirectory(dir=parent, prefix=".pending-") as staging:
+        staging = Path(staging)
+        for name, (source, limit, head) in sources.items():
+            excerpt = owned_excerpt(source, limit, head)
+            if excerpt is None:
+                continue
+            data, cut = excerpt
+            with private_file(staging / name, create=True) as out:
+                out.write(data)
+            files[name] = {"bytes": len(data), "truncated": cut}
+        publish(staging / "manifest.json", manifest)
+        staging.rename(bundle)
     bundles = sorted(entry for entry in parent.iterdir() if entry.is_dir() and not entry.is_symlink() and re.fullmatch(r"\d{8}T\d{6}Z-[0-9a-f]{8}", entry.name))
     for old in bundles[:-FAILURE_BUNDLES]:
         shutil.rmtree(old, ignore_errors=True)

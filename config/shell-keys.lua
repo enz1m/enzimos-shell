@@ -17,12 +17,46 @@ hl.bind("XF86AudioPrev", command("media-previous"), { locked = true })
 hl.bind("XF86AudioStop", command("media-stop"), { locked = true })
 -- Focus commits in the key callback before ordinary keys can reach the old surface.
 dofile(debug.getinfo(1,"S").source:sub(2):match("^(.*)/") .. "/window-switcher.lua")
-hl.bind("ALT + Tab", function() enzui_switcher_step(1,false) end, { repeating = true })
-hl.bind("ALT + SHIFT + Tab", function() enzui_switcher_step(-1,false) end, { repeating = true })
-hl.bind("ALT + grave", function() enzui_switcher_step(1,true) end, { repeating = true })
-hl.bind("ALT + Escape", enzui_switcher_cancel)
-hl.bind("ALT + Alt_L", enzui_switcher_commit, { release = true, transparent = true, non_consuming = true })
-hl.bind("ALT + Alt_R", enzui_switcher_commit, { release = true, transparent = true, non_consuming = true })
+local function switch(key, direction, same_app)
+    local function modifier()
+        local chord = enzui_shortcut_chord(key)
+        for _, mod in ipairs({"ALT", "SUPER", "CTRL", "SHIFT"}) do
+            if chord:upper():match("%f[%a]" .. mod .. "%f[%A] *%+") then return mod end
+        end
+    end
+    hl.bind(key, function()
+        enzui_switcher_step(direction, same_app)
+        if enzui_switcher.active then enzui_switcher.hold = modifier() end
+    end, { repeating = true })
+    hl.bind(key, function()
+        if not modifier() and not enzui_switcher.hold then enzui_switcher_commit() end
+    end, { release = true, non_consuming = true })
+end
+switch("ALT + Tab", 1, false)
+switch("ALT + SHIFT + Tab", -1, false)
+switch("ALT + grave", 1, true)
+hl.bind("ALT + Escape", function()
+    if enzui_switcher.active then return enzui_switcher_cancel() end
+    return {ok=true, pass_event=true}
+end)
+for mod, keys in pairs({
+    ALT = {"Alt_L", "Alt_R"}, SUPER = {"Super_L", "Super_R"},
+    CTRL = {"Control_L", "Control_R"}, SHIFT = {"Shift_L", "Shift_R"},
+}) do
+    for _, key in ipairs(keys) do
+        hl.bind(key, function()
+            if enzui_switcher.hold == mod then enzui_switcher_commit() end
+        end, { release = true, ignore_mods = true, transparent = true, non_consuming = true })
+    end
+end
+hl.bind("SUPER + SPACE", command("search"))
+hl.bind("SUPER + A", command("launcher"))
+hl.bind("SUPER + slash", command("shortcuts"))
+hl.bind("SUPER + C", command("controls"))
+hl.bind("SUPER + N", command("notifications"))
+hl.bind("SUPER + SHIFT + D", command("dock"))
+hl.bind("SUPER + D", command("overview"))
+hl.bind("SUPER + ALT + K", command("keyboard"))
 hl.bind("SUPER + period", command("emoji-picker"))
 -- Dictation: hold to talk, or tap for hands-free; the daemon tells them apart.
 hl.bind("SUPER + H", hl.dsp.exec_cmd("enzimos-dictation press"))

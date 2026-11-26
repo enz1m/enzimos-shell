@@ -203,6 +203,9 @@ impl Settings {
             Change::Shortcut(ref id, ref chord) => {
                 self.compositor.set_shortcut(id, chord.as_deref())?;
             }
+            Change::CustomShortcut(ref id, ref shortcut) => {
+                self.compositor.set_custom_shortcut(id, shortcut.as_ref())?;
+            }
             Change::Terminal(ref program) => {
                 if !crate::desktop_preferences::valid_terminal(program) {
                     return Err(tr("shell-invalid-terminal").into());
@@ -303,6 +306,8 @@ pub enum Change {
     /// A chord for a changeable action (`crate::shortcut_map`); `None`
     /// restores its default, and an empty id restores every default.
     Shortcut(String, Option<String>),
+    /// Adds, updates or removes a user-defined shortcut.
+    CustomShortcut(String, Option<crate::shortcut_map::CustomShortcut>),
     /// Colour modes and X11 scaling, which the compositor applies.
     Display(crate::desktop_preferences::DisplayChange),
     Wallpaper(crate::desktop_preferences::WallpaperChange),
@@ -381,6 +386,7 @@ impl Change {
             (Self::Notification(a), Self::Notification(b)) => a.same_key(b),
             (Self::Metric(a, _), Self::Metric(b, _)) => a == b,
             (Self::Island(a, _), Self::Island(b, _)) => a == b,
+            (Self::Shortcut(..) | Self::CustomShortcut(..), _) => false,
             (Self::Compositor(a, _), Self::Compositor(b, _)) => a == b,
             (Self::Wallpaper(a), Self::Wallpaper(b)) => a.same_slot(b),
             (Self::Session(a), Self::Session(b)) => {
@@ -513,8 +519,8 @@ pub(super) fn parse(value: &serde_json::Value) -> Result<Settings, String> {
         display_mirror: boolean("display_mirror")?.unwrap_or(false),
         screen_time: boolean("screen_time")?.unwrap_or(false),
         world_clocks: world_clocks_from_json(value.get("world_clocks")),
-        compositor: crate::desktop_preferences::CompositorPreferences::from_json(
-            value.get("compositor"),
+        compositor: crate::desktop_preferences::CompositorPreferences::shortcuts_from_account(
+            value,
         )?,
         wallpaper: crate::desktop_preferences::Wallpaper::from_json(value.get("wallpaper"))?,
         session: crate::session_preferences::SessionPreferences::from_json(value.get("session"))?,

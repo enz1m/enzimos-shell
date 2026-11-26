@@ -710,13 +710,6 @@ pub static ENTRIES: &[Entry] = &[
     ),
     entry!(
         Search,
-        "quick-search/shortcut",
-        "shell-search-shortcut",
-        "shell-quick-search",
-        "shell-keyboard-hotkey-super-ctrl-alt-space"
-    ),
-    entry!(
-        Search,
         "quick-search/animations",
         "shell-search-animation",
         "shell-quick-search",

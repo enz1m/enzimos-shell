@@ -51,6 +51,7 @@ fn candidate(value: &serde_json::Value, monitor: i64) -> Option<Candidate> {
                 | "dev.enzui.QuickSearch"
                 | "dev.enzui.WorkspaceOverview"
                 | "dev.enzui.WindowSpread"
+                | "dev.enzui.Shortcuts"
                 | "dev.enzui.Sidebar"
                 | "dev.enzui.SidebarPane"
                 | "dev.enzui.SidebarBacking"

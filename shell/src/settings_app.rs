@@ -119,7 +119,7 @@ enum Message {
     PreviewNotificationSent(Result<(), String>),
     DesktopStatus(enzui_shell::motion::Status),
     Plugin(plugins_settings::Message),
-    Shortcuts(enzui_widgets::editable_shortcuts::EditableShortcutsEvent),
+    Shortcuts(shortcuts_settings::Message),
     Sandbox(sandbox_settings::Message),
     Background(background_settings::Message),
     Assistant(assistant_settings::Message),

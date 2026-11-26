@@ -2,35 +2,6 @@ use enzui_shell::i18n::tr;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Shortcut {
-    #[default]
-    SuperSpace,
-    CtrlSpace,
-    AltSpace,
-    Off,
-}
-impl Shortcut {
-    pub const ALL: [Self; 4] = [Self::SuperSpace, Self::CtrlSpace, Self::AltSpace, Self::Off];
-    pub fn chord(self) -> Option<&'static str> {
-        match self {
-            Self::SuperSpace => Some("SUPER + SPACE"),
-            Self::CtrlSpace => Some("CTRL + SPACE"),
-            Self::AltSpace => Some("ALT + SPACE"),
-            Self::Off => None,
-        }
-    }
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::SuperSpace => "Super + Space",
-            Self::CtrlSpace => "Ctrl + Space",
-            Self::AltSpace => "Alt + Space",
-            Self::Off => tr("shell-no-keyboard-shortcut"),
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Category {
@@ -90,7 +61,6 @@ impl Category {
 #[serde(default)]
 pub struct Preferences {
     pub enabled: bool,
-    pub shortcut: Shortcut,
     pub animations: bool,
     pub background_fade: bool,
     pub compact: bool,
@@ -117,7 +87,6 @@ impl Default for Preferences {
     fn default() -> Self {
         Self {
             enabled: true,
-            shortcut: Shortcut::default(),
             animations: true,
             background_fade: true,
             compact: false,
@@ -172,7 +141,6 @@ impl WebProvider {
 #[derive(Clone, Debug)]
 pub enum Change {
     Enabled(bool),
-    Shortcut(Shortcut),
     Animations(bool),
     BackgroundFade(bool),
     Compact(bool),
@@ -315,7 +283,6 @@ impl Preferences {
         let mut next = self.clone();
         match change {
             Change::Enabled(value) => next.enabled = *value,
-            Change::Shortcut(value) => next.shortcut = *value,
             Change::Animations(value) => next.animations = *value,
             Change::BackgroundFade(value) => next.background_fade = *value,
             Change::Compact(value) => next.compact = *value,

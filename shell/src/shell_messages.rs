@@ -27,6 +27,7 @@ pub(super) enum Message {
     Notification(notification_panel::Message),
     Activity(shell_activity::ActivityMessage),
     Command(enzui_shell::commands::Command),
+    ShortcutOverlay(shortcut_overlay::Message),
     Osd(shell_osd::OsdMessage),
     GlassBound(
         window::Id,

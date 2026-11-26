@@ -22,6 +22,13 @@ pub enum Command {
     EmojiPicker,
     Overview,
     WindowSpread,
+    Shortcuts,
+    ShowShortcuts,
+    Search,
+    Launcher,
+    Controls,
+    Dock,
+    Notifications,
     ZoomIn,
     ZoomOut,
     ZoomReset,
@@ -42,7 +49,7 @@ pub enum Command {
 }
 
 impl Command {
-    const ALL: [(Self, &'static str); 31] = [
+    const ALL: [(Self, &'static str); 38] = [
         (Self::VolumeUp, "volume-up"),
         (Self::VolumeDown, "volume-down"),
         (Self::VolumeMute, "volume-mute"),
@@ -62,6 +69,13 @@ impl Command {
         (Self::EmojiPicker, "emoji-picker"),
         (Self::Overview, "overview"),
         (Self::WindowSpread, "window-spread"),
+        (Self::Shortcuts, "shortcuts"),
+        (Self::ShowShortcuts, "show-shortcuts"),
+        (Self::Search, "search"),
+        (Self::Launcher, "launcher"),
+        (Self::Controls, "controls"),
+        (Self::Dock, "dock"),
+        (Self::Notifications, "notifications"),
         (Self::ZoomIn, "zoom-in"),
         (Self::ZoomOut, "zoom-out"),
         (Self::ZoomReset, "zoom-reset"),

@@ -2,7 +2,7 @@ use super::{Message as ParentMessage, SettingsApp};
 use enzui_shell::i18n::tr;
 use enzui_shell::tr;
 use enzui_shell::{
-    search::preferences::{Category, Change, Shortcut, WebProvider},
+    search::preferences::{Category, Change, WebProvider},
     settings::Change as SettingChange,
 };
 use enzui_widgets::{
@@ -229,14 +229,6 @@ impl SettingsApp {
                         p.enabled,
                         tr("shell-when-off-the-shortcut-opens-the-classic-app-launcher"),
                         |v| change(Change::Enabled(v))
-                    ),
-                    self.choice_setting(
-                        "quick-search/shortcut",
-                        p.shortcut.label(),
-                        Shortcut::ALL
-                            .into_iter()
-                            .map(|value| (value.label().into(), change(Change::Shortcut(value))))
-                            .collect()
                     ),
                     self.dependent(p.enabled, || column![
                         self.switch_setting("quick-search/animations", p.animations, |v| change(

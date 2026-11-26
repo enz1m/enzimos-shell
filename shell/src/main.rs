@@ -41,6 +41,7 @@ mod shell_trace;
 mod shell_view;
 mod shell_window_settings;
 mod shell_windows;
+mod shortcut_overlay;
 mod sidebar_view;
 mod theme_cache;
 mod window_spread;
@@ -127,6 +128,7 @@ struct Shell {
     system_action_busy: bool,
     system_queue: ActionQueue,
     control_center: Option<window::Id>,
+    shortcut_overlay: shortcut_overlay::State,
     control_output: Option<String>,
     control_opening: bool,
     control_requested: bool,
@@ -397,6 +399,7 @@ impl Shell {
             system_action_busy: false,
             system_queue: ActionQueue::default(),
             control_center: None,
+            shortcut_overlay: Default::default(),
             control_output: None,
             control_opening: false,
             control_requested: false,
@@ -683,6 +686,7 @@ impl Shell {
             Task::none()
         };
         let task = match message {
+            Message::ShortcutOverlay(event) => self.shortcuts_overlay_message(event),
             Message::Dock(event) => self.dock_event(event),
             Message::ApplicationSurface(event) => self.application_surface_event(event),
             Message::PanelActionReady(_, _) => Task::none(),
@@ -983,6 +987,7 @@ impl Shell {
                 // Cached controls restore focus when parked, including forced teardown.
                 let is_panel = |shell: &Self, id: window::Id| {
                     Some(id) == shell.overview
+                        || Some(id) == shell.shortcut_overlay.window
                         || Some(id) == shell.launcher
                         || shell.notification.owns_center(id)
                         || shell.assistant.owns_panel(id)

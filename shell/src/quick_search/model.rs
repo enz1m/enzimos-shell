@@ -5,10 +5,9 @@ use enzui_shell::{
         Category, Inventory, Item, Model, Ticket,
         compositor::{IslandPlacement, SearchGeometry, Windows},
         files,
-        preferences::{Change, Preferences, Shortcut},
+        preferences::{Change, Preferences},
     },
     settings::Change as SettingChange,
-    shortcuts::Receiver,
 };
 use iced::window;
 use std::{
@@ -49,7 +48,6 @@ pub(crate) struct State {
     pub started: bool,
     pub configured: bool,
     pub model: Model,
-    pub receiver: Option<Receiver>,
     pub preferences: Preferences,
     pub(super) browse_all_apps: bool,
     /// The recommended apps, kept above the full list while it is open.
@@ -95,9 +93,6 @@ pub(crate) struct State {
     pub clipboard: search_clipboard::State,
     pub(super) action_busy: bool,
     pub(super) copy_epoch: Option<u64>,
-    pub(super) binding_busy: bool,
-    pub(super) binding_applied: Option<Option<Shortcut>>,
-    pub binding_error: Option<String>,
     pub(super) alias: Option<(String, String)>,
     pub(super) alias_draft: String,
     pub(super) last_query_us: u128,
@@ -188,7 +183,6 @@ pub(crate) enum Message {
     Clipboard(search_clipboard::Message),
     Done(u64, Result<(), String>),
     Copied(u64, bool),
-    Bound(Option<Shortcut>, Result<(), String>),
     Refresh,
     Favorite(Ticket),
     Alias(Ticket),

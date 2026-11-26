@@ -285,6 +285,7 @@ pub struct CompositorPreferences {
     /// Chosen chords per changeable action (`crate::shortcut_map`); an
     /// action not listed keeps its default.
     pub shortcuts: std::collections::BTreeMap<String, String>,
+    pub custom_shortcuts: std::collections::BTreeMap<String, crate::shortcut_map::CustomShortcut>,
 }
 impl Default for CompositorPreferences {
     fn default() -> Self {
@@ -320,16 +321,18 @@ impl Default for CompositorPreferences {
             x11_sharp: false,
             color_modes: std::collections::BTreeMap::new(),
             shortcuts: std::collections::BTreeMap::new(),
+            custom_shortcuts: std::collections::BTreeMap::new(),
         }
     }
 }
 impl CompositorPreferences {
     pub fn from_json(value: Option<&serde_json::Value>) -> Result<Self, String> {
-        let result: Self = match value {
+        let mut result: Self = match value {
             Some(value) => serde_json::from_value(value.clone())
                 .map_err(|_| tr("shell-invalid-compositor-preferences"))?,
             None => Self::default(),
         };
+        crate::shortcut_map::preserve_existing_assignments(&mut result.shortcuts);
         result.validate()?;
         Ok(result)
     }
@@ -463,50 +466,86 @@ impl CompositorPreferences {
         {
             return Err(tr("shell-invalid-colour-modes").into());
         }
-        if !crate::shortcut_map::valid(&self.shortcuts) {
-            return Err(tr("shell-invalid-keyboard-shortcuts").into());
-        }
-        Ok(())
+        crate::shortcut_map::validate(&self.shortcuts, &self.custom_shortcuts)
     }
-    /// Chooses `chord` for the action `id`, or its default for `None`; every
-    /// default with `id` empty.
-    pub fn set_shortcut(&mut self, id: &str, chord: Option<&str>) -> Result<(), String> {
-        match (id, chord) {
-            ("", _) => self.shortcuts.clear(),
-            (id, None) => {
-                self.shortcuts.remove(id);
+
+    pub(crate) fn shortcuts_from_account(value: &serde_json::Value) -> Result<Self, String> {
+        let mut next = Self::from_json(value.get("compositor"))?;
+        if !next.shortcuts.contains_key("search") {
+            let legacy = value
+                .get("quick_search")
+                .and_then(|search| search.get("shortcut"));
+            let chord = match legacy.and_then(serde_json::Value::as_str) {
+                Some("ctrl_space") => Some("CTRL + SPACE"),
+                Some("alt_space") => Some("ALT + SPACE"),
+                Some("off") => Some(""),
+                _ => None,
+            };
+            if let Some(chord) = chord {
+                next.set_shortcut("search", Some(chord))?;
             }
-            (id, Some(chord)) => {
-                let action = crate::shortcut_map::ACTIONS
-                    .iter()
-                    .find(|action| action.id == id)
-                    .ok_or_else(|| tr("shell-unknown-shortcut"))?;
-                if chord == action.default {
-                    self.shortcuts.remove(id);
+        }
+        Ok(next)
+    }
+
+    /// Chooses a chord, or restores the default when the chord is absent.
+    pub fn set_shortcut(&mut self, id: &str, chord: Option<&str>) -> Result<(), String> {
+        let mut choices = self.shortcuts.clone();
+        match (id, chord) {
+            ("", None) => {
+                self.shortcuts.clear();
+                self.custom_shortcuts.clear();
+                return Ok(());
+            }
+            (id, chord) => {
+                let action =
+                    crate::shortcut_map::action(id).ok_or_else(|| tr("shell-unknown-shortcut"))?;
+                if let Some(chord) = chord.filter(|chord| *chord != action.default) {
+                    choices.insert(id.to_owned(), chord.to_owned());
                 } else {
-                    self.shortcuts.insert(id.to_owned(), chord.to_owned());
+                    choices.remove(id);
                 }
             }
         }
-        if !crate::shortcut_map::valid(&self.shortcuts) {
-            return Err(tr("shell-that-shortcut-is-already-in-use-or-cannot-be-used").into());
-        }
+        crate::shortcut_map::validate(&choices, &self.custom_shortcuts)?;
+        self.shortcuts = choices;
         Ok(())
     }
-    pub fn update_shortcut_json(
-        value: &mut serde_json::Value,
+
+    /// Adds, replaces or removes one custom shortcut if its assignment is valid.
+    pub fn set_custom_shortcut(
+        &mut self,
         id: &str,
-        chord: Option<&str>,
+        shortcut: Option<&crate::shortcut_map::CustomShortcut>,
     ) -> Result<(), String> {
-        let mut next = Self::from_json(value.get("compositor"))?;
-        next.set_shortcut(id, chord)?;
+        let mut custom = self.custom_shortcuts.clone();
+        if let Some(shortcut) = shortcut {
+            custom.insert(id.into(), shortcut.clone());
+        } else {
+            custom.remove(id);
+        }
+        crate::shortcut_map::validate(&self.shortcuts, &custom)?;
+        self.custom_shortcuts = custom;
+        Ok(())
+    }
+
+    pub(crate) fn write_shortcuts(&self, value: &mut serde_json::Value) -> Result<(), String> {
         if value.get("compositor").is_none() {
             value["compositor"] = serde_json::json!({});
         }
-        value["compositor"]["shortcuts"] = serde_json::to_value(&next.shortcuts)
+        value["compositor"]["shortcuts"] = serde_json::to_value(&self.shortcuts)
             .map_err(|_| tr("shell-cannot-encode-shortcuts"))?;
+        value["compositor"]["custom_shortcuts"] = serde_json::to_value(&self.custom_shortcuts)
+            .map_err(|_| tr("shell-cannot-encode-shortcuts"))?;
+        if let Some(search) = value
+            .get_mut("quick_search")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            search.remove("shortcut");
+        }
         Ok(())
     }
+
     pub fn update_display_json(
         value: &mut serde_json::Value,
         change: &DisplayChange,
@@ -937,7 +976,10 @@ impl crate::compositor::Compositor {
             return Err(tr("shell-compositor-settings-were-rejected").into());
         }
         match self
-            .request(&["eval", &crate::shortcut_map::lua(&p.shortcuts)])
+            .request(&[
+                "eval",
+                &crate::shortcut_map::lua(&p.shortcuts, &p.custom_shortcuts),
+            ])
             .await?
             .trim()
         {

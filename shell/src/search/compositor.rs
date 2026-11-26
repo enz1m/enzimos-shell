@@ -2,9 +2,7 @@ use super::{
     AppTarget, Category, Item, Target, WindowTarget,
     catalogue::{FileIdentity, display_text},
 };
-use crate::{
-    clipboard::session, compositor::Compositor, search::preferences::Shortcut, shortcuts::Receiver,
-};
+use crate::{clipboard::session, compositor::Compositor};
 use enzui_shell::i18n::tr;
 use enzui_shell::tr;
 use std::{os::unix::fs::MetadataExt, path::Path};
@@ -52,9 +50,6 @@ pub struct SearchGeometry {
 pub struct Windows {
     pub items: Vec<Item>,
     pub focused: Option<WindowTarget>,
-}
-fn quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 fn local_client(value: &serde_json::Value) -> bool {
     value["monitor"]
@@ -750,41 +745,6 @@ impl Compositor {
             ),
         );
         Ok(self.request(&["eval", &lua]).await?.trim() == "ok")
-    }
-    pub async fn bind_search(
-        &self,
-        receiver: Receiver,
-        shortcut: Option<Shortcut>,
-    ) -> Result<(), String> {
-        let create = match shortcut.and_then(Shortcut::chord) {
-            Some(chord) => {
-                let executable = std::env::current_exe()
-                    .map_err(|_| tr("shell-cannot-locate-shortcut-helper"))?
-                    .with_file_name("enzui-shell-command");
-                if !executable.is_file() {
-                    return Err(tr("shell-search-shortcut-helper-is-unavailable").into());
-                }
-                let command = format!(
-                    "{} search {}",
-                    quote(&executable.to_string_lossy()),
-                    receiver.arguments()
-                );
-                format!(
-                    "enzui_search_binding=hl.bind({},hl.dsp.exec_cmd({}));assert(enzui_search_binding,\"Search binding rejected\")",
-                    serde_json::to_string(chord).expect("serializing a string cannot fail"),
-                    serde_json::to_string(&command).expect("serializing a string cannot fail")
-                )
-            }
-            None => "enzui_search_binding=nil".into(),
-        };
-        let lua = format!(
-            "if enzui_search_binding then enzui_search_binding:remove() end\n{create}\nreturn {{ok=true}}"
-        );
-        if self.request(&["eval", &lua]).await?.trim() == "ok" {
-            Ok(())
-        } else {
-            Err(tr("shell-quick-search-shortcut-was-rejected").into())
-        }
     }
     async fn focus_existing_app(
         &self,

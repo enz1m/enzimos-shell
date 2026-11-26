@@ -1,83 +1,109 @@
--- Remap live and future bindings through saved chord choices without replacing binding handles.
 enzui_raw_bind = enzui_raw_bind or hl.bind
 enzui_raw_unbind = enzui_raw_unbind or hl.unbind
-enzui_shortcut_map = enzui_shortcut_map or {}
-enzui_shortcut_records = {}
-local terminal_action, terminal_alias
+local choices, records, custom = {}, {}, {}
+local custom_handles = {}
 
-local function bind_terminal_alias()
-    if not terminal_action then return end
-    for _, chord in pairs(enzui_shortcut_map) do
-        if chord:upper():gsub("%s+", "") == "SUPER+T" then return end
-    end
-    terminal_alias = enzui_raw_bind("SUPER + T", terminal_action)
+function enzui_shortcut_chord(key)
+    return choices[key] or key
 end
 
-function enzui_bind_terminal_alias(action)
-    terminal_action = action
-    bind_terminal_alias()
+local function remove(record)
+    if record.handle then record.handle:remove(); record.handle = nil end
 end
 
-local function chosen(key)
-    return enzui_shortcut_map[key] or key
-end
-
-local function record_proxy(record)
-    return setmetatable({}, {
-        __index = function(_, name)
-            local handle = record.handle
-            if not handle then return nil end
-            local value = handle[name]
-            if type(value) ~= "function" then return value end
-            return function(_, ...)
-                if name == "remove" or name == "unbind" then
-                    enzui_shortcut_records[record] = nil
-                elseif name == "set_enabled" then
-                    record.enabled = ...
-                end
-                return value(record.handle, ...)
-            end
-        end,
-    })
+local function install(record)
+    local chord = enzui_shortcut_chord(record.key)
+    if chord == "" then return end
+    record.handle = assert(enzui_raw_bind(chord, record.action, record.options))
+    if not record.enabled then record.handle:set_enabled(false) end
 end
 
 hl.bind = function(key, action, options)
-    local handle = enzui_raw_bind(chosen(key), action, options)
-    if not handle then return handle end
-    local record = { key = key, action = action, options = options, handle = handle, enabled = true }
-    enzui_shortcut_records[record] = true
-    return record_proxy(record)
+    local record = { key = key, action = action, options = options, enabled = true }
+    install(record)
+    records[record] = true
+    return {
+        remove = function()
+            records[record] = nil
+            remove(record)
+        end,
+        unbind = function()
+            records[record] = nil
+            remove(record)
+        end,
+        set_enabled = function(_, enabled)
+            record.enabled = enabled
+            if record.handle then return record.handle:set_enabled(enabled) end
+        end,
+    }
 end
 
 hl.unbind = function(key)
-    for record in pairs(enzui_shortcut_records) do
-        if record.key == key then enzui_shortcut_records[record] = nil end
+    local found = false
+    for record in pairs(records) do
+        if record.key == key then
+            records[record] = nil
+            remove(record)
+            found = true
+        end
     end
-    return enzui_raw_unbind(chosen(key))
+    if not found and choices[key] == nil then return enzui_raw_unbind(key) end
 end
 
-function enzui_set_shortcuts(map)
-    if terminal_alias then
-        terminal_alias:remove()
-        terminal_alias = nil
+local function install_custom(rows)
+    for _, row in ipairs(rows) do
+        local action = row.command and hl.dsp.exec_cmd(row.command) or
+            function() hl.dispatch(hl.dsp.event("enzui-command:" .. row.event)) end
+        custom_handles[row.id] = assert(enzui_raw_bind(row.chord, action))
     end
+end
+
+local function remove_custom()
+    for _, handle in pairs(custom_handles) do handle:remove() end
+    custom_handles = {}
+end
+
+function enzui_set_shortcuts(map, rows)
     local moved = {}
-    for record in pairs(enzui_shortcut_records) do
-        if (map[record.key] or record.key) ~= chosen(record.key) then
-            record.handle:remove()
+    for record in pairs(records) do
+        if (map[record.key] or record.key) ~= enzui_shortcut_chord(record.key) then
+            remove(record)
             moved[#moved + 1] = record
         end
     end
-    enzui_shortcut_map = map
-    for _, record in ipairs(moved) do
-        record.handle = enzui_raw_bind(chosen(record.key), record.action, record.options)
-        if record.handle and record.enabled == false then record.handle:set_enabled(false) end
+    remove_custom()
+    local previous = choices
+    choices = map
+    local ok, reason = pcall(function()
+        for _, record in ipairs(moved) do install(record) end
+        install_custom(rows)
+    end)
+    if not ok then
+        for _, record in ipairs(moved) do remove(record) end
+        remove_custom()
+        choices = previous
+        for _, record in ipairs(moved) do install(record) end
+        install_custom(custom)
+        error(reason)
     end
-    bind_terminal_alias()
+    custom = rows
     return "ok"
 end
 
--- Pause bindings during shortcut capture; timeout releases an abandoned capture submap.
+function enzui_shortcut_snapshot(defaults)
+    local active = {}
+    for record in pairs(records) do
+        if record.enabled and record.handle then active[record.key] = true end
+    end
+    local rows = {}
+    for _, key in ipairs(defaults) do
+        if active[key] then rows[#rows + 1] = key .. "\t" .. enzui_shortcut_chord(key) end
+    end
+    for _, row in ipairs(custom) do rows[#rows + 1] = row.id .. "\t" .. row.chord end
+    return table.concat(rows, "\n")
+end
+
+-- An abandoned capture must release the compositor's keyboard submap.
 hl.define_submap("enzui-recording", function()
     enzui_raw_bind("SUPER + CTRL + ALT + SHIFT + F24", hl.dsp.submap("reset"))
 end)

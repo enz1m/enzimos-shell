@@ -106,6 +106,37 @@ impl Shell {
             Command::ScreenshotWindow => {
                 self.capture_message(crate::shell_capture::CaptureMessage::ActiveWindow)
             }
+            Command::Shortcuts => self.shortcuts_toggle(),
+            Command::ShowShortcuts => self.shortcuts_show(),
+            Command::Launcher
+                if self
+                    .search
+                    .preferences
+                    .shows(enzui_shell::search::Category::Apps) =>
+            {
+                let message = if self.search.showing {
+                    crate::quick_search::Message::Toggle
+                } else {
+                    crate::quick_search::Message::Show(Some(enzui_shell::search::Category::Apps))
+                };
+                self.update(Message::QuickSearch(message))
+            }
+            Command::Launcher => self.update(Message::ShowLauncher),
+            Command::Search if self.search.preferences.enabled => {
+                self.update(Message::QuickSearch(crate::quick_search::Message::Toggle))
+            }
+            Command::Search => self.update(Message::ShowLauncher),
+            Command::Controls => self.update(Message::ToggleControls),
+            Command::Dock => self.dock_save(enzui_shell::dock::Change::Enabled(
+                !self
+                    .dock_owner()
+                    .is_some_and(|owner| owner.preferences.enabled),
+            )),
+            Command::Notifications => {
+                self.notification_message(crate::notification_panel::Message::Shortcut(
+                    enzui_shell::shortcuts::Event::OpenNotifications,
+                ))
+            }
             Command::Overview => self.update(Message::ToggleOverview),
             Command::WindowSpread => {
                 self.spread_message(crate::window_spread::SpreadMessage::Toggle)

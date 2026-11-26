@@ -117,7 +117,7 @@ hl.bind("mouse:272", function()
 end, { non_consuming = true, ignore_mods = true })
 local open_terminal = hl.dsp.exec_cmd('exec "${ENZUI_TERMINAL:-foot}"')
 hl.bind(mod .. " + Return", open_terminal)
-enzui_bind_terminal_alias(open_terminal)
+hl.bind(mod .. " + T", open_terminal)
 -- Super+Alt+S starts or stops the Orca screen reader, also while locked.
 hl.bind(mod .. " + ALT + S", hl.dsp.exec_cmd('pkill -u "$(id -u)" -x orca || exec orca --replace'), { locked = true })
 for i = 1, 9 do

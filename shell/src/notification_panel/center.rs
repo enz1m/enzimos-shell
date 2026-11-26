@@ -903,15 +903,11 @@ impl Shell {
                 }
             },
             Message::Shortcut(enzui_shell::shortcuts::Event::ReceiverInstalled(receiver)) => {
-                self.search.receiver = Some(receiver);
                 let compositor = self.compositor.clone();
-                Task::batch([
-                    Task::perform(
-                        async move { compositor.install_notification_shortcut(receiver).await },
-                        |result| message(Message::ShortcutBound(result)),
-                    ),
-                    self.search_bind(),
-                ])
+                Task::perform(
+                    async move { compositor.install_notification_shortcut(receiver).await },
+                    |result| message(Message::ShortcutBound(result)),
+                )
             }
             Message::Shortcut(enzui_shell::shortcuts::Event::OpenNotifications) => Task::batch([
                 self.close_search(),

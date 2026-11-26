@@ -234,11 +234,20 @@ impl Store {
                     )?;
                 }
                 Change::Shortcut(ref id, ref chord) => {
-                    crate::desktop_preferences::CompositorPreferences::update_shortcut_json(
-                        value,
-                        id,
-                        chord.as_deref(),
-                    )?;
+                    let mut next =
+                        crate::desktop_preferences::CompositorPreferences::shortcuts_from_account(
+                            value,
+                        )?;
+                    next.set_shortcut(id, chord.as_deref())?;
+                    next.write_shortcuts(value)?;
+                }
+                Change::CustomShortcut(ref id, ref shortcut) => {
+                    let mut next =
+                        crate::desktop_preferences::CompositorPreferences::shortcuts_from_account(
+                            value,
+                        )?;
+                    next.set_custom_shortcut(id, shortcut.as_ref())?;
+                    next.write_shortcuts(value)?;
                 }
                 Change::KeyboardLayouts(ref layouts) => {
                     crate::desktop_preferences::CompositorPreferences::update_layouts_json(

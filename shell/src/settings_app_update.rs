@@ -54,6 +54,12 @@ impl SettingsApp {
             _ => None,
         };
         let task = self.update_message(message);
+        let capture = if self.page != super::Page::Keyboard || self.closing {
+            self.cancel_shortcut_capture()
+        } else {
+            Task::none()
+        };
+        let task = Task::batch([task, capture]);
         let Some((kind, answer)) = poll else {
             return task;
         };
@@ -943,7 +949,6 @@ impl SettingsApp {
         if let Some(failure) = saved {
             self.agent_saved(failure);
         }
-        self.sync_shortcuts();
         self.sync_night_labels();
         let follow = self.follow_wallpaper_colour();
         let background = self.background_sync();

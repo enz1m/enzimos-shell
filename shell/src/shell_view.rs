@@ -398,6 +398,8 @@ impl Shell {
     pub(crate) fn title(&self, id: window::Id) -> String {
         if id == self.panel {
             tr("shell-enzui-desktop")
+        } else if Some(id) == self.shortcut_overlay.window {
+            tr("shell-keyboard-shortcuts")
         } else if Some(id) == self.overview {
             tr("shell-desktops")
         } else if Some(id) == self.control_center {
@@ -420,6 +422,9 @@ impl Shell {
         i18n::localizer().view(|| self.localized_view(id))
     }
     fn localized_view(&self, id: window::Id) -> Element<'_, Message> {
+        if Some(id) == self.shortcut_overlay.window {
+            return self.shortcuts_overlay_view();
+        }
         if self.dock.window == Some(id) {
             return self.dock_view();
         }

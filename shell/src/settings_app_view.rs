@@ -62,6 +62,7 @@ impl SettingsApp {
                 }),
             window::close_requests().map(|_| Message::Close),
             window::open_events().map(Message::Opened),
+            self.shortcut_capture_subscription(),
             self.chrome.subscription().map(Message::WindowState),
             self.themes
                 .as_ref()
@@ -71,15 +72,22 @@ impl SettingsApp {
                         .map(|event| Message::SharedTheme(Box::new(event)))
                 }),
             window::resize_events().map(|(id, size)| Message::Viewport(id, size)),
-            iced::event::listen_with_interest(iced::event::Interest::KEYBOARD, |event, _, _| {
-                use iced::keyboard::{Event, Key};
-                let iced::Event::Keyboard(Event::KeyPressed { key, modifiers, .. }) = event else {
-                    return None;
-                };
-                (modifiers == iced::keyboard::Modifiers::CTRL
-                    && matches!(key, Key::Character(key) if key.eq_ignore_ascii_case("f")))
-                .then_some(Message::FindSetting)
-            }),
+            iced::event::listen_with_interest(
+                iced::event::Interest::KEYBOARD,
+                |event, status, _| {
+                    if status == iced::event::Status::Captured {
+                        return None;
+                    }
+                    use iced::keyboard::{Event, Key};
+                    let iced::Event::Keyboard(Event::KeyPressed { key, modifiers, .. }) = event
+                    else {
+                        return None;
+                    };
+                    (modifiers == iced::keyboard::Modifiers::CTRL
+                        && matches!(key, Key::Character(key) if key.eq_ignore_ascii_case("f")))
+                    .then_some(Message::FindSetting)
+                },
+            ),
             numeric::subscription(),
             navigation::interrupt_subscription(),
             self.agent.subscription(),

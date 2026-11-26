@@ -5,6 +5,7 @@ local shell_classes = {
     ["dev.enzui.ControlCenter"] = true, ["dev.enzui.WorkspaceOverview"] = true,
     ["dev.enzui.Sidebar"] = true, ["dev.enzui.SidebarPane"] = true, ["dev.enzui.SidebarBacking"] = true,
     ["dev.enzui.PluginPanel"] = true, ["dev.enzui.WindowSpread"] = true,
+    ["dev.enzui.Shortcuts"] = true,
     ["dev.enzui.AssistantPanel"] = true, ["dev.enzui.AssistantTrigger"] = true,
 }
 local function valid_id(id)
@@ -124,7 +125,7 @@ local function activate(output,id)
     return result
 end
 function enzui_install_workspace_keys()
-    if enzui_workspace_keys_version==2 then return end
+    if enzui_workspace_keys_version==3 then return end
     for index=1,9 do
         local key="SUPER + "..index
         hl.unbind(key)
@@ -135,7 +136,14 @@ function enzui_install_workspace_keys()
             if id then return activate(workspace.monitor.name,id) end
         end)
     end
-    enzui_workspace_keys_version=2
+    for _, spec in ipairs({{"Prior",-1},{"Next",1}}) do
+        local key = "SUPER + " .. spec[1]
+        hl.bind(key, function()
+            local workspace = hl.get_active_workspace()
+            if workspace and workspace.monitor then return enzui_workspace_step(workspace.monitor.name, spec[2]) end
+        end)
+    end
+    enzui_workspace_keys_version=3
 end
 function enzui_workspace_focus(output,id)
     local state=enzui_desktop_state(output)
@@ -143,6 +151,12 @@ function enzui_workspace_focus(output,id)
         if candidate==id then return activate(output,id) end
     end
     error("Desktop is no longer available")
+end
+function enzui_workspace_neighbor(output, current, direction)
+    local state = enzui_desktop_state(output)
+    for index, id in ipairs(state.order) do
+        if id == current then return state.order[index + direction] end
+    end
 end
 function enzui_workspace_step(output,direction)
     assert(direction==1 or direction==-1, "Invalid desktop direction")

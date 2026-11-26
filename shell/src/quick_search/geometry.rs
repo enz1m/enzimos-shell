@@ -22,7 +22,6 @@ impl Shell {
             .error
             .as_deref()
             .or(state.file_error.as_deref())
-            .or(state.binding_error.as_deref())
             .or_else(|| {
                 if state.model.category == Some(Category::Clipboard) {
                     state

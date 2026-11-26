@@ -48,6 +48,7 @@ impl Shell {
                         self.desktop_applied = Some(wanted);
                         self.desktop_retry_at = None;
                         self.setup_errors.preferences = None;
+                        return self.shortcuts_refresh();
                     }
                     Err(error) => {
                         self.setup_errors.preferences =

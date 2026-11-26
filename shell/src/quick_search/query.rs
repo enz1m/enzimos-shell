@@ -4,9 +4,7 @@ use super::{
 };
 use crate::{Message as ShellMessage, Shell};
 use enzui_shell::i18n::tr;
-use enzui_shell::search::{
-    self, Category, DesktopAction, Item, Model, Target, files, preferences::Shortcut,
-};
+use enzui_shell::search::{self, Category, DesktopAction, Item, Model, Target, files};
 use enzui_shell::tr;
 use iced::{Task, window};
 use std::{
@@ -126,32 +124,11 @@ impl Shell {
         Task::batch([
             close,
             clipboard,
-            self.search_bind(),
             self.search_scan_apps(),
             self.search_read_windows(),
             self.search_index(),
             self.search_file_query(),
         ])
-    }
-    pub(crate) fn search_bind(&mut self) -> Task<ShellMessage> {
-        let desired = self
-            .search
-            .preferences
-            .enabled
-            .then_some(self.search.preferences.shortcut)
-            .filter(|key| *key != Shortcut::Off);
-        let Some(receiver) = self.search.receiver else {
-            return Task::none();
-        };
-        if self.search.binding_busy || self.search.binding_applied == Some(desired) {
-            return Task::none();
-        }
-        self.search.binding_busy = true;
-        let compositor = self.compositor.clone();
-        perform(
-            async move { compositor.bind_search(receiver, desired).await },
-            move |result| Message::Bound(desired, result),
-        )
     }
     // Re-resolve application icons after the icon theme changed.
     pub(crate) fn search_icons_changed(&mut self) -> Task<ShellMessage> {

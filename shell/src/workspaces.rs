@@ -283,6 +283,7 @@ const SHELL_CLASSES: &[&[u8]] = &[
     b"dev.enzui.SidebarPane",
     b"dev.enzui.Switcher",
     b"dev.enzui.WindowSpread",
+    b"dev.enzui.Shortcuts",
     b"dev.enzui.WorkspaceOverview",
 ];
 

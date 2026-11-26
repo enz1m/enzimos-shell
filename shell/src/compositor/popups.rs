@@ -11,6 +11,44 @@ use super::{
 use enzui_shell::i18n::tr;
 
 impl Compositor {
+    /// Places the shortcut reference over the Shell's output.
+    pub async fn prepare_shortcuts_overlay(&self) -> Result<iced::Size, String> {
+        let output = self.desktop_output().await?;
+        let name = output["name"]
+            .as_str()
+            .ok_or_else(|| tr("shell-missing-output"))?;
+        let scale = output["scale"]
+            .as_f64()
+            .filter(|scale| (0.5..=4.0).contains(scale))
+            .ok_or_else(|| tr("shell-invalid-output-scale"))?;
+        let dimension = |axis: &str| {
+            output[axis]
+                .as_f64()
+                .map(|value| (value / scale).round())
+                .filter(|value| (1.0..=16384.0).contains(value))
+                .ok_or_else(|| tr("shell-shortcuts-overlay-unavailable"))
+        };
+        let (width, height) = (dimension("width")?, dimension("height")?);
+        let monitor = serde_json::json!(name);
+        let size = serde_json::json!(format!("{width} {height}"));
+        let lua = format!(
+            "hl.window_rule({{name='desktop-overlay-shortcuts',match={{class='^dev[.]enzui[.]Shortcuts$'}},float=true,pin=true,monitor={monitor},move='0 0',size={size},min_size={size},max_size={size},border_size=0,rounding=0,decorate=false,no_anim=true,no_shadow=true,no_blur=true,no_xdg_drags=true}})"
+        );
+        if self.request(&["eval", &lua]).await?.trim() != "ok" {
+            return Err(tr("shell-shortcuts-overlay-unavailable").into());
+        }
+        Ok(iced::Size::new(width as f32, height as f32))
+    }
+
+    /// Requests the running Shell's shortcut reference from Settings.
+    pub async fn show_shortcuts_overlay(&self) -> Result<(), String> {
+        let script = "return hl.dispatch(hl.dsp.event('enzui-command:show-shortcuts'))";
+        if self.request(&["eval", script]).await?.trim() != "ok" {
+            return Err(tr("shell-shortcuts-overlay-unavailable").into());
+        }
+        Ok(())
+    }
+
     pub async fn prepare_overview(
         &self,
         edge: crate::settings::BarEdge,

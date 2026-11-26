@@ -158,6 +158,7 @@ impl Message {
             Self::SettingsChanged => "SettingsChanged",
             Self::Opened(..) => "Opened",
             Self::Window(..) => "Window",
+            Self::ShortcutOverlay(..) => "ShortcutOverlay",
             Self::Escape(..) => "Escape",
             Self::Renderer(..) => "Renderer",
         }

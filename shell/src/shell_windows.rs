@@ -6,6 +6,19 @@ use iced::{Task, window};
 impl Shell {
     pub(crate) fn update_windows(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::Escape(id)
+            | Message::Window(id, window::Event::CloseRequested | window::Event::Unfocused)
+                if Some(id) == self.shortcut_overlay.window =>
+            {
+                self.shortcuts_close()
+            }
+            Message::Window(id, window::Event::Closed)
+                if Some(id) == self.shortcut_overlay.window =>
+            {
+                self.shortcut_overlay.window = None;
+                Task::none()
+            }
+
             Message::Window(id, window::Event::Resized(_)) if id == self.panel => {
                 // Wayland can configure the bar after its initial widget bounds were sampled.
                 self.control_reflow_pending |= self.control_opening;

@@ -853,20 +853,6 @@ impl Shell {
                 self.search_recompute();
                 focus
             }
-            Message::Bound(desired, result) => {
-                self.search.binding_busy = false;
-                match result {
-                    Ok(()) => {
-                        self.search.binding_applied = Some(desired);
-                        self.search.binding_error = None;
-                    }
-                    Err(error) => {
-                        self.search.binding_error = Some(error);
-                        return Task::none();
-                    }
-                }
-                self.search_bind()
-            }
             Message::Refresh if self.search.preedit.is_none() => {
                 self.search.apps_ready = false;
                 self.search.apps_generation = self.search.apps_generation.saturating_add(1);

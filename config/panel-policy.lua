@@ -3,10 +3,10 @@ hl.window_rule({
     no_xdg_drags = true, suppress_event = "maximize fullscreen",
 })
 
-if enzui_panel_policy_installed ~= 16 then
+if enzui_panel_policy_installed ~= 17 then
     local function panel(window)
         return window and window.mapped and not window.hidden
-            and (window.class == "dev.enzui.Dock" or window.class == "dev.enzui.Desktop" or window.class == "dev.enzui.QuickSearch" or window.class == "dev.enzui.WorkspaceOverview" or window.class == "dev.enzui.ControlCenter" or window.class == "dev.enzui.PluginPanel"
+            and (window.class == "dev.enzui.Dock" or window.class == "dev.enzui.Desktop" or window.class == "dev.enzui.Shortcuts" or window.class == "dev.enzui.QuickSearch" or window.class == "dev.enzui.WorkspaceOverview" or window.class == "dev.enzui.ControlCenter" or window.class == "dev.enzui.PluginPanel"
                 or window.class == "dev.enzui.NotificationCenter" or window.class == "dev.enzui.NotificationToasts"
                 or window.class == "dev.enzui.AssistantPanel" or window.class == "dev.enzui.AssistantTrigger"
                 or (window.class == "dev.enzui.Sidebar" and enzui_sidebar and (enzui_sidebar.reveal or #enzui_sidebar.entries>0 or enzui_sidebar.error~="")))
@@ -71,7 +71,15 @@ if enzui_panel_policy_installed ~= 16 then
             if id then return hl.dispatch(hl.dsp.window.move({workspace=id})) end
         end))
     end
+    for _, spec in ipairs({{"Prior",-1},{"Next",1}}) do
+        bind("SUPER + SHIFT + " .. spec[1], focused(function()
+            local window = hl.get_active_window()
+            if not window.workspace or not window.monitor or not enzui_workspace_neighbor then return end
+            local id = enzui_workspace_neighbor(window.monitor.name, window.workspace.id, spec[2])
+            if id then return hl.dispatch(hl.dsp.window.move({workspace=id})) end
+        end))
+    end
     bind("SUPER + mouse:272", mouse(hl.dsp.window.drag()), {mouse=true})
     bind("SUPER + mouse:273", mouse(hl.dsp.window.resize()), {mouse=true})
-    enzui_panel_policy_installed = 16
+    enzui_panel_policy_installed = 17
 end

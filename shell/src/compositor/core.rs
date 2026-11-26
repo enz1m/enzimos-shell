@@ -687,7 +687,7 @@ impl Compositor {
             receiver.arguments()
         );
         let lua = format!(
-            "if enzui_notification_binding then enzui_notification_binding:remove() end; enzui_notification_binding=hl.bind(\"SUPER + N\",hl.dsp.exec_cmd({}));if not enzui_notification_binding then error(\"Notification binding was rejected\") end",
+            "hl.unbind(\"SUPER + N\"); enzui_notification_binding=hl.bind(\"SUPER + N\",hl.dsp.exec_cmd({}));if not enzui_notification_binding then error(\"Notification binding was rejected\") end",
             serde_json::to_string(&command)
                 .map_err(|_| tr("shell-cannot-encode-notification-shortcut"))?
         );

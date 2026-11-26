@@ -64,6 +64,58 @@ fn settings_behaviour() {
         assert!(store.update(Change::Light(false)).is_err());
         assert_eq!(std::fs::read(store.path()).unwrap(), bytes);
     }
+    {
+        use crate::shortcut_map::{CustomShortcut, CustomTarget, important};
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::at(temp.path().join("settings.json")).unwrap();
+        std::fs::write(
+            store.path(),
+            r#"{"quick_search":{"shortcut":"alt_space","future":42},"compositor":{"shortcuts":{"lock":"SUPER + slash"}}}"#,
+        ).unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.compositor.shortcuts["search"], "ALT + SPACE");
+        assert_eq!(loaded.compositor.shortcuts["shortcuts"], "");
+        assert!(
+            important(&loaded.compositor)
+                .iter()
+                .any(|binding| binding.id == "search" && binding.chord == "ALT + SPACE")
+        );
+
+        let id = "custom-a".to_owned();
+        let mut custom = CustomShortcut {
+            name: "Open the guide".into(),
+            target: CustomTarget::Action("shortcuts".into()),
+            chord: "SUPER + slash".into(),
+        };
+        assert!(
+            store
+                .update(Change::CustomShortcut(id.clone(), Some(custom.clone())))
+                .is_err()
+        );
+        custom.chord = "SUPER + J".into();
+        store
+            .update(Change::CustomShortcut(id.clone(), Some(custom.clone())))
+            .unwrap();
+        assert_eq!(
+            store.load().unwrap().compositor.custom_shortcuts[&id],
+            custom
+        );
+        store
+            .update(Change::Shortcut("search".into(), None))
+            .unwrap();
+        assert!(
+            !store
+                .load()
+                .unwrap()
+                .compositor
+                .shortcuts
+                .contains_key("search")
+        );
+        assert_eq!(store.document().unwrap()["quick_search"]["future"], 42);
+        store.update(Change::Shortcut(String::new(), None)).unwrap();
+        let compositor = store.load().unwrap().compositor;
+        assert!(compositor.shortcuts.is_empty() && compositor.custom_shortcuts.is_empty());
+    }
     // Concurrent history save and clear leave no old record.
     {
         use crate::notifications::preferences::Change as NotificationChange;

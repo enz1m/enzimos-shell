@@ -53,6 +53,7 @@ pub const ACTIONS: &[Action] = actions![
     "switch-app", "Switch windows of the app", "Switching", "ALT + code:49";
     "switch-cancel", "Cancel window switching", "Switching", "ALT + Escape";
     "overview", "Show desktops", "Desktops", "SUPER + D";
+    "desktop-layout", "Switch desktop window layout", "Desktops", "SUPER + SHIFT + V";
     "desktop-before", "Go to previous desktop", "Desktops", "SUPER + Prior";
     "desktop-after", "Go to next desktop", "Desktops", "SUPER + Next";
     "move-before", "Move window to previous desktop", "Desktops", "SUPER + SHIFT + Prior";
@@ -103,6 +104,7 @@ const NEW_DEFAULTS: &[&str] = &[
     "controls",
     "dock",
     "overview",
+    "desktop-layout",
     "desktop-before",
     "desktop-after",
     "move-before",
@@ -421,6 +423,7 @@ pub fn important(preferences: &crate::desktop_preferences::CompositorPreferences
         "launcher",
         "switch-next",
         "overview",
+        "desktop-layout",
         "capture",
         "lock",
         "shortcuts",
@@ -728,7 +731,9 @@ mod tests {
         assert!(validate(&choices, &custom, &keys, None).is_ok());
         assert!(lua(&choices, &custom).contains(&lua_string("printf '%s' 'lá'")));
         choices.insert("window-float".into(), "SUPER + code:61".into());
+        custom.get_mut("custom-a").unwrap().chord = "SUPER + SHIFT + V".into();
         preserve_existing_assignments(&mut choices, &custom, &keys);
+        assert_eq!(choices["desktop-layout"], "");
         assert_eq!(choices["shortcuts"], "");
         assert!(validate(&choices, &custom, &keys, None).is_ok());
     }

@@ -1,4 +1,4 @@
-//! Opens the first-login Welcome for desktop layout, appearance and optional AI.
+//! Opens the first-login Welcome.
 #[path = "../welcome_app.rs"]
 mod welcome_app;
 

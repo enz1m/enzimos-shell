@@ -159,12 +159,14 @@ impl Shell {
         let search = enz_search_field(&self.shortcut_overlay.query, |query| {
             ShellMessage::ShortcutOverlay(Message::Filter(query))
         })
-        .placeholder(tr("shell-shortcuts-filter"));
+        .placeholder(tr("shell-shortcuts-filter"))
+        .id("shortcuts-overlay-filter");
         let settings = enz_button(
             tr("shell-shortcuts-settings"),
             ShellMessage::ShortcutOverlay(Message::Settings),
         )
         .kind(ButtonKind::Secondary)
+        .id("shortcuts-overlay-settings".into())
         .into_element();
         let content = column![
             enz_text(label)

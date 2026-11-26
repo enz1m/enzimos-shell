@@ -127,6 +127,12 @@ impl Shell {
             }
             Command::Search => self.update(Message::ShowLauncher),
             Command::Controls => self.update(Message::ToggleControls),
+            Command::DesktopLayout => self.update(Message::Tiling(
+                !self
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.tiling),
+            )),
             Command::Dock => self.dock_save(enzui_shell::dock::Change::Enabled(
                 !self
                     .dock_owner()

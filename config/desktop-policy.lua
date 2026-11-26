@@ -15,7 +15,7 @@ end
 local function regular(window)
     return not parked(window) and not borrowed(window) and window.mapped and not window.hidden and not window.pinned
         and window.class ~= "dev.enzui.Dock" and window.class ~= "dev.enzui.Desktop" and window.class ~= "dev.enzui.Launcher" and window.class ~= "dev.enzui.QuickSearch"
-        and window.class ~= "dev.enzui.ControlCenter" and window.class ~= "dev.enzui.Sidebar"
+        and window.class ~= "dev.enzui.Welcome" and window.class ~= "dev.enzui.ControlCenter" and window.class ~= "dev.enzui.Sidebar"
         and window.class ~= "dev.enzui.SidebarPane" and window.class ~= "dev.enzui.SidebarBacking" and window.class ~= "dev.enzui.WorkspaceOverview"
         and window.class ~= "dev.enzui.PluginPanel" and window.class ~= "dev.enzui.WindowSpread" and window.class ~= "dev.enzui.Shortcuts"
         and window.class ~= "dev.enzui.AssistantPanel" and window.class ~= "dev.enzui.AssistantTrigger"

@@ -1,17 +1,18 @@
-//! The Welcome window: desktop layout, appearance and optional AI, each
-//! applied through the same stores and services Settings uses.
+//! First-login setup and a guide to the desktop’s keyboard shortcuts.
 
 #[path = "settings_preview_scene.rs"]
 mod scene;
 #[path = "theme_preview.rs"]
 mod theme_preview;
 
+use enzui_core::semantics::{Role, Semantics};
 use enzui_core::theme_file::integration::{ThemeEvent, ThemeIntegration};
 use enzui_core::wizard::Wizard;
 use enzui_shell::i18n::tr;
 use enzui_shell::local_ai::{self, Online, ProviderEdit};
 use enzui_shell::settings::{BarEdge, Change, Metric, Settings, Store, TextStep};
 use enzui_shell::shell_style::ShellStyle;
+use enzui_shell::shortcut_map;
 use enzui_shell::system_settings::display::{self, Displays, SCALES, supports_scale};
 use enzui_shell::theme_palette::{self, PRESETS, Scheme, Seed, Style};
 use enzui_shell::theme_presets::Choices;
@@ -23,11 +24,13 @@ use enzui_widgets::{
     banner::{BannerTone, enz_banner},
     button::{ButtonKind, enz_button},
     color_swatch::enz_color_swatch,
+    key_badge::enz_key_badge,
     motion::fade_on_change,
     preferences_row::enz_preferences_row,
     pressable::{PressableStyle, enz_pressable},
     scroll_view::enz_scroll_view,
     secure_field::enz_secure_field,
+    semantics_container::SemanticsContainer,
     slider::enz_slider,
     text::{TextAlign, TextSize, TextTone, enz_text},
     title_bar::enz_title_bar,
@@ -41,7 +44,9 @@ use std::time::{Duration, Instant};
 
 const DESKTOP: usize = 0;
 const APPEARANCE: usize = 1;
-const STEPS: usize = 3;
+const WINDOWS: usize = 2;
+const AI: usize = 3;
+const STEPS: usize = 5;
 // Matches the Settings display confirmation.
 const SCALE_CONFIRM: Duration = Duration::from_secs(15);
 const PROVIDERS: [(&str, &str); 3] = [
@@ -66,6 +71,7 @@ impl std::fmt::Debug for Secret {
 #[derive(Clone, Debug)]
 pub(crate) enum Message {
     Theme(Box<ThemeEvent>),
+    KeyLabels(shortcut_map::KeyLabels),
     Wizard(WizardEvent),
     Loaded(Result<Settings, String>),
     ThemeRead(Choices),
@@ -113,6 +119,7 @@ pub(crate) struct Welcome {
     wizard: Wizard,
     store: Store,
     settings: Settings,
+    key_labels: shortcut_map::KeyLabels,
     loaded: bool,
     writes: VecDeque<Change>,
     writing: bool,
@@ -131,6 +138,7 @@ pub(crate) struct Welcome {
     text_model: Option<String>,
     speech_model: Option<String>,
     finishing: bool,
+    finish_after_write: Option<bool>,
     error: Option<String>,
     record_failed: bool,
 }
@@ -149,6 +157,7 @@ impl Welcome {
             wizard: Wizard::new(STEPS),
             store: store.clone(),
             settings: Settings::default(),
+            key_labels: shortcut_map::KeyLabels::default(),
             loaded: false,
             writes: VecDeque::new(),
             writing: false,
@@ -168,6 +177,7 @@ impl Welcome {
             text_model: None,
             speech_model: None,
             finishing: false,
+            finish_after_write: None,
             error: None,
             record_failed: false,
         };
@@ -218,6 +228,7 @@ impl Welcome {
             self.themes
                 .subscription()
                 .map(|event| Message::Theme(Box::new(event))),
+            shortcut_map::key_labels_subscription().map(Message::KeyLabels),
             iced::window::close_requests().map(|_| Message::CloseRequested),
             if self.scale.is_some() {
                 iced::time::every(Duration::from_millis(250)).map(Message::Tick)
@@ -311,6 +322,10 @@ impl Welcome {
             return Task::none();
         }
         self.finishing = true;
+        if self.writing {
+            self.finish_after_write = Some(skip);
+            return Task::none();
+        }
         self.error = None;
         let revert = self.scale.take().map(|pending| pending.previous);
         let queued = if skip {
@@ -358,6 +373,10 @@ impl Welcome {
                 .themes
                 .update(*event)
                 .map(|event| Message::Theme(Box::new(event))),
+            Message::KeyLabels(keys) => {
+                self.key_labels = keys;
+                Task::none()
+            }
             Message::Wizard(WizardEvent::Finish) => self.finish(false),
             Message::Wizard(WizardEvent::Cancel) | Message::CloseRequested => self.finish(true),
             Message::Wizard(event) => {
@@ -372,6 +391,9 @@ impl Welcome {
             Message::Loaded(Err(error)) | Message::Saved(Err(error)) => {
                 self.writing = false;
                 self.writes.clear();
+                if self.finish_after_write.take().is_some() {
+                    self.finishing = false;
+                }
                 self.error = Some(tr!("welcome-save-failed", "reason" => error));
                 let store = self.store.clone();
                 Task::perform(
@@ -389,6 +411,10 @@ impl Welcome {
                 self.writing = false;
                 if self.writes.is_empty() {
                     self.settings = settings;
+                    if let Some(skip) = self.finish_after_write.take() {
+                        self.finishing = false;
+                        return self.finish(skip);
+                    }
                 }
                 self.write_next()
             }
@@ -609,15 +635,16 @@ impl Welcome {
         let steps = [
             ("desktop", tr("welcome-step-desktop")),
             ("appearance", tr("welcome-step-appearance")),
+            ("windows", tr("welcome-step-windows")),
             ("ai", tr("welcome-step-ai")),
+            ("shortcuts", tr("welcome-step-shortcuts")),
         ];
         let current = self.wizard.current();
         let pages = steps
             .into_iter()
             .enumerate()
             .map(|(index, (id, label))| {
-                SwitcherPage::new(id, format!("{}  {label}", index + 1))
-                    .with_enabled(self.wizard.is_reached(index))
+                SwitcherPage::new(id, label).with_enabled(self.wizard.is_reached(index))
             })
             .collect();
         enz_view_switcher(pages, current, |step| {
@@ -628,6 +655,7 @@ impl Welcome {
             "current" => (current + 1).to_string(),
             "total" => self.wizard.steps().to_string()
         ))
+        .scrollable(true)
         .tab_id_prefix("welcome-progress")
         .into_element()
     }
@@ -640,7 +668,9 @@ impl Welcome {
             match current {
                 DESKTOP => self.desktop_page(),
                 APPEARANCE => self.appearance_page(),
-                _ => self.ai_page(),
+                WINDOWS => self.windows_page(),
+                AI => self.ai_page(),
+                _ => self.shortcuts_page(),
             }
         ]
         .spacing(spacing.space5);
@@ -694,16 +724,19 @@ impl Welcome {
                 enzui_core::localized!("enzui-wizard-cancel"),
                 Message::Wizard(WizardEvent::Cancel),
             )
-            .kind(ButtonKind::Quiet),
+            .kind(ButtonKind::Quiet)
+            .id("welcome-cancel".into()),
             Space::new().width(Length::Fill),
             enz_button(
                 enzui_core::localized!("enzui-wizard-back"),
                 Message::Wizard(WizardEvent::Back),
             )
             .kind(ButtonKind::Secondary)
+            .id("welcome-back".into())
             .enabled(self.wizard.can_go_back()),
             enz_button(label, Message::Wizard(event))
                 .kind(ButtonKind::Accent)
+                .id("welcome-forward".into())
                 .enabled(self.live() && self.scale.is_none() && !self.adding),
         ]
         .spacing(8)
@@ -724,7 +757,9 @@ impl Welcome {
         let (title, subtitle) = match self.wizard.current() {
             DESKTOP => ("welcome-title", "welcome-subtitle"),
             APPEARANCE => ("welcome-appearance-title", "welcome-appearance-subtitle"),
-            _ => ("welcome-ai-title", "welcome-ai-subtitle"),
+            WINDOWS => ("welcome-windows-title", "welcome-windows-subtitle"),
+            AI => ("welcome-ai-title", "welcome-ai-subtitle"),
+            _ => ("welcome-shortcuts-title", "welcome-shortcuts-subtitle"),
         };
         row![
             enzui_shell::brand::mark(40.0).into_element(),
@@ -1085,6 +1120,102 @@ impl Welcome {
             )
             .enabled(self.live() && self.scale.is_none())
             .into_element()
+    }
+
+    fn shortcut(&self, id: &str) -> Option<&str> {
+        let action = shortcut_map::action(id)?;
+        let chord = shortcut_map::chord(action, &self.settings.compositor.shortcuts);
+        (!chord.is_empty()).then_some(chord)
+    }
+
+    fn windows_page(&self) -> Element<'_, Message> {
+        let current = self.settings.tiling.unwrap_or(false);
+        let palette = &self.themes.theme().palette;
+        let settings = &self.settings;
+        let cards = responsive(move |size| -> Element<'_, Message> {
+            let cards = [true, false].map(|tiled| {
+                let (id, title, detail) = if tiled {
+                    ("tiled", tr("welcome-tiled"), tr("welcome-tiled-detail"))
+                } else {
+                    (
+                        "floating",
+                        tr("welcome-floating"),
+                        tr("welcome-floating-detail"),
+                    )
+                };
+                self.card(
+                    format!("welcome-windows-{id}"),
+                    format!("{title}. {detail}"),
+                    tiled == current,
+                    column![
+                        Self::picture(
+                            scene::desktop(settings, palette, settings.shell_style, tiled, false),
+                            126.0,
+                        ),
+                        Self::caption(title, detail),
+                    ]
+                    .spacing(8)
+                    .into(),
+                    Message::Change(Change::Tiling(tiled)),
+                )
+            });
+            if size.width >= enzui_theme::text_scale::ui_px(448.0) {
+                row(cards).spacing(12).into()
+            } else {
+                column(cards).spacing(12).into()
+            }
+        });
+        let help = self.shortcut("desktop-layout").map_or_else(
+            || tr("welcome-windows-change").to_owned(),
+            |chord| tr!("welcome-windows-change-key", "shortcut" => self.key_labels.badge(chord)),
+        );
+        column![
+            cards,
+            enz_text(help)
+                .tone(TextTone::Muted)
+                .wrap(true)
+                .into_element(),
+        ]
+        .spacing(18)
+        .into()
+    }
+
+    fn shortcuts_page(&self) -> Element<'_, Message> {
+        let bindings = shortcut_map::important(&self.settings.compositor);
+        let rows = column(bindings.into_iter().map(|binding| {
+            let caps = self.key_labels.caps(&binding.chord);
+            let badge = caps.join(" + ");
+            let keys = row(caps
+                .into_iter()
+                .map(|key| enz_key_badge(key).into_element()))
+            .spacing(4)
+            .wrap();
+            row![
+                enz_text(binding.name)
+                    .wrap(true)
+                    .full_width()
+                    .into_element(),
+                SemanticsContainer::leaf(keys, Semantics::new(Role::Label).label(badge)),
+            ]
+            .spacing(16)
+            .align_y(Alignment::Center)
+            .padding([4, 0])
+            .into()
+        }))
+        .spacing(4);
+        let note = self.shortcut("shortcuts").map_or_else(
+            || tr("welcome-shortcuts-settings").to_owned(),
+            |chord| tr!("welcome-shortcuts-overlay", "shortcut" => self.key_labels.badge(chord)),
+        );
+        column![
+            rows,
+            enz_text(note)
+                .tone(TextTone::Muted)
+                .wrap(true)
+                .into_element(),
+        ]
+        .spacing(18)
+        .into()
     }
 
     fn ai_page(&self) -> Element<'_, Message> {

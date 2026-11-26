@@ -77,6 +77,11 @@ hl.window_rule({
 })
 
 hl.window_rule({
+    name = "desktop-welcome", match = { class = "^dev[.]enzui[.]Welcome$" },
+    float = true, center = true,
+})
+
+hl.window_rule({
     name = "desktop-authentication", match = { class = "^dev[.]enzui[.]Authentication$" },
     float = true, center = true, pin = true, size = "440 330", border_size = 0, rounding = 16,
     decorate = false, stay_focused = true, dim_around = true,

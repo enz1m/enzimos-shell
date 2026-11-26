@@ -27,6 +27,7 @@ pub enum Command {
     Search,
     Launcher,
     Controls,
+    DesktopLayout,
     Dock,
     Notifications,
     ZoomIn,
@@ -49,7 +50,7 @@ pub enum Command {
 }
 
 impl Command {
-    const ALL: [(Self, &'static str); 38] = [
+    const ALL: [(Self, &'static str); 39] = [
         (Self::VolumeUp, "volume-up"),
         (Self::VolumeDown, "volume-down"),
         (Self::VolumeMute, "volume-mute"),
@@ -74,6 +75,7 @@ impl Command {
         (Self::Search, "search"),
         (Self::Launcher, "launcher"),
         (Self::Controls, "controls"),
+        (Self::DesktopLayout, "desktop-layout"),
         (Self::Dock, "dock"),
         (Self::Notifications, "notifications"),
         (Self::ZoomIn, "zoom-in"),

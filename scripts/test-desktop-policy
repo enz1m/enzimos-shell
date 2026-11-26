@@ -35,19 +35,20 @@ end
 local app, panel, launcher, fullscreen, hidden, pinned = window("1"), window("2", "dev.enzui.Desktop"), window("3", "dev.enzui.Launcher"), window("4"), window("5"), window("6")
 fullscreen.fullscreen = 1; hidden.hidden = true; pinned.pinned = true
 local controls = window("9", "dev.enzui.ControlCenter")
+local welcome = window("15", "dev.enzui.Welcome")
 local plugin = window("12", "dev.enzui.PluginPanel")
 local center = window("13", "dev.enzui.NotificationCenter")
 local toasts = window("14", "dev.enzui.NotificationToasts")
 local parked=window("10");parked.tags={"enzui-sidebar-1"}
 local rail=window("11","dev.enzui.Sidebar")
-windows = {app, panel, launcher, fullscreen, hidden, pinned, controls, parked, rail, plugin, center, toasts}
+windows = {app, panel, launcher, fullscreen, hidden, pinned, controls, welcome, parked, rail, plugin, center, toasts}
 dofile(path)
 assert(not rules['desktop-floating-default'].enabled)
 assert(rules['desktop-floating-1'].enabled and rules['desktop-floating-10'].enabled and rules['desktop-floating-special'].enabled)
 assert(rules['desktop-floating-2'].match.workspace == "2")
 assert(enzui_set_tiling(true) == "ok")
 assert(not app.floating and not rules['desktop-floating-1'].enabled and enzui_desktop.tiling)
-for _, protected in ipairs({panel, launcher, fullscreen, hidden, pinned, controls, parked, rail, plugin, center, toasts}) do assert(protected.floating) end
+for _, protected in ipairs({panel, launcher, fullscreen, hidden, pinned, controls, welcome, parked, rail, plugin, center, toasts}) do assert(protected.floating) end
 app.at = {x = 0, y = 36}; app.size = {x = 1440, y = 864}
 assert(enzui_set_tiling(true) == "ok")
 assert(enzui_set_tiling(false) == "ok")

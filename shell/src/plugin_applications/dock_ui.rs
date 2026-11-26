@@ -1,19 +1,20 @@
-use crate::{Message, Shell, window_settings};
+use crate::{Message, Shell, control_center::TileMenu, window_settings};
 use enzui_core::{
     context_menu::InvocationKind,
-    menu_model::{CheckState, MenuEntryModel, MenuModel},
+    menu_model::{CheckState, EntryId, MenuEntryModel, MenuModel},
 };
 use enzui_shell::i18n::tr;
 use enzui_shell::tr;
 use enzui_shell::{
     dock::{self, App, Change, Geometry, Group, Position, Snapshot, Style},
     search::{AppTarget, Target, WindowTarget},
+    settings::QuickAction,
 };
 use enzui_widgets::context_menu_host::FocusRestoreTarget;
 use enzui_widgets::{
     context_menu_host::{
-        ContextMenuEvent, ContextMenuState, apply_event_restoring, enz_context_menu_host,
-        enz_optional_point_context_menu_host,
+        ContextMenuEvent, ContextMenuState, apply_event_restoring, apply_event_restoring_with,
+        enz_context_menu_host, enz_optional_point_context_menu_host,
     },
     toolbar_icon::{ToolbarIconTokens, enz_toolbar_icon},
 };
@@ -683,10 +684,19 @@ impl Shell {
                         "dock-app-{id}"
                     ))),
                 );
+                let mut model = entry.model.clone();
+                if let Some(layout) = TileMenu::rows(self, QuickAction::Tiling) {
+                    let mut rows = model.entries().to_vec();
+                    rows.insert(
+                        rows.len() - 1,
+                        MenuEntryModel::submenu("layout", tr("shell-desktop-window-layout")),
+                    );
+                    model = MenuModel::new(rows).with_submenu("layout", layout);
+                }
                 self.dock.menu = Some(Menu {
                     id,
                     origin,
-                    model: entry.model.clone(),
+                    model,
                     state,
                 });
                 self.dock.hidden = false;
@@ -701,8 +711,13 @@ impl Shell {
                 };
                 let id = menu.id.clone();
                 let origin = menu.origin;
-                let update =
-                    apply_event_restoring::<Message>(&mut menu.model, &mut menu.state, &event);
+                let submenus = menu.model.clone();
+                let update = apply_event_restoring_with::<Message>(
+                    &mut menu.model,
+                    &mut menu.state,
+                    &event,
+                    &|_, parent: &EntryId| submenus.submenu(parent).cloned(),
+                );
                 let activated = update.activated().cloned();
                 let closed = !menu.state.is_open();
                 if closed {
@@ -711,7 +726,11 @@ impl Shell {
                     self.dock_rebuild();
                 }
                 let action = activated.map_or_else(Task::none, |entry| {
-                    self.dock_menu_action(&id, entry.as_str())
+                    if let Some(message) = TileMenu::message(self, QuickAction::Tiling, &entry) {
+                        self.update(message)
+                    } else {
+                        self.dock_menu_action(&id, entry.as_str())
+                    }
                 });
                 let action = if closed && matches!(origin, Origin::Bar) {
                     let compositor = self.compositor.clone();

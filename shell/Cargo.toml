@@ -36,7 +36,7 @@ rustix = { version = "=1.1.4", features = ["event", "fs", "net", "pipe", "proces
 wayland-protocols = { version = "=0.32.13", features = ["client", "staging", "unstable"] }
 zbus = { version = "=5.19.0", default-features = false, features = ["tokio"] }
 async-trait = "0.1"
-tokio = { version = "1", features = ["process", "time", "fs", "net", "io-util", "sync", "macros", "signal"] }
+tokio = { version = "1", features = ["rt", "process", "time", "fs", "net", "io-util", "sync", "macros", "signal"] }
 smithay-client-toolkit = { version = "=0.19.2", default-features = false, features = ["calloop"] }
 wayland-client = "=0.31.15"
 wayland-protocols-wlr = { version = "=0.3.12", features = ["client"] }

@@ -168,6 +168,9 @@ fn event_stream(
                 }
                 let mut shell = ShellWindows::default();
                 while let Ok(line) = read_event(&mut reader).await {
+                    if starts_motion(&line) {
+                        crate::power_boost::request();
+                    }
                     if !shell.owns(&line) && wanted(&line) && output.send(()).await.is_err() {
                         return;
                     }
@@ -176,6 +179,22 @@ fn event_stream(
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
     })
+}
+
+// Events whose compositor animation starts as they are sent.
+fn starts_motion(line: &[u8]) -> bool {
+    [
+        b"openwindow>>".as_slice(),
+        b"closewindow>>",
+        b"workspacev2>>",
+        b"activespecialv2>>",
+        b"movewindowv2>>",
+        b"fullscreen>>",
+        b"changefloatingmode>>",
+        b"custom>>enzui-sidebar",
+    ]
+    .iter()
+    .any(|prefix| line.starts_with(prefix))
 }
 
 fn focus_event(line: &[u8]) -> bool {
@@ -318,6 +337,19 @@ async fn read_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_and_desktop_changes_start_motion_but_focus_and_titles_do_not() {
+        assert!(starts_motion(
+            b"openwindow>>5a1,2,io.github.enzui.Files,Files\n"
+        ));
+        assert!(starts_motion(b"workspacev2>>3,3\n"));
+        assert!(!starts_motion(b"workspace>>3\n"));
+        assert!(!starts_motion(
+            b"activewindow>>io.github.enzui.Files,Files\n"
+        ));
+        assert!(!starts_motion(b"windowtitlev2>>5a1,Files\n"));
+    }
 
     #[test]
     fn focus_events_ignore_shell_chrome_without_a_prior_mapping_event() {

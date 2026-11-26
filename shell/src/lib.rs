@@ -90,6 +90,7 @@ pub mod phone_link;
 pub mod platform;
 pub mod plugins;
 pub mod polkit_agent;
+pub mod power_boost;
 pub mod power_mode;
 pub mod power_policy;
 pub mod presentation;

@@ -13,7 +13,7 @@ if (($#)); then
         echo "build-release: custom destination must be absent or empty" >&2; exit 2
     fi
 fi
-binaries=(enzui-shell enzui-settings enzui-welcome enzui-shell-command enzui-idle-inhibit enzui-desktop-frame enzui-maximize-preview enzui-wallpaper enzui-polkit-agent enzui-location-agent enzui-keyring-prompt enzui-drive-unlock enzui-agent-consent enzui-share-picker enzui-assistant enzui-network-secrets enzui-portal enzui-lock enzui-greeter enzui-dev-tools)
+binaries=(enzui-shell enzui-settings enzui-welcome enzui-shell-command enzui-idle-inhibit enzui-desktop-frame enzui-maximize-preview enzui-wallpaper enzui-polkit-agent enzui-location-agent enzui-keyring-prompt enzui-drive-unlock enzui-agent-consent enzui-share-picker enzui-assistant enzui-network-secrets enzui-portal enzui-lock enzui-greeter enzui-dev-tools enzui-power-boost)
 cargo_targets=()
 for name in "${binaries[@]}"; do cargo_targets+=(--bin "$name"); done
 "$root/scripts/setup-sources"
@@ -32,7 +32,7 @@ PY
 )
 install -d "$out"
 # Cargo output paths identify the worker binary paired with this shell build.
-"$root/scripts/with-build-budget" cargo build --offline --locked --release -j1 --manifest-path "$root/Cargo.toml" -p enzui-shell -p enzui-lock "${cargo_targets[@]}" \
+"$root/scripts/with-build-budget" cargo build --offline --locked --release -j1 --manifest-path "$root/Cargo.toml" -p enzui-shell -p enzui-lock -p enzui-power-boost "${cargo_targets[@]}" \
     --message-format=json-render-diagnostics > "$out/.cargo-messages.json"
 worker=$(python3 -c '
 import json, sys

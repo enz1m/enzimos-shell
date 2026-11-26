@@ -1152,6 +1152,16 @@ version = "0.3.0-alpha.1"
 source = "git+https://github.com/enz1m/enzui.git?rev=46f267ecf6642423a7d716488200a5ceb8726655#46f267ecf6642423a7d716488200a5ceb8726655"
 
 [[package]]
+name = "enzui-power-boost"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tempfile",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
 name = "enzui-security"
 version = "0.3.0-alpha.1"
 source = "git+https://github.com/enz1m/enzui.git?rev=46f267ecf6642423a7d716488200a5ceb8726655#46f267ecf6642423a7d716488200a5ceb8726655"

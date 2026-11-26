@@ -32,6 +32,9 @@ stage (then recorded in the manifest). Layout:
                                Settings' on-demand agent worker (config/agent)
   PREFIX/share/applications/dev.enzui.Welcome.desktop, etc/xdg/autostart/dev.enzui.Welcome.desktop
                                Welcome and its first-login start (config/welcome)
+  PREFIX/lib/systemd/system/, PREFIX/share/dbus-1/system-services/, PREFIX/share/dbus-1/system.d/,
+  PREFIX/share/polkit-1/actions/
+                               the bus-activated power boost helper (power-boost/packaging)
 """
 import argparse
 import hashlib
@@ -48,7 +51,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
 
 EXECUTABLES = ["enzui-shell", "enzui-settings", "enzui-welcome", "enzui-shell-command", "enzui-desktop-frame", "enzui-maximize-preview", "enzui-idle-inhibit",
-               "enzui-wallpaper", "enzui-polkit-agent", "enzui-location-agent", "enzui-keyring-prompt", "enzui-drive-unlock", "enzui-agent-consent", "enzui-share-picker", "enzui-assistant", "enzui-network-secrets", "enzui-portal", "enzui-lock", "enzui-greeter", "enzui-dev-tools", "enzwall",
+               "enzui-wallpaper", "enzui-polkit-agent", "enzui-location-agent", "enzui-keyring-prompt", "enzui-drive-unlock", "enzui-agent-consent", "enzui-share-picker", "enzui-assistant", "enzui-network-secrets", "enzui-portal", "enzui-lock", "enzui-greeter", "enzui-dev-tools", "enzui-power-boost", "enzwall",
                "enzui-plugin-worker", "enzui-password-hash", "window-snapshot", "xdg-desktop-portal-enzui-remote"]
 DESKTOP_SCRIPTS = ["start-shell-platform", "run-wallpaper", "launch-desktop-app"]
 RUNTIME_TOOLS = ["python3", "bwrap", "dbus-update-activation-environment", "systemd-run", "systemctl", "loginctl", "gio",
@@ -413,6 +416,17 @@ def main():
         track(path, "session")
 
     # The session's own targets; see config/systemd/.
+    boost = ROOT / "power-boost/packaging"
+    for source, target in ((boost / "enzui-power-boost.service", prefix / "lib/systemd/system/enzui-power-boost.service"),
+                           (boost / "dev.enzui.PowerBoost1.service", prefix / "share/dbus-1/system-services/dev.enzui.PowerBoost1.service"),
+                           (boost / "dev.enzui.PowerBoost1.conf", prefix / "share/dbus-1/system.d/dev.enzui.PowerBoost1.conf"),
+                           (boost / "dev.enzui.PowerBoost1.policy", prefix / "share/polkit-1/actions/dev.enzui.PowerBoost1.policy")):
+        path = at(target)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source.read_text().replace("/usr/lib/enzui/bin/", f"{prefix}/lib/enzui/bin/"))
+        path.chmod(0o644)
+        track(path, "power-boost")
+
     for name in ("enzui-session.target", "enzui-session-ready.target"):
         session_target = at(prefix / "lib/systemd/user" / name)
         session_target.parent.mkdir(parents=True, exist_ok=True)

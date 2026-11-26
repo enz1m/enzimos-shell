@@ -583,6 +583,7 @@ pub fn run(mode: Mode) -> Result<(), String> {
     // surface, so surfaces are created and drawn before waiting for it.
     let lock = manager.lock(&qh, ());
     let locking = Instant::now();
+    enzui_shell::power_boost::request();
     state.lock = Some(lock.clone());
     while state.surfaces.len() < state.outputs.len() {
         add_lock_surface(&mut state, &compositor, &lock, &qh);
@@ -935,6 +936,7 @@ pub fn run(mode: Mode) -> Result<(), String> {
         let answered = auth_rx.try_recv();
         if let Ok(ok) = answered {
             if ok {
+                enzui_shell::power_boost::request();
                 ui.phase = ui::Phase::Leaving(Instant::now());
             } else {
                 ui.phase = ui::Phase::Idle;
@@ -955,6 +957,12 @@ pub fn run(mode: Mode) -> Result<(), String> {
             state.held = Some((code, now + Duration::from_millis(1000 / rate)));
         }
         if std::mem::take(&mut state.input) && matches!(ui.phase, ui::Phase::Idle) {
+            let resting = ui
+                .last_input
+                .is_none_or(|at| now.saturating_duration_since(at) >= ui::PROMPT_IDLE);
+            if resting || !state.keys.is_empty() {
+                enzui_shell::power_boost::request();
+            }
             ui.last_input = Some(now);
         }
         ui.caps_lock = state

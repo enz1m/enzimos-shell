@@ -631,15 +631,27 @@ impl Shell {
             }
             message => message,
         };
-        if matches!(
+        let opens_surface = matches!(
             &message,
-            Message::ToggleControls | Message::ToggleOverview | Message::ShowLauncher
-                | Message::QuickSearch(quick_search::Message::Toggle | quick_search::Message::Show(_))
-                | Message::Launch(_) | Message::SettingsPage(_) | Message::SettingsPlugin(_)
-                | Message::Command(enzui_shell::commands::Command::SwitchNext
-                    | enzui_shell::commands::Command::SwitchPrevious
-                    | enzui_shell::commands::Command::SwitchAppNext)
-        ) || self.panel_action.as_ref().is_some_and(|(owner, _, _)| {
+            Message::ToggleControls
+                | Message::ToggleOverview
+                | Message::ShowLauncher
+                | Message::QuickSearch(
+                    quick_search::Message::Toggle | quick_search::Message::Show(_)
+                )
+                | Message::Launch(_)
+                | Message::SettingsPage(_)
+                | Message::SettingsPlugin(_)
+                | Message::Command(
+                    enzui_shell::commands::Command::SwitchNext
+                        | enzui_shell::commands::Command::SwitchPrevious
+                        | enzui_shell::commands::Command::SwitchAppNext
+                )
+        );
+        if opens_surface || matches!(&message, Message::ShowPower | Message::ToggleTheme) {
+            enzui_shell::power_boost::request();
+        }
+        if opens_surface || self.panel_action.as_ref().is_some_and(|(owner, _, _)| {
             matches!(&message, Message::Escape(id) | Message::Window(id, window::Event::CloseRequested | window::Event::Closed) if id == owner)
         }) {
             self.cancel_panel_action();

@@ -26,6 +26,7 @@ environment variables, settings files or public JSON status.
 | Account administration | AccountsService and polkit | [Account client](../shell/src/user_accounts.rs) |
 | Controller testing | Seat-authorized kernel event nodes | [Controller reader](../shell/src/controllers.rs) |
 | Desktop game request | `com.feralinteractive.GameMode` | [GameMode client](../shell/src/game_mode.rs) |
+| Animation power boost | `dev.enzui.PowerBoost1` (`enzui-power-boost`) | [Boost client](../shell/src/power_boost.rs), [helper](../power-boost/src/lib.rs) |
 | Device firmware | fwupd (`org.freedesktop.fwupd`, `fwupdmgr`) | [Firmware client](../shell/src/firmware.rs) |
 | Location | GeoClue agent and `dev.enzui.Location` | [Location agent](../shell/src/location.rs) |
 | Thunderbolt approval | bolt (`org.freedesktop.bolt`) | [Thunderbolt client](../shell/src/thunderbolt.rs) |
@@ -117,6 +118,34 @@ GameMode distinguishes the desktop's own registration from game-owned activity.
 Turning the desktop request off never unregisters another client and does not
 activate an absent daemon. Changes require readback. User configuration updates
 only selected general keys, preserving unrelated options and scripts.
+
+### Animation power boost
+
+The Shell and lock ask `dev.enzui.PowerBoost1` for a boost when motion starts:
+panels, launcher, overview and window switching, compositor window and desktop
+changes, lock start, waking the lock prompt, typing and unlocking. The
+bus-activated root helper sets every cpufreq policy's energy-performance
+preference (EPP) to `performance` for 1.5 s after the latest request, then
+writes the previous value back. Clients send at most one request per 500 ms.
+The helper exits after a minute without requests.
+
+polkit grants `dev.enzui.power-boost` only to active local sessions, so any
+process there, including a Flatpak with system-bus access, can keep the boost
+alive by repeating requests, as power-profiles-daemon already lets it switch to
+the performance profile. The helper
+leaves the system alone without a writable EPP interface (acpi-cpufreq, passive
+amd-pstate), under a `performance` or `power-saver` profile, with a
+`performance` governor or `power` preference, and while `auto-cpufreq` or
+`auto-epp` runs. It never bus-activates power-profiles-daemon. A value is
+restored only if it is still `performance`, the governor is unchanged and the
+profile is unchanged; otherwise the newer choice stays and boosts pause for a
+minute. A marker under `/run/enzui-power-boost` lets a restarted helper end a
+boost its crashed predecessor began, under the same rule. One-shot managers
+such as TLP keep working: a value they write during a boost wins.
+
+The helper changes only EPP, not power-profiles-daemon's profile. A profile
+hold would switch the ACPI platform profile and the Settings power mode on
+every interaction.
 
 Remote sharing warns from the protected per-account permission grant. This says
 sharing is enabled, not that a viewer is connected. Locking revokes the session;

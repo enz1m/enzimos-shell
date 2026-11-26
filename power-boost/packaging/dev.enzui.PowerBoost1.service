@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=dev.enzui.PowerBoost1
+Exec=/usr/lib/enzui/bin/enzui-power-boost
+User=root
+SystemdService=enzui-power-boost.service

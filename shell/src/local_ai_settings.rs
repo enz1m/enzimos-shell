@@ -23,6 +23,9 @@ pub(super) struct State {
     offers: Vec<ModelOffer>,
     downloads: Vec<model_downloads::Reading>,
     advanced: bool,
+    benchmark: Option<(String, iced::task::Handle)>,
+    benchmark_serial: u64,
+    benchmarks: std::collections::BTreeMap<String, Result<local_ai::Benchmark, String>>,
     enabled: bool,
     writing: writing_tools::Preferences,
     writing_error: Option<String>,
@@ -68,6 +71,9 @@ pub(super) enum Message {
     Fetch(String),
     Queued(Result<(), String>),
     RefreshStatus,
+    Benchmark(String),
+    BenchmarkFinished(u64, String, Result<local_ai::Benchmark, String>),
+    CancelBenchmark,
     ToggleAdvanced,
     SetEnabled(bool),
     WritingEnabled(bool),
@@ -237,12 +243,60 @@ fn seconds(n: u32) -> String {
 }
 
 impl State {
+    fn inference(&self) -> Option<&Inference> {
+        self.inference.as_ref()?.as_ref().ok()
+    }
+
+    pub(super) fn provider_selectable(&self, id: &str) -> bool {
+        id == "local"
+            || self
+                .gateway
+                .as_ref()
+                .and_then(|gateway| gateway.as_ref().ok())
+                .is_some_and(|gateway| {
+                    gateway
+                        .providers
+                        .iter()
+                        .any(|provider| provider.id == id && provider.selectable)
+                })
+    }
+
     fn model_busy(&self) -> bool {
-        self.busy.is_some() || self.downloads.iter().any(model_downloads::Reading::pending)
+        self.busy.is_some()
+            || self.benchmark.is_some()
+            || self.downloads.iter().any(model_downloads::Reading::pending)
     }
 }
 
 impl SettingsApp {
+    pub(super) fn local_text_model_ids(&self) -> Vec<String> {
+        self.local_ai
+            .inference()
+            .map_or_else(Vec::new, |inference| inference.models.clone())
+    }
+
+    pub(super) fn selectable_providers(&self) -> Vec<String> {
+        let mut ids = vec!["local".to_owned()];
+        if let Some(Ok(gateway)) = &self.local_ai.gateway {
+            ids.extend(
+                gateway
+                    .providers
+                    .iter()
+                    .filter(|provider| provider.id != "local" && provider.selectable)
+                    .map(|provider| provider.id.clone()),
+            );
+        }
+        ids
+    }
+
+    pub(super) fn provider_title<'a>(&self, id: &'a str) -> &'a str {
+        match id {
+            "local" => tr("shell-on-this-computer"),
+            "chatgpt" | "chatgpt-login" => tr("shell-chatgpt"),
+            _ => id,
+        }
+    }
+
     /// Adds the model file the user chose to this account's registry.
     pub(super) fn local_ai_add_model(&mut self, path: std::path::PathBuf) -> Task<ParentMessage> {
         if self.local_ai.model_busy() || !self.controls_live() {
@@ -367,6 +421,38 @@ impl SettingsApp {
                     task,
                     iced::window::invalidate(iced::window::Invalidation::none()),
                 ]);
+            }
+            Message::Benchmark(model) => {
+                if !live
+                    || !state.enabled
+                    || state.model_busy()
+                    || !state.inference().is_some_and(|inference| {
+                        inference.models.contains(&model)
+                            || inference.speech_models.contains(&model)
+                    })
+                {
+                    return Task::none();
+                }
+                state.benchmarks.remove(&model);
+                let id = model.clone();
+                state.benchmark_serial = state.benchmark_serial.wrapping_add(1);
+                let serial = state.benchmark_serial;
+                let (task, handle) =
+                    Task::perform(local_ai::benchmark(model.clone()), move |result| {
+                        send(Message::BenchmarkFinished(serial, model, result))
+                    })
+                    .abortable();
+                state.benchmark = Some((id, handle.abort_on_drop()));
+                return task;
+            }
+            Message::BenchmarkFinished(serial, id, result) => {
+                if state.benchmark_serial == serial && state.benchmark.is_some() {
+                    state.benchmark = None;
+                    state.benchmarks.insert(id, result);
+                }
+            }
+            Message::CancelBenchmark => {
+                state.benchmark = None;
             }
             Message::ToggleAdvanced => state.advanced = !state.advanced,
             Message::SetEnabled(enabled) => {
@@ -800,24 +886,32 @@ impl SettingsApp {
             .iter()
             .position(|id| *id == gateway.default_provider);
         let choices = selectable.clone();
-        let control = enz_combo_box("", selectable, None, |_| ParentMessage::Noop)
-            .aria_label(tr("shell-default-provider"))
-            .on_select_index(move |index| {
-                choices
-                    .get(index)
-                    .cloned()
-                    .map_or(ParentMessage::Noop, |id| {
-                        send(Message::Set(Change::DefaultProvider(id)))
-                    })
-            })
-            .selected_index(selected)
-            .enabled(live)
-            .width(220)
-            .id("local-ai-provider".into())
-            .into_element();
+        let control = enz_combo_box(
+            "",
+            selectable
+                .iter()
+                .map(|id| self.provider_title(id).to_owned())
+                .collect::<Vec<_>>(),
+            None,
+            |_| ParentMessage::Noop,
+        )
+        .aria_label(tr("shell-default-provider"))
+        .on_select_index(move |index| {
+            choices
+                .get(index)
+                .cloned()
+                .map_or(ParentMessage::Noop, |id| {
+                    send(Message::Set(Change::DefaultProvider(id)))
+                })
+        })
+        .selected_index(selected)
+        .enabled(live)
+        .width(220)
+        .id("local-ai-provider".into())
+        .into_element();
         let mut rows = column![
             self.mark_setting(
-                "agents/ai-providers",
+                "agents/default-ai-provider",
                 crate::settings_app::settings_row(tr("shell-default-provider"))
                     .subtitle(tr(
                         "shell-where-requests-go-when-they-do-not-name-a-provider"
@@ -852,15 +946,18 @@ impl SettingsApp {
                 (true, "local") => tr("shell-on-this-computer").into(),
                 (true, _) => tr("shell-sends-requests-over-the-internet").into(),
             };
-            let mut row = crate::settings_app::settings_row(provider.id.clone())
-                .subtitle(format!("{} · {state}", provider.kind))
-                .icon(if provider.kind == "local" {
-                    "cpu"
-                } else {
-                    "cloud"
-                });
+            if provider.kind == "local" {
+                continue;
+            }
+            let mut row =
+                crate::settings_app::settings_row(self.provider_title(&provider.id).to_owned())
+                    .subtitle(state)
+                    .icon(if provider.kind == "local" {
+                        "cpu"
+                    } else {
+                        "cloud"
+                    });
             row = match provider.kind.as_str() {
-                "local" => row,
                 "chatgpt-login" => row.control(account_button(chatgpt.signed_in)),
                 _ => row.control(
                     enz_button(
@@ -958,12 +1055,83 @@ impl SettingsApp {
         self.mark_setting("agents/add-ai-provider", form)
     }
 
-    fn model_title<'a>(&'a self, id: &'a str) -> &'a str {
+    pub(super) fn model_title<'a>(&'a self, id: &'a str) -> &'a str {
         self.local_ai
             .offers
             .iter()
             .find(|offer| offer.id == id)
-            .map_or(id, |offer| offer.title.as_str())
+            .map(|offer| offer.title.as_str())
+            .or_else(|| {
+                self.local_ai
+                    .inference()?
+                    .model_titles
+                    .get(id)
+                    .map(String::as_str)
+            })
+            .unwrap_or(id)
+    }
+
+    fn benchmark_rows<'a>(
+        &self,
+        mut rows: iced::widget::Column<'a, ParentMessage>,
+        models: &[String],
+        speech: bool,
+    ) -> iced::widget::Column<'a, ParentMessage> {
+        let state = &self.local_ai;
+        for model in models {
+            let running = state.benchmark.as_ref().is_some_and(|(id, _)| id == model);
+            let detail = if running {
+                tr("shell-ai-benchmark-running").to_owned()
+            } else {
+                match state.benchmarks.get(model) {
+                    Some(Ok(local_ai::Benchmark::Text {
+                        first_ms,
+                        tokens_per_second,
+                        memory_mib,
+                    })) => {
+                        tr!("shell-ai-benchmark-text",
+                            "first" => format!("{:.2}", first_ms / 1000.0),
+                            "rate" => format!("{tokens_per_second:.1}"),
+                            "memory" => format!("{memory_mib:.0}"))
+                    }
+                    Some(Ok(local_ai::Benchmark::Speech {
+                        audio_seconds,
+                        elapsed_seconds,
+                        memory_mib,
+                    })) => {
+                        tr!("shell-ai-benchmark-speech",
+                            "audio" => format!("{audio_seconds:.1}"),
+                            "elapsed" => format!("{elapsed_seconds:.2}"),
+                            "memory" => format!("{memory_mib:.0}"))
+                    }
+                    Some(Err(error)) => error.clone(),
+                    None => tr("shell-model-installed").to_owned(),
+                }
+            };
+            let (label, action) = if running {
+                (tr("shell-cancel"), Message::CancelBenchmark)
+            } else {
+                (tr("shell-ai-benchmark"), Message::Benchmark(model.clone()))
+            };
+            rows = rows.push(
+                crate::settings_app::settings_row(self.model_title(model).to_owned())
+                    .subtitle(detail)
+                    .subtitle_wrap(true)
+                    .icon(if speech { "mic" } else { "cpu" })
+                    .control(
+                        enz_button(label, send(action))
+                            .id(format!("local-ai-benchmark-{model}").into())
+                            .kind(ButtonKind::Secondary)
+                            .enabled(
+                                self.controls_live()
+                                    && (running || (state.enabled && !state.model_busy())),
+                            )
+                            .into_element(),
+                    )
+                    .into_element(),
+            );
+        }
+        rows
     }
 
     fn available_model_rows<'a>(
@@ -973,7 +1141,11 @@ impl SettingsApp {
     ) -> iced::widget::Column<'a, ParentMessage> {
         let state = &self.local_ai;
         let live = state.enabled && !state.model_busy() && self.controls_live();
-        for offer in state.offers.iter().filter(|offer| offer.speech == speech) {
+        for offer in state
+            .offers
+            .iter()
+            .filter(|offer| offer.speech == speech && (!offer.added || state.inference().is_none()))
+        {
             let current = state
                 .downloads
                 .iter()
@@ -1022,7 +1194,7 @@ impl SettingsApp {
         rows
     }
 
-    pub(super) fn writing_tools_section(&self) -> Element<'_, ParentMessage> {
+    fn writing_model_row(&self) -> Element<'_, ParentMessage> {
         use crate::settings_app::settings_row;
         let state = &self.local_ai;
         let mut models = vec![None];
@@ -1058,6 +1230,17 @@ impl SettingsApp {
             .width(240)
             .id("writing-model".into())
             .into_element();
+        self.mark_setting(
+            "agents/writing-model",
+            settings_row(tr("writing-model"))
+                .control(model)
+                .into_element(),
+        )
+    }
+
+    pub(super) fn writing_tools_section(&self) -> Element<'_, ParentMessage> {
+        use crate::settings_app::settings_row;
+        let state = &self.local_ai;
         let mut rows = column![
             self.mark_setting(
                 "agents/writing-tools",
@@ -1066,12 +1249,6 @@ impl SettingsApp {
                         Message::WritingEnabled(enabled)
                     ))
                     .enabled(self.controls_live())
-                    .into_element()
-            ),
-            self.mark_setting(
-                "agents/writing-model",
-                settings_row(tr("writing-model"))
-                    .control(model)
                     .into_element()
             ),
             self.mark_setting(
@@ -1098,6 +1275,29 @@ impl SettingsApp {
             .title(tr("writing-tools"))
             .description(tr("writing-settings-description"))
             .into_element()
+    }
+
+    pub(super) fn voice_typing_section(&self) -> Element<'_, ParentMessage> {
+        let row = crate::settings_app::settings_row(tr("shell-ai-dictation-shortcut"))
+            .subtitle(tr("shell-model-voice-description"))
+            .subtitle_wrap(true)
+            .control(
+                enz_button(
+                    tr("shell-shortcuts"),
+                    ParentMessage::Section("keyboard/shortcut-reference"),
+                )
+                .id("dictation-shortcuts".into())
+                .kind(ButtonKind::Secondary)
+                .enabled(self.controls_live())
+                .into_element(),
+            )
+            .into_element();
+        self.section_card_for(
+            "agents/voice-typing",
+            column![self.mark_setting("agents/voice-typing", row)],
+        )
+        .title(tr("shell-voice-typing"))
+        .into_element()
     }
 
     pub(super) fn local_ai_sections<'a>(
@@ -1182,6 +1382,9 @@ impl SettingsApp {
                 ),
             );
         }
+        if let Some(inference) = state.inference() {
+            on_device = self.benchmark_rows(on_device, &inference.models, false);
+        }
         on_device = self.available_model_rows(on_device, false);
 
         let inference = state
@@ -1233,7 +1436,11 @@ impl SettingsApp {
             );
         }
         let mut speech =
-            column![self.mark_setting("agents/voice-typing", row.into_element())].spacing(2);
+            column![self.mark_setting("agents/default-speech-model", row.into_element())]
+                .spacing(2);
+        if let Some(inference) = inference {
+            speech = self.benchmark_rows(speech, &inference.speech_models, true);
+        }
         speech = self.available_model_rows(speech, true);
         if self.model_import_offered() {
             speech = speech.push(
@@ -1267,7 +1474,7 @@ impl SettingsApp {
             None => {
                 providers = providers.push(
                     self.mark_setting(
-                        "agents/ai-providers",
+                        "agents/default-ai-provider",
                         crate::settings_app::settings_row(tr("shell-checking"))
                             .enabled(false)
                             .into_element(),
@@ -1283,7 +1490,7 @@ impl SettingsApp {
                 };
                 providers = providers.push(
                     self.mark_setting(
-                        "agents/ai-providers",
+                        "agents/default-ai-provider",
                         crate::settings_app::settings_row(tr("shell-not-running"))
                             .subtitle(subtitle)
                             .subtitle_wrap(true)
@@ -1297,21 +1504,33 @@ impl SettingsApp {
         if let Some(notice) = self.local_ai_notice(Service::Gateway) {
             providers = providers.push(notice);
         }
+        let mut defaults = self
+            .assistant_provider_rows()
+            .push(self.writing_model_row());
+        if let Some(error) = &state.writing_error {
+            defaults = defaults.push(self.caption_row_text(error.clone()));
+        }
         body.push(
+            self.section_card_for("agents/ai-providers", defaults)
+                .title(tr("shell-ai-providers"))
+                .description(tr("shell-ai-providers-description"))
+                .into_element(),
+        )
+        .push(
             self.section_card_for("agents/local-ai", on_device)
                 .title(tr("shell-model-local-text"))
                 .description(tr("shell-model-local-text-description"))
                 .into_element(),
         )
         .push(
-            self.section_card_for("agents/voice-typing", speech)
-                .title(tr("shell-voice-typing"))
-                .description(tr("shell-model-voice-description"))
+            self.section_card_for("agents/speech-models", speech)
+                .title(tr("shell-ai-speech-models"))
+                .description(tr("shell-ai-speech-models-description"))
                 .into_element(),
         )
         .push(
-            self.section_card_for("agents/ai-providers", providers)
-                .title(tr("shell-ai-providers"))
+            self.section_card_for("agents/online-providers", providers)
+                .title(tr("shell-ai-online-providers"))
                 .description(tr("shell-a-request-that-fails-on-this-computer-is-never-sent-to-another-provider-on-i"))
                 .into_element(),
         )

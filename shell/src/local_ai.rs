@@ -87,6 +87,23 @@ fn exchange_at_with_timeout(
         crate::agent_harness::private_socket(socket).map_err(|_| Failure::Unavailable)?;
     stream.set_read_timeout(Some(timeout)).ok();
     stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
+    let request = request_bytes(method, path, body);
+    // Once a change is sent, a failure to hear back says nothing about it.
+    let lost = if method == "POST" {
+        Failure::ReplyLost
+    } else {
+        Failure::Unavailable
+    };
+    stream.write_all(&request).map_err(|_| lost.clone())?;
+    let mut response = Vec::new();
+    stream
+        .take(MAX_REPLY)
+        .read_to_end(&mut response)
+        .map_err(|_| lost.clone())?;
+    parse_response(&response).ok_or(lost)
+}
+
+fn request_bytes(method: &str, path: &str, body: Option<&Value>) -> Vec<u8> {
     let payload = body
         .map(|b| serde_json::to_vec(b).unwrap_or_default())
         .unwrap_or_default();
@@ -104,19 +121,72 @@ fn exchange_at_with_timeout(
     }
     request.extend_from_slice(b"\r\n");
     request.extend_from_slice(&payload);
-    // Once a change is sent, a failure to hear back says nothing about it.
-    let lost = if method == "POST" {
-        Failure::ReplyLost
+    request
+}
+
+#[derive(Debug, Clone)]
+/// Speed and sampled memory for a fixed local model workload.
+pub enum Benchmark {
+    Text {
+        first_ms: f64,
+        tokens_per_second: f64,
+        memory_mib: f64,
+    },
+    Speech {
+        audio_seconds: f64,
+        elapsed_seconds: f64,
+        memory_mib: f64,
+    },
+}
+
+/// Measures a local model until the connection is dropped.
+///
+/// # Errors
+/// Returns the service refusal or an unavailable or invalid response.
+pub async fn benchmark(model: String) -> Result<Benchmark, String> {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let unavailable = || Failure::Unavailable.message(Service::Inference);
+    let path = Service::Inference.socket().ok_or_else(unavailable)?;
+    let socket = crate::agent_harness::private_socket(&path)?;
+    socket.set_nonblocking(true).map_err(|_| unavailable())?;
+    let mut socket = tokio::net::UnixStream::from_std(socket).map_err(|_| unavailable())?;
+    let request = request_bytes(
+        "POST",
+        "/v1/models/benchmark",
+        Some(&json!({"model": model})),
+    );
+    let (status, response) = tokio::time::timeout(Duration::from_secs(150), async {
+        socket.write_all(&request).await.ok()?;
+        let mut reply = Vec::new();
+        socket.take(MAX_REPLY).read_to_end(&mut reply).await.ok()?;
+        parse_response(&reply)
+    })
+    .await
+    .ok()
+    .flatten()
+    .ok_or_else(unavailable)?;
+    let invalid = || Failure::Invalid.message(Service::Inference);
+    if status != 200 {
+        return Err(text(&response["error"], 240).unwrap_or_else(invalid));
+    }
+    let memory_mib = response["memory_mib"].as_f64().ok_or_else(invalid)?;
+    if let Some(first_ms) = response["first_token_ms"].as_f64() {
+        let tokens_per_second = response["tokens_per_second"].as_f64().ok_or_else(invalid)?;
+        Ok(Benchmark::Text {
+            first_ms,
+            tokens_per_second,
+            memory_mib,
+        })
     } else {
-        Failure::Unavailable
-    };
-    stream.write_all(&request).map_err(|_| lost.clone())?;
-    let mut response = Vec::new();
-    stream
-        .take(MAX_REPLY)
-        .read_to_end(&mut response)
-        .map_err(|_| lost.clone())?;
-    parse_response(&response).ok_or(lost)
+        let audio_seconds = response["audio_seconds"].as_f64().ok_or_else(invalid)?;
+        let elapsed_seconds = response["elapsed_seconds"].as_f64().ok_or_else(invalid)?;
+        Ok(Benchmark::Speech {
+            audio_seconds,
+            elapsed_seconds,
+            memory_mib,
+        })
+    }
 }
 
 fn parse_response(response: &[u8]) -> Option<(u16, Value)> {
@@ -184,6 +254,7 @@ pub struct Inference {
     pub models: Vec<String>,
     /// Registered speech-to-text models, which dictation uses.
     pub speech_models: Vec<String>,
+    pub model_titles: std::collections::BTreeMap<String, String>,
     /// The speech model the user chose for dictation, when they chose one.
     pub speech_default: Option<String>,
     pub loaded_model: Option<String>,
@@ -354,6 +425,13 @@ pub fn parse_inference(preferences: &Value, status: &Value, models: &Value) -> O
             .filter(|m| m["kind"] == "speech")
             .filter_map(|m| text(&m["id"], 128))
             .take(16)
+            .collect(),
+        model_titles: models["data"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(80)
+            .filter_map(|m| Some((text(&m["id"], 128)?, text(&m["title"], 128)?)))
             .collect(),
         speech_default: models["data"]
             .as_array()

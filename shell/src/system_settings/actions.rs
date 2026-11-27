@@ -277,9 +277,8 @@ impl SystemSettings {
             }
             Request::PowerProfile(profile) => {
                 let current = self
-                    .power()
+                    .power_profiles()
                     .await
-                    .profiles
                     .ok_or_else(|| tr("shell-power-profiles-are-not-available"))?;
                 if !current.available.contains(profile) {
                     return Err(tr("shell-that-power-mode-is-not-offered-on-this-computer").into());

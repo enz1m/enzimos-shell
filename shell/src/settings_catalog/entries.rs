@@ -1938,75 +1938,75 @@ pub static ENTRIES: &[Entry] = &[
         Agents,
         "agents/writing-model",
         "writing-model",
-        "writing-tools",
+        "shell-ai-providers",
         "writing-model-keywords"
     ),
     entry!(
         Agents,
         "agents/local-ai",
-        "shell-on-device-ai",
-        "shell-on-device-ai",
+        "shell-model-local-text",
+        "shell-ai-providers",
         "shell-local-ai-model-inference-llm-memory-threads-context-engine-offline-private"
     ),
     entry!(
         Agents,
         "agents/default-text-model",
         "shell-model-default-text",
-        "shell-on-device-ai",
+        "shell-ai-providers",
         "shell-ai-search-default-text-model"
     ),
     entry!(
         Agents,
         "agents/runtime-options",
         "shell-model-runtime-options",
-        "shell-on-device-ai",
+        "shell-ai-providers",
         "shell-ai-search-runtime-options"
     ),
     entry!(
         Agents,
         "agents/runtime-threads",
         "shell-processor-threads",
-        "shell-on-device-ai",
+        "shell-ai-providers",
         "shell-ai-search-runtime-threads"
     ),
     entry!(
         Agents,
         "agents/runtime-memory",
         "shell-memory-limit",
-        "shell-on-device-ai",
+        "shell-ai-providers",
         "shell-ai-search-runtime-memory"
     ),
     entry!(
         Agents,
         "agents/runtime-idle",
         "shell-free-memory-when-idle",
-        "shell-on-device-ai",
+        "shell-ai-providers",
         "shell-ai-search-runtime-idle"
     ),
     entry!(
         Agents,
         "agents/runtime-context",
         "shell-context-length",
-        "shell-on-device-ai",
+        "shell-ai-providers",
         "shell-ai-search-runtime-context"
     ),
     entry!(
         Agents,
         "agents/runtime-engine",
         "shell-engine",
-        "shell-on-device-ai",
+        "shell-ai-providers",
         "shell-ai-search-runtime-engine"
     ),
     entry!(
         Agents,
-        "agents/voice-typing",
+        "agents/default-speech-model",
         "shell-model-default-speech",
-        "shell-voice-typing",
+        "shell-ai-providers",
         "shell-dictation-voice-typing-speech-quick-action"
     ),
     entry!(
         Agents,
-        "agents/ai-providers",
+        "agents/default-ai-provider",
         "shell-default-provider",
         "shell-ai-providers",
         "shell-ai-provider-cloud-default-openai-gateway-online"
@@ -2022,27 +2022,41 @@ pub static ENTRIES: &[Entry] = &[
         Agents,
         "agents/local-ai-enable",
         "shell-model-enable-local",
-        "shell-on-device-ai",
+        "shell-ai-providers",
         "shell-local-ai-model-inference-llm-memory-threads-context-engine-offline-private"
     ),
     entry!(
         Agents,
         "agents/local-ai-import",
         "shell-model-import-file",
-        "shell-on-device-ai",
+        "shell-ai-providers",
         "shell-local-ai-model-inference-llm-memory-threads-context-engine-offline-private"
     ),
     entry!(
         Agents,
         "agents/speech-import",
         "shell-model-import-speech-folder",
-        "shell-voice-typing",
+        "shell-ai-providers",
         "shell-dictation-voice-typing-speech-quick-action"
     ),
     entry!(
         Agents,
         "agents/add-ai-provider",
         "shell-add-an-online-provider",
+        "shell-ai-providers",
+        "shell-ai-provider-cloud-default-openai-gateway-online"
+    ),
+    entry!(
+        Agents,
+        "agents/voice-typing",
+        "shell-ai-dictation-shortcut",
+        "shell-voice-typing",
+        "shell-dictation-voice-typing-speech-quick-action"
+    ),
+    entry!(
+        Agents,
+        "agents/assistant-provider",
+        "shell-assistant-provider",
         "shell-ai-providers",
         "shell-ai-provider-cloud-default-openai-gateway-online"
     ),

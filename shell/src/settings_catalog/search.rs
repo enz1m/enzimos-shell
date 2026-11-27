@@ -81,11 +81,6 @@ fn sections() -> impl Iterator<Item = Section> {
             label: "shell-add-user",
             route: "users/new",
         },
-        Section {
-            category: Category::Agents,
-            label: "shell-voice-typing",
-            route: "agents/voice-typing",
-        },
     ])
 }
 

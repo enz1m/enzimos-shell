@@ -415,28 +415,8 @@ impl SystemSettings {
             nearby,
         }
     }
-    pub(super) async fn power(&self) -> Power {
+    pub(crate) async fn power_profiles(&self) -> Option<Profiles> {
         let run = &self.controls;
-        let battery = match run
-            .run(
-                "upower",
-                &["-i", "/org/freedesktop/UPower/devices/DisplayDevice"],
-            )
-            .await
-        {
-            Ok(text) => parse::upower_battery(&text),
-            Err(_) => run.battery().await.map(|b| BatteryState {
-                percent: b.percent,
-                charging: b.charging,
-                state: if b.charging {
-                    tr("shell-charging")
-                } else {
-                    tr("shell-on-battery")
-                }
-                .into(),
-                remaining: None,
-            }),
-        };
         let mut profiles = None;
         for (service, path, interface) in PROFILE_SERVICES {
             let active = run
@@ -475,6 +455,32 @@ impl SystemSettings {
                 break;
             }
         }
+        profiles
+    }
+
+    pub(super) async fn power(&self) -> Power {
+        let run = &self.controls;
+        let battery = match run
+            .run(
+                "upower",
+                &["-i", "/org/freedesktop/UPower/devices/DisplayDevice"],
+            )
+            .await
+        {
+            Ok(text) => parse::upower_battery(&text),
+            Err(_) => run.battery().await.map(|b| BatteryState {
+                percent: b.percent,
+                charging: b.charging,
+                state: if b.charging {
+                    tr("shell-charging")
+                } else {
+                    tr("shell-on-battery")
+                }
+                .into(),
+                remaining: None,
+            }),
+        };
+        let profiles = self.power_profiles().await;
         let lid = run
             .run(
                 "busctl",

@@ -4,12 +4,12 @@ use enzui_shell::i18n::tr;
 use enzui_shell::tr;
 use enzui_widgets::modal_host::ModalHostEvent;
 use enzui_widgets::{
-    button::{ButtonKind, ButtonSize, enz_button},
+    button::{ButtonKind, enz_button},
     text::enz_text,
     text_field::enz_text_field,
 };
 use iced::{
-    Element, Length, Task,
+    Element, Task,
     widget::{column, row, text_editor},
 };
 
@@ -22,7 +22,6 @@ pub(super) struct State {
     models: Option<Result<Vec<String>, String>>,
     root: String,
     skills: String,
-    model: String,
     error: Option<String>,
     busy: bool,
     // What the running harness lists; `None` until read.
@@ -94,7 +93,6 @@ pub(super) enum Message {
     Edit(Edit),
     Root(String),
     Skills(String),
-    Model(String),
     ListModels,
     Models(String, Result<Vec<String>, String>),
     Run(bool),
@@ -329,6 +327,11 @@ impl SettingsApp {
             }
             Message::Create => self.assistant_save(agent_harness::starter()),
             Message::Edit(edit) => {
+                if let Edit::ApproveProvider(id) = &edit
+                    && !self.local_ai.provider_selectable(id)
+                {
+                    return Task::none();
+                }
                 let Some(Ok(Some(mut config))) = state.config.clone() else {
                     return Task::none();
                 };
@@ -337,9 +340,7 @@ impl SettingsApp {
                         match edit {
                             Edit::AddRoot(_) => state.root.clear(),
                             Edit::AddSkills(_) => state.skills.clear(),
-                            Edit::Model(_) => state.model.clear(),
-                            Edit::Provider(_) => {
-                                state.model.clear();
+                            Edit::Provider(_) | Edit::ApproveProvider(_) => {
                                 state.models = None;
                             }
                             _ => {}
@@ -358,10 +359,6 @@ impl SettingsApp {
             }
             Message::Skills(text) => {
                 state.skills = text;
-                Task::none()
-            }
-            Message::Model(text) => {
-                state.model = text;
                 Task::none()
             }
             Message::ListModels => {
@@ -490,6 +487,113 @@ impl SettingsApp {
         .description(tr("shell-assistant-description"))
         .into_element()
     }
+    pub(super) fn assistant_provider_rows(&self) -> iced::widget::Column<'_, ParentMessage> {
+        use enzui_widgets::combo_box::enz_combo_box;
+        let state = &self.assistant;
+        let mut rows = column![].spacing(2);
+        let Some(Ok(Some(config))) = &state.config else {
+            return rows;
+        };
+        let summary = agent_harness::summary(config);
+        let live = self.controls_live() && !state.busy;
+        let edit = |edit| ParentMessage::Assistant(Message::Edit(edit));
+        let mut providers = self.selectable_providers();
+        if !providers.contains(&summary.provider) {
+            providers.push(summary.provider.clone());
+        }
+        let choices = providers
+            .into_iter()
+            .map(|id| {
+                let title = self.provider_title(&id).to_owned();
+                (title, edit(Edit::ApproveProvider(id)))
+            })
+            .collect();
+        rows = rows.push(
+            self.mark_setting(
+                "agents/assistant-provider",
+                crate::settings_app::settings_row(tr("shell-assistant-provider"))
+                    .subtitle(tr("shell-assistant-provider-detail"))
+                    .subtitle_wrap(true)
+                    .value_menu(
+                        self.provider_title(&summary.provider).to_owned(),
+                        self.menu.as_deref() == Some("assistant-provider"),
+                        ParentMessage::Menu("assistant-provider".into(), true),
+                        ParentMessage::Menu("assistant-provider".into(), false),
+                        choices,
+                    )
+                    .enabled(live)
+                    .into_element(),
+            ),
+        );
+        let mut models = if summary.provider == "local" {
+            self.local_text_model_ids()
+        } else {
+            state
+                .models
+                .as_ref()
+                .and_then(|result| result.as_ref().ok())
+                .cloned()
+                .unwrap_or_default()
+        };
+        if summary.provider == "local" {
+            models.insert(0, String::new());
+        }
+        if !summary.model.is_empty() && !models.contains(&summary.model) {
+            models.push(summary.model.clone());
+        }
+        let titles = models
+            .iter()
+            .map(|model| {
+                if model.is_empty() {
+                    tr("shell-assistant-automatic-model").to_owned()
+                } else {
+                    self.model_title(model).to_owned()
+                }
+            })
+            .collect::<Vec<_>>();
+        let selected = models.iter().position(|model| *model == summary.model);
+        let picker = enz_combo_box("", titles, None, |_| ParentMessage::Noop)
+            .aria_label(tr("shell-assistant-default-model"))
+            .selected_index(selected)
+            .on_select_index(move |index| {
+                models.get(index).map_or(ParentMessage::Noop, |model| {
+                    edit(Edit::Model(model.clone()))
+                })
+            })
+            .id("assistant-model".into())
+            .enabled(
+                live && (summary.provider == "local"
+                    || state.models.as_ref().is_some_and(Result::is_ok)),
+            )
+            .width(220)
+            .into_element();
+        let mut row = crate::settings_app::settings_row(tr("shell-assistant-default-model"));
+        if summary.provider == "local" {
+            row = row.control(picker);
+        } else {
+            row = row.control(
+                row![
+                    picker,
+                    enz_button(
+                        tr("shell-ai-load-models"),
+                        ParentMessage::Assistant(Message::ListModels),
+                    )
+                    .id("assistant-list-models".into())
+                    .kind(ButtonKind::Secondary)
+                    .enabled(live)
+                    .into_element(),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+            );
+        }
+        rows = rows.push(row.into_element());
+        if let Some(Err(error)) = &state.models {
+            rows = rows.push(crate::settings_app::settings_row(error.clone()).into_element());
+        }
+        rows
+    }
+
     fn assistant_rows<'a>(
         &'a self,
         summary: &Summary,
@@ -524,108 +628,6 @@ impl SettingsApp {
             )
             .into_element(),
         );
-        rows = rows
-            .push(
-                crate::settings_app::settings_row(tr("shell-assistant-model-settings"))
-                    .subtitle(tr("shell-assistant-model-settings-explanation"))
-                    .subtitle_wrap(true)
-                    .action(
-                        tr("shell-on-device-ai"),
-                        ParentMessage::Section("agents/local-ai"),
-                    )
-                    .into_element(),
-            )
-            .push(
-                crate::settings_app::settings_row(tr("shell-assistant-online-provider"))
-                    .subtitle(tr("shell-assistant-online-provider-explanation"))
-                    .subtitle_wrap(true)
-                    .action(
-                        tr("shell-ai-providers"),
-                        ParentMessage::Section("agents/ai-providers"),
-                    )
-                    .into_element(),
-            );
-        let choices: Vec<(String, ParentMessage)> = summary
-            .providers
-            .iter()
-            .map(|p| (p.clone(), edit(Edit::Provider(p.clone()))))
-            .collect();
-        rows = rows.push(
-            crate::settings_app::settings_row(tr("shell-provider"))
-                .subtitle(tr("shell-only-providers-approved-in-this-configuration-there-is-no-automatic-fallback"))
-                .subtitle_wrap(true)
-                .value_menu(summary.provider.clone(), self.menu.as_deref() == Some("assistant-provider"), ParentMessage::Menu("assistant-provider".into(), true), ParentMessage::Menu("assistant-provider".into(), false), choices)
-                .enabled(live)
-                .into_element(),
-        );
-        let model_field = enz_text_field(
-            "",
-            enzui_shell::i18n::current().text("shell-model-name"),
-            &state.model,
-            |text| ParentMessage::Assistant(Message::Model(text)),
-        )
-        .on_submit(edit(Edit::Model(state.model.clone())))
-        .id("assistant-model".into())
-        .into_element();
-        let model_field = iced::widget::container(model_field).width(Length::Fixed(180.0));
-        rows = rows.push(
-            crate::settings_app::settings_row(tr("shell-model"))
-                .subtitle(if !summary.model.is_empty() {
-                    summary.model.clone()
-                } else if summary.provider == "local" {
-                    tr("shell-assistant-automatic-model").to_owned()
-                } else {
-                    tr("shell-not-chosen").to_owned()
-                })
-                .control(
-                    row![
-                        model_field,
-                        enz_button(
-                            tr("shell-assistant-list-models"),
-                            ParentMessage::Assistant(Message::ListModels)
-                        )
-                        .id("assistant-list-models".into())
-                        .kind(ButtonKind::Secondary)
-                        .size(ButtonSize::Sm)
-                        .enabled(live)
-                        .into_element()
-                    ]
-                    .spacing(8)
-                    .align_y(iced::Alignment::Center)
-                    .width(Length::Shrink),
-                )
-                .into_element(),
-        );
-        if summary.provider == "local" && !summary.model.is_empty() {
-            rows = rows.push(
-                crate::settings_app::settings_row(tr("shell-assistant-automatic-model"))
-                    .action(tr("shell-use"), edit(Edit::Model(String::new())))
-                    .enabled(live)
-                    .into_element(),
-            );
-        }
-        match &state.models {
-            Some(Ok(models)) if !models.is_empty() => {
-                for model in models.iter().take(8) {
-                    rows = rows.push(
-                        crate::settings_app::settings_row(model.clone())
-                            .action(tr("shell-use"), edit(Edit::Model(model.clone())))
-                            .enabled(live)
-                            .into_element(),
-                    );
-                }
-            }
-            Some(Ok(_)) => {
-                rows = rows.push(
-                    crate::settings_app::settings_row(tr("shell-the-gateway-lists-no-models"))
-                        .into_element(),
-                );
-            }
-            Some(Err(error)) => {
-                rows = rows.push(crate::settings_app::settings_row(error.clone()).into_element());
-            }
-            None => {}
-        }
         rows = rows.push(
             iced::widget::container(
                 enz_text(tr("shell-workspace-folders"))

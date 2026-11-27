@@ -121,17 +121,19 @@ impl SettingsApp {
                 });
             }
         }
-        let mut body = body.push(
-            self.section_card_for(route, rows)
-                .title(tr("shell-permissions"))
-                .description(tr(
-                    "shell-choices-agents-remember-forgetting-one-makes-the-agent-ask-again",
-                ))
-                .into_element(),
-        );
-        body = body.push(self.assistant_section());
-        body = body.push(self.writing_tools_section());
-        body = self.local_ai_sections(body);
+        let mut body = self
+            .local_ai_sections(body)
+            .push(self.assistant_section())
+            .push(self.voice_typing_section())
+            .push(self.writing_tools_section())
+            .push(
+                self.section_card_for(route, rows)
+                    .title(tr("shell-permissions"))
+                    .description(tr(
+                        "shell-choices-agents-remember-forgetting-one-makes-the-agent-ask-again",
+                    ))
+                    .into_element(),
+            );
 
         // Enrolled identities: the agents and apps allowed to connect.
         let route = "agents/identities";

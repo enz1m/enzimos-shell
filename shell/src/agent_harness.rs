@@ -289,6 +289,8 @@ impl Screenshots {
 /// One change to the configuration; unknown keys are kept as they are.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Edit {
+    /// Add an explicitly selected provider from the gateway to the allowlist.
+    ApproveProvider(String),
     Provider(String),
     Model(String),
     AddRoot(String),
@@ -432,6 +434,19 @@ fn strings<'a>(value: &'a mut Value, key: &str) -> Result<&'a mut Vec<Value>, St
 
 pub fn apply(config: &mut Value, edit: &Edit) -> Result<(), String> {
     match edit {
+        Edit::ApproveProvider(name) => {
+            if !crate::local_ai::provider_name(name) {
+                return Err(tr("shell-that-provider-is-not-approved-in-this-configuration").into());
+            }
+            let providers = strings(config, "providers")?;
+            if !providers
+                .iter()
+                .any(|provider| provider.as_str() == Some(name))
+            {
+                providers.push(json!(name));
+            }
+            return apply(config, &Edit::Provider(name.clone()));
+        }
         Edit::Provider(name) => {
             if !config["providers"]
                 .as_array()

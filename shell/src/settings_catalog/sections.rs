@@ -444,8 +444,8 @@ pub const SECTIONS: &[Section] = &[
     },
     Section {
         category: Category::Agents,
-        label: "shell-permissions",
-        route: "agents/permissions",
+        label: "shell-ai-providers",
+        route: "agents/ai-providers",
     },
     Section {
         category: Category::Agents,
@@ -454,18 +454,18 @@ pub const SECTIONS: &[Section] = &[
     },
     Section {
         category: Category::Agents,
+        label: "shell-voice-typing",
+        route: "agents/voice-typing",
+    },
+    Section {
+        category: Category::Agents,
         label: "writing-tools",
         route: "agents/writing-tools",
     },
     Section {
         category: Category::Agents,
-        label: "shell-on-device-ai",
-        route: "agents/local-ai",
-    },
-    Section {
-        category: Category::Agents,
-        label: "shell-ai-providers",
-        route: "agents/ai-providers",
+        label: "shell-permissions",
+        route: "agents/permissions",
     },
     Section {
         category: Category::Agents,

@@ -16,6 +16,8 @@ use std::{
 };
 use tokio::sync::Semaphore;
 
+mod settings;
+
 type Result<T> = std::result::Result<T, &'static str>;
 
 const UNAVAILABLE: &str = "unavailable";
@@ -26,6 +28,8 @@ const INVALID: &str = "invalid";
 enum Request {
     #[serde(rename = "desktop_setting")]
     Setting(Setting),
+    #[serde(rename = "desktop_read_setting")]
+    ReadSetting(ReadSetting),
     #[serde(rename = "desktop_open")]
     Open(Open),
     #[serde(rename = "desktop_timer")]
@@ -41,6 +45,12 @@ enum Request {
 struct Setting {
     setting: String,
     value: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadSetting {
+    setting: String,
 }
 
 #[derive(Deserialize)]
@@ -97,6 +107,7 @@ pub(super) async fn execute(
 
     match request {
         Request::Setting(arguments) => set(arguments).await,
+        Request::ReadSetting(ReadSetting { setting }) => settings::read(&setting).await,
         Request::Open(arguments) => open(compositor, root, arguments).await,
         Request::Timer(Timer { seconds }) => start_timer(timers, seconds),
         Request::Status(Status { metric }) => status(metric).await,
@@ -169,7 +180,7 @@ async fn set(Setting { setting, value }: Setting) -> Result<Value> {
             controls.apply(&action).await.map_err(|_| UNAVAILABLE)?;
             Ok(json!({"setting":setting, "percent":percent}))
         }
-        _ => Err(INVALID),
+        _ => settings::set(&setting, &value).await,
     }
 }
 

@@ -240,7 +240,7 @@ pub struct InferencePreferences {
     pub cpu_threads: Option<u8>,
     pub memory_mib: u32,
     pub idle_seconds: u32,
-    pub context: u32,
+    pub context: Option<u32>,
     pub backend: String,
     pub default_model: String,
 }
@@ -252,6 +252,7 @@ pub struct Inference {
     pub preferences: InferencePreferences,
     /// Registered text models.
     pub models: Vec<String>,
+    pub default_context: Option<u64>,
     /// Registered speech-to-text models, which dictation uses.
     pub speech_models: Vec<String>,
     pub model_titles: std::collections::BTreeMap<String, String>,
@@ -403,7 +404,10 @@ pub fn parse_inference(preferences: &Value, status: &Value, models: &Value) -> O
             cpu_threads,
             memory_mib: number("memory_mib")?,
             idle_seconds: number("idle_seconds")?,
-            context: number("context")?,
+            context: match p.get("context")? {
+                Value::Null => None,
+                _ => Some(number("context")?),
+            },
             backend: text(p.get("backend")?, 64)?,
             default_model: match p.get("default_model")? {
                 Value::Null => String::new(),
@@ -418,6 +422,12 @@ pub fn parse_inference(preferences: &Value, status: &Value, models: &Value) -> O
             .filter_map(|m| text(&m["id"], 128))
             .take(64)
             .collect(),
+        default_context: models["data"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|model| model["id"] == p["default_model"])
+            .and_then(|model| model["context"].as_u64()),
         speech_models: models["data"]
             .as_array()
             .into_iter()
@@ -520,7 +530,7 @@ pub enum Change {
     CpuThreads(Option<u8>),
     MemoryMib(u32),
     IdleSeconds(u32),
-    Context(u32),
+    Context(Option<u32>),
     Backend(String),
     DefaultModel(String),
     DefaultProvider(String),
@@ -550,7 +560,8 @@ impl Change {
             Self::IdleSeconds(_) => {
                 return Err(tr("shell-unloading-waits-between-1-second-and-1-hour"));
             }
-            Self::Context(n @ 4096..=8192) => json!({"context": n}),
+            Self::Context(None) => json!({"context": null}),
+            Self::Context(Some(n @ 4096..=8192)) => json!({"context": n}),
             Self::Context(_) => {
                 return Err(tr("shell-context-is-between-4096-and-8192-tokens"));
             }

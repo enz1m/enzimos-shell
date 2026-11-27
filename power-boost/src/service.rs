@@ -1,6 +1,6 @@
 //! The `dev.enzui.PowerBoost1` system-bus service.
 
-use crate::boost::{Booster, Ending, Host, Outcome};
+use crate::boost::{Booster, DURATION, Ending, Host, Outcome};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -92,10 +92,38 @@ impl Callers {
 
 struct State {
     booster: Booster,
+    motion_until: Option<Instant>,
+    holds: HashMap<String, Instant>,
     callers: Callers,
     last_request: Instant,
     paused_until: Option<Instant>,
     stopping: bool,
+}
+
+impl State {
+    fn request_until(&mut self, sender: &str, hold: bool, now: Instant) {
+        self.holds.retain(|_, deadline| *deadline > now);
+        if hold {
+            self.holds.insert(sender.to_owned(), now + DURATION);
+        } else {
+            self.motion_until = Some(now + DURATION);
+        }
+    }
+
+    fn release(&mut self, sender: &str, now: Instant) -> bool {
+        if self.holds.remove(sender).is_none() {
+            return false;
+        }
+        let remaining = self
+            .holds
+            .values()
+            .copied()
+            .chain(self.motion_until)
+            .max()
+            .unwrap_or(now);
+        self.booster.set_deadline(remaining);
+        true
+    }
 }
 
 struct Service {
@@ -120,15 +148,34 @@ impl Service {
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> String {
         let outcome = match header.sender() {
-            Some(sender) => self.request(connection, sender.as_str()).await,
+            Some(sender) => self.request(connection, sender.as_str(), false).await,
             None => Outcome::Denied,
         };
         outcome.as_str().to_owned()
     }
+    async fn hold(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> String {
+        let outcome = match header.sender() {
+            Some(sender) => self.request(connection, sender.as_str(), true).await,
+            None => Outcome::Denied,
+        };
+        outcome.as_str().to_owned()
+    }
+
+    fn release(&self, #[zbus(header)] header: zbus::message::Header<'_>) {
+        if let Some(sender) = header.sender()
+            && lock(&self.state).release(sender.as_str(), Instant::now())
+        {
+            self.wake.notify_one();
+        }
+    }
 }
 
 impl Service {
-    async fn request(&self, connection: &zbus::Connection, sender: &str) -> Outcome {
+    async fn request(&self, connection: &zbus::Connection, sender: &str, hold: bool) -> Outcome {
         let now = Instant::now();
         let cached = {
             let mut state = lock(&self.state);
@@ -152,7 +199,9 @@ impl Service {
             let mut state = lock(&self.state);
             // Only authorized requests keep the helper from exiting when idle.
             state.last_request = now;
-            if state.booster.extend(Instant::now()) {
+            let now = Instant::now();
+            if state.booster.extend(now) {
+                state.request_until(sender, hold, now);
                 return Outcome::Extended;
             }
             if state.paused_until.is_some_and(|until| now < until) {
@@ -167,8 +216,10 @@ impl Service {
         if state.stopping {
             return Outcome::Busy;
         }
-        let outcome = state.booster.start(Instant::now(), &host);
-        if outcome == Outcome::Boosted {
+        let now = Instant::now();
+        let outcome = state.booster.start(now, &host);
+        if matches!(outcome, Outcome::Boosted | Outcome::Extended) {
+            state.request_until(sender, hold, now);
             self.wake.notify_one();
         }
         outcome
@@ -190,6 +241,8 @@ pub async fn run(connection: zbus::Connection, config: Config) -> zbus::Result<(
     }
     let state = Arc::new(Mutex::new(State {
         booster,
+        motion_until: None,
+        holds: HashMap::new(),
         callers: Callers::default(),
         last_request: Instant::now(),
         paused_until: None,
@@ -384,6 +437,47 @@ async fn authorized(connection: &zbus::Connection, sender: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn releasing_inference_preserves_a_desktop_pulse_and_other_senders() {
+        let root = tempfile::tempdir().expect("cpufreq fixture");
+        crate::cpu::fake::policy(root.path(), 0, "balance_performance", "powersave");
+        let now = Instant::now();
+        let mut state = State {
+            booster: Booster::new(root.path().into(), root.path().join("marker")),
+            motion_until: None,
+            holds: HashMap::new(),
+            callers: Callers::default(),
+            last_request: now,
+            paused_until: None,
+            stopping: false,
+        };
+        let host = Host {
+            profile: None,
+            other_manager: false,
+        };
+        assert_eq!(state.booster.start(now, &host), Outcome::Boosted);
+        state.request_until(":motion", false, now);
+        state.request_until(":first", true, now);
+        let later = now + Duration::from_millis(400);
+        state.booster.extend(later);
+        state.request_until(":second", true, later);
+        assert!(!state.release(":unrelated", later));
+        assert!(state.release(":first", later));
+        assert_eq!(state.booster.until(), Some(later + DURATION));
+        assert!(state.release(":second", later));
+        assert_eq!(state.booster.until(), Some(now + DURATION));
+        let expired = now + DURATION * 2;
+        state.booster.extend(expired);
+        state.request_until(":inference", true, expired);
+        assert!(state.release(":inference", expired));
+        assert!(
+            state
+                .booster
+                .until()
+                .is_some_and(|deadline| deadline <= expired)
+        );
+    }
 
     #[test]
     fn a_sender_is_heard_at_most_every_interval_and_its_authorization_expires() {

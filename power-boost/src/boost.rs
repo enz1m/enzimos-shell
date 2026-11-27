@@ -111,6 +111,12 @@ impl Booster {
         self.active.as_ref().map(|active| active.until)
     }
 
+    pub(crate) fn set_deadline(&mut self, until: Instant) {
+        if let Some(active) = &mut self.active {
+            active.until = until;
+        }
+    }
+
     /// Moves the end of a running boost to [`DURATION`] after `now`.
     pub fn extend(&mut self, now: Instant) -> bool {
         self.active

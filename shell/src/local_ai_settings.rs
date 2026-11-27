@@ -23,6 +23,7 @@ pub(super) struct State {
     offers: Vec<ModelOffer>,
     downloads: Vec<model_downloads::Reading>,
     advanced: bool,
+    extensions: super::local_ai_extensions::State,
     benchmark: Option<(String, iced::task::Handle)>,
     benchmark_serial: u64,
     benchmarks: std::collections::BTreeMap<String, Result<local_ai::Benchmark, String>>,
@@ -75,6 +76,7 @@ pub(super) enum Message {
     BenchmarkFinished(u64, String, Result<local_ai::Benchmark, String>),
     CancelBenchmark,
     ToggleAdvanced,
+    Extensions(super::local_ai_extensions::Message),
     SetEnabled(bool),
     WritingEnabled(bool),
     WritingModel(Option<String>),
@@ -374,6 +376,7 @@ impl SettingsApp {
         let import_offered = self.model_import_offered() && self.page == super::Page::Agents;
         let state = &mut self.local_ai;
         match message {
+            Message::Extensions(message) => return state.extensions.update(message, live),
             Message::Read(readings) => {
                 let (inference, gateway, chatgpt, offers, downloads, enabled, writing) = *readings;
                 state.reading = false;
@@ -746,6 +749,7 @@ impl SettingsApp {
                 route,
                 crate::settings_app::settings_row(title)
                     .subtitle(subtitle)
+                    .subtitle_wrap(true)
                     .control(control)
                     .into_element(),
             )
@@ -787,6 +791,27 @@ impl SettingsApp {
                     .into_element(),
             ),
         );
+        let context = std::iter::once(None)
+            .chain(presets(p.context.unwrap_or(8192), &[4096, 6144, 8192]).into_iter().map(Some))
+            .collect::<Vec<_>>();
+        rows = rows.push(choice(
+            "agents/runtime-context",
+            tr("shell-context-length"),
+            tr("shell-how-much-text-a-request-can-carry-longer-uses-more-memory"),
+            "local-ai-context",
+            context
+                .iter()
+                .map(|c| match (c, inference.default_context) {
+                    (Some(tokens), _) => tr!("shell-tokens", "arg0" => tokens.to_string()),
+                    (None, Some(tokens)) if p.context.is_none() => {
+                        tr!("shell-assistant-automatic-context", "tokens" => tokens.to_string())
+                    }
+                    (None, _) => tr("shell-automatic").to_owned(),
+                })
+                .collect(),
+            context.iter().position(|c| *c == p.context),
+            Box::new(move |index| context.get(index).copied().map(Change::Context)),
+        ));
         if !self.local_ai.advanced {
             return rows;
         }
@@ -826,19 +851,6 @@ impl SettingsApp {
             idle.iter().map(|s| seconds(*s)).collect(),
             idle.iter().position(|s| *s == p.idle_seconds),
             Box::new(move |index| idle.get(index).copied().map(Change::IdleSeconds)),
-        ));
-        let context = presets(p.context, &[4096, 6144, 8192]);
-        rows = rows.push(choice(
-            "agents/runtime-context",
-            tr("shell-context-length"),
-            tr("shell-how-much-text-a-request-can-carry-longer-uses-more-memory"),
-            "local-ai-context",
-            context
-                .iter()
-                .map(|c| tr!("shell-tokens", "arg0" => format!("{:}", c)))
-                .collect(),
-            context.iter().position(|c| *c == p.context),
-            Box::new(move |index| context.get(index).copied().map(Change::Context)),
         ));
         // Automatic, every installed engine, and the current choice even when
         // an older service does not list what is installed.
@@ -1506,7 +1518,8 @@ impl SettingsApp {
         }
         let mut defaults = self
             .assistant_provider_rows()
-            .push(self.writing_model_row());
+            .push(self.writing_model_row())
+            .push(state.extensions.view(self));
         if let Some(error) = &state.writing_error {
             defaults = defaults.push(self.caption_row_text(error.clone()));
         }

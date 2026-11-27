@@ -50,6 +50,8 @@ enum Item {
         tool: String,
         arguments: String,
         complete: bool,
+        once_only: bool,
+        reason: String,
         decision: Decision,
     },
     Note(String),
@@ -759,6 +761,8 @@ impl Assistant {
                     tool: text("tool"),
                     arguments,
                     complete,
+                    once_only: event["once_only"] == true,
+                    reason: text("reason"),
                     decision: Decision::Pending,
                 });
             }
@@ -836,12 +840,15 @@ impl Assistant {
                     }
                 )),
                 Item::Note(text) => muted(text.clone()),
-                Item::Approval { request, tool, arguments, complete, decision, .. } => {
+                Item::Approval { request, tool, arguments, complete, decision, once_only, reason, .. } => {
                     let mut card = column![
                         enz_text(format!("Allow {tool}?")).size(TextSize::Body).weight_rung(enzui_theme::WeightRung::Semibold).into_element(),
                         container(enz_text(arguments.clone()).font_role(enzui_theme::FontRole::Monospace).font_from_theme(tokens).wrap(true).into_element()).padding(8).width(Length::Fill),
                     ]
                     .spacing(8);
+                    if !reason.is_empty() {
+                        card = card.push(muted(reason.clone()));
+                    }
                     if !complete {
                         card = card.push(muted(tr("shell-these-arguments-are-too-large-to-show-in-full-so-they-can-only-be-denied").into()));
                     }
@@ -849,7 +856,7 @@ impl Assistant {
                         Decision::Pending => row![
                             iced::widget::space().width(Length::Fill),
                             enz_button(enzui_shell::i18n::tr("shell-deny"), Message::Approve(request.clone(), false, false)).kind(ButtonKind::Secondary).into_element(),
-                            if tool == "screenshot" {
+                            if *once_only || tool == "screenshot" {
                                 iced::widget::space().width(Length::Shrink).into()
                             } else {
                                 enz_button(tr("shell-agent-allow-for-session"), Message::Approve(request.clone(), true, true))

@@ -68,6 +68,7 @@ pub(crate) enum Body {
         arguments: String,
         decision: Decision,
         once_only: bool,
+        reason: String,
     },
     Note {
         text: String,
@@ -247,7 +248,10 @@ fn estimate(row: &Row) -> f32 {
                 30.0
             }
         }
-        Body::Approval { arguments, .. } => 108.0 + 15.0 * arguments.lines().count().min(6) as f32,
+        Body::Approval { arguments, reason, .. } => {
+            108.0 + 15.0 * arguments.lines().count().min(6) as f32
+                + if reason.is_empty() { 0.0 } else { 34.0 }
+        }
         Body::Note { .. } => 40.0,
         Body::Meta { .. } => 26.0,
     }
@@ -662,6 +666,7 @@ impl Transcript {
                         arguments: pretty(&event["arguments"]),
                         decision: Decision::Pending,
                         once_only: event["once_only"] == true,
+                        reason: text("reason"),
                     },
                 );
                 self.restart_reply();

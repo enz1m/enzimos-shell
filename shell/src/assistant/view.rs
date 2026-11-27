@@ -73,6 +73,11 @@ fn tool_title<'a>(tool: &'a str, title: &'a str) -> &'a str {
         "desktop_timer" => tr("shell-assistant-start-timer"),
         "device_status" => tr("shell-assistant-device-status"),
         "find_downloads" => tr("shell-assistant-find-downloads"),
+        "local_time" => tr("shell-assistant-local-time-tool"),
+        "web_fetch" => tr("shell-assistant-web-fetch-tool"),
+        "browser_open" => tr("shell-assistant-browser-open-tool"),
+        "browser_read" => tr("shell-assistant-browser-read-tool"),
+        "add_extension" => tr("shell-assistant-add-extension-tool"),
         _ => tool,
     }
 }
@@ -1473,6 +1478,7 @@ fn assistant_row<'a>(
             arguments,
             decision,
             once_only,
+            reason,
             ..
         } => {
             let mut card = column![
@@ -1490,6 +1496,9 @@ fn assistant_row<'a>(
                 .align_y(Alignment::Center),
             ]
             .spacing(6);
+            if !reason.is_empty() {
+                card = card.push(enz_text(reason.clone()).size_px(SMALL).color(muted).wrap(true).into_element());
+            }
             if tool == "screenshot" {
                 card = card.push(
                     enz_text(tr("shell-agent-screenshot-approval-detail"))

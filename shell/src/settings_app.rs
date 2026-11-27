@@ -19,6 +19,8 @@ mod dev_tools;
 mod fonts;
 #[path = "local_ai_settings.rs"]
 mod local_ai_settings;
+#[path = "local_ai_extensions.rs"]
+mod local_ai_extensions;
 #[path = "settings_lock.rs"]
 mod lock_settings;
 #[path = "model_downloads.rs"]

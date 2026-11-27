@@ -731,8 +731,6 @@ pub fn view<'a, Message: Clone + 'a>(
         );
     }
     let compact = width <= height + 24.0;
-    // A 2-wide tile. The rows are 44px now, so the old 2.6 ratio no longer
-    // counted it, and long names ("Modo oscuro") lost their tighter fit.
     let narrow = !compact && width < height * 3.0;
     let radius = height / 2.0;
     let disclosure = disclosure.filter(|_| has_disclosure(shape) && !compact);
@@ -782,7 +780,20 @@ pub fn view<'a, Message: Clone + 'a>(
     }
     let icon = enz_icon(info.icon).size(18.0).tint(ink).into_element();
     let content: Element<'a, Message> = if compact {
-        icon
+        let label = enz_text(info.title)
+            .size_px((font - 2.0).max(10.0))
+            .line_height(1.0)
+            .wrap(info.title.contains(char::is_whitespace))
+            .lines(2)
+            .align(enzui_widgets::text::TextAlign::Center)
+            .weight_rung(enzui_theme::WeightRung::Semibold)
+            .color(ink)
+            .width(Length::Fill);
+        column![icon, label]
+            .spacing(1)
+            .width(Length::Fill)
+            .align_x(iced::Alignment::Center)
+            .into()
     } else {
         row![
             icon,
@@ -841,7 +852,7 @@ pub fn view<'a, Message: Clone + 'a>(
         // Two lines of text fill most of a tile's height: little room is left
         // above and below them.
         if compact {
-            iced::Padding::from([5.0, 0.0])
+            iced::Padding::from([1.0, 4.0])
         } else if narrow {
             // The full-width tile's space before and after the icon; the
             // title elides on the right instead.

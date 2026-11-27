@@ -208,7 +208,7 @@ def main():
         print("Nested review already open."); return
     tool = cu_tool()
     if not args.no_build:
-        run(ROOT / "scripts/with-build-budget", "cargo", "build", "--offline", "--locked", "-j1", "-p", "enzui-lock", "--features", "greeter-preview", "--bin", "enzui-greeter-preview", cwd=ROOT)
+        run(ROOT / "scripts/with-build-budget", "cargo", "build", "--offline", "--locked", "-p", "enzui-lock", "--features", "greeter-preview", "--bin", "enzui-greeter-preview", cwd=ROOT)
     parent = Path(os.environ["XDG_RUNTIME_DIR"])
     display = Path(os.environ.get("WAYLAND_DISPLAY", "wayland-0"))
     socket = display if display.is_absolute() else parent / display

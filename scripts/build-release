@@ -32,7 +32,7 @@ PY
 )
 install -d "$out"
 # Cargo output paths identify the worker binary paired with this shell build.
-"$root/scripts/with-build-budget" cargo build --offline --locked --release -j1 --manifest-path "$root/Cargo.toml" -p enzui-shell -p enzui-lock -p enzui-power-boost "${cargo_targets[@]}" \
+"$root/scripts/with-build-budget" cargo build --offline --locked --release --manifest-path "$root/Cargo.toml" -p enzui-shell -p enzui-lock -p enzui-power-boost "${cargo_targets[@]}" \
     --message-format=json-render-diagnostics > "$out/.cargo-messages.json"
 worker=$(python3 -c '
 import json, sys

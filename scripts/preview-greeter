@@ -83,7 +83,7 @@ def main():
     elif status().get("ActiveState") == "active":
         print("Login preview is already open. Use reload after editing lock/src/ui.rs."); return
     if not args.no_build:
-        run(str(ROOT / "scripts/with-build-budget"), "cargo", "build", "--offline", "--locked", "-j1", "-p", "enzui-lock", "--features", "greeter-preview", "--bin", "enzui-greeter-preview", cwd=ROOT)
+        run(str(ROOT / "scripts/with-build-budget"), "cargo", "build", "--offline", "--locked", "-p", "enzui-lock", "--features", "greeter-preview", "--bin", "enzui-greeter-preview", cwd=ROOT)
     if not BINARY.is_file():
         raise SystemExit("Preview binary is missing; omit --no-build")
     display = os.environ.get("WAYLAND_DISPLAY", "")

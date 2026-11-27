@@ -3,7 +3,7 @@
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 "$root/enzwall/scripts/setup-sources"
-"$root/scripts/with-build-budget" cargo build --offline --locked --release -j1 \
+"$root/scripts/with-build-budget" cargo build --offline --locked --release \
     --manifest-path "$root/enzwall/Cargo.toml" -p enzwall
 binary="$root/enzwall/target/release/enzwall"
 if (($#)); then

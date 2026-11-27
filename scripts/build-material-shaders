@@ -8,5 +8,5 @@ target=$(realpath -m -- "${ENZUI_WGSL_TARGET_DIR:-$root/.build/wgsl-glsl}")
 budget=("$root/scripts/with-build-budget")
 [[ ${ENZUI_BUILD_CAPPED:-0} == 1 ]] && budget=()
 CARGO_TARGET_DIR="$target" "${budget[@]}" \
-    cargo build --offline --locked --release -j1 --quiet --manifest-path "$root/tools/wgsl-glsl/Cargo.toml"
+    cargo build --offline --locked --release --quiet --manifest-path "$root/tools/wgsl-glsl/Cargo.toml"
 "$target/release/enzui-wgsl-glsl" "$root/vendor/iced/wgpu/src/shader" "$out/material-shaders.h"

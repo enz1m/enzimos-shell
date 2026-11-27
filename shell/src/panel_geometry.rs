@@ -1,7 +1,8 @@
 mod operation;
-pub(crate) use operation::Projected;
+pub use operation::Projected;
 
-pub(crate) fn inverse_event(event: &iced::Event, transform: iced::Transformation) -> iced::Event {
+/// Maps pointer and touch coordinates into a transformed widget’s layout space.
+pub fn inverse_event(event: &iced::Event, transform: iced::Transformation) -> iced::Event {
     use iced::{Event, mouse, touch};
     let inverse = transform.inverse();
     match event {

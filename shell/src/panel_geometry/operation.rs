@@ -5,8 +5,11 @@ use iced::advanced::widget::{
 use iced::{Rectangle, Size, Transformation, Vector};
 use std::any::Any;
 
-pub(crate) struct Projected<'a> {
+/// Reports a child widget’s geometry in the parent’s coordinate space.
+pub struct Projected<'a> {
+    /// The operation receiving the projected geometry.
     pub operation: &'a mut dyn Operation,
+    /// The transform from child layout coordinates to the operation’s space.
     pub transform: Transformation,
 }
 impl Operation for Projected<'_> {

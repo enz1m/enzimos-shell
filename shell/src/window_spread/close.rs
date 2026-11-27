@@ -16,7 +16,6 @@ pub(super) struct CloseState {
 
 #[derive(Debug)]
 struct Reflow {
-    started: Instant,
     from: Vec<Rect>,
     captions: Vec<(f32, f32)>,
 }
@@ -59,8 +58,10 @@ impl Spread {
     }
 
     pub(super) fn reflow_progress(&self, at: Instant) -> Option<f32> {
-        self.close.reflow.as_ref().map(|motion| {
-            ease(at.saturating_duration_since(motion.started).as_secs_f32() / DURATION)
+        self.close.reflow.as_ref().map(|_| {
+            self.frames.get().map_or(0.0, |frames| {
+                ease(at.saturating_duration_since(frames.first).as_secs_f32() / DURATION)
+            })
         })
     }
 
@@ -113,17 +114,16 @@ impl Spread {
         if reduced {
             self.settle_reflow();
         } else {
-            self.frame_at = None;
-            self.close.reflow = Some(Reflow {
-                started: at,
-                from,
-                captions,
-            });
+            self.started = Some(at);
+            self.frames.set(None);
+            self.close.reflow = Some(Reflow { from, captions });
         }
     }
 
     fn settle_reflow(&mut self) {
         self.close.reflow = None;
+        self.started = None;
+        self.frames.set(None);
         self.entries.retain(|entry| {
             if entry.to.width == 0.0 {
                 self.close.removed.remove(&entry.window.stable_id);
@@ -140,15 +140,9 @@ impl Spread {
         }
     }
 
-    pub(super) fn finish_reflow_frame(&mut self, at: Instant) -> bool {
-        if self.close.reflow.as_ref().is_some_and(|motion| {
-            at.saturating_duration_since(motion.started).as_secs_f32() >= DURATION
-        }) {
-            self.settle_reflow();
-            self.start_reflow(at, false);
-            return !self.is_reflowing();
-        }
-        false
+    pub(super) fn finish_reflow_frame(&mut self, at: Instant) {
+        self.settle_reflow();
+        self.start_reflow(at, false);
     }
 
     pub(super) fn freeze_reflow(&mut self, at: Instant) {
@@ -297,7 +291,6 @@ mod tests {
                         pid: 2,
                         title: format!("Fixture {id}"),
                         class: "fixture".into(),
-                        image: None,
                         at: [rect.x, rect.y],
                         size: [rect.width, rect.height],
                     },
@@ -323,11 +316,25 @@ mod tests {
         let (outgoing, _, opacity) = shell.spread.tile_motion(0, 0.5).unwrap();
         assert!(outgoing.width < original[0].width && opacity < 1.0);
 
-        assert!(
-            shell
-                .spread
-                .finish_reflow_frame(Instant::now() + Duration::from_secs(1))
-        );
+        let _ = shell.request_spread_close(3);
+        let _ = shell.spread_windows_read(Ok(HashSet::from([2])));
+        assert!(shell.spread.live_index(3).is_none());
+
+        let window = iced::window::Id::unique();
+        shell.spread.window = Some(window);
+        let first = Instant::now();
+        assert!(!shell.spread.sample_frame(first));
+        let finished = first + Duration::from_secs(1);
+        assert!(shell.spread.sample_frame(finished));
+        let _ = shell.spread_message(SpreadMessage::MotionFinished(window, finished));
+        assert!(shell.spread.is_reflowing());
+        assert_eq!(shell.spread.entries[0].shortcut, Some("2"));
+        assert!(!shell.spread.sample_frame(finished));
+        let settled = finished + Duration::from_secs(1);
+        assert!(shell.spread.sample_frame(settled));
+        let _ = shell.spread_message(SpreadMessage::MotionFinished(window, settled));
+        assert!(!shell.spread.is_reflowing());
+        assert_eq!(shell.spread.entries.len(), 1);
         assert_eq!(shell.spread.entries[0].shortcut, Some("1"));
         assert_eq!(shell.spread.current_tile(), Some(2));
         assert!(shell.activities);

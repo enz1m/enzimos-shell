@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "hyprland-toplevel-export-v1-client-protocol.h"
+#include <endian.h>
 #include <errno.h>
 #include <ctype.h>
 #include <fcntl.h>
@@ -142,13 +143,11 @@ static void fitted(const struct snapshot *s, uint32_t *width, uint32_t *height) 
     if (!*height) *height = 1;
 }
 
-static bool write_png(const struct snapshot *s, const char *path) {
+static bool write_picture(const struct snapshot *s, const char *path, bool raw) {
     uint32_t width, height;
     fitted(s, &width, &height);
-    // The file is read back at once and removed: speed over size.
-    png_image image = { .version = PNG_IMAGE_VERSION, .width = width, .height = height, .format = PNG_FORMAT_RGBA,
-                        .flags = PNG_IMAGE_FLAG_FAST };
-    uint8_t *pixels = malloc((size_t)width * height * 4);
+    size_t bytes = (size_t)width * height * 4;
+    uint8_t *pixels = malloc(bytes);
     if (!pixels) return false;
     // Each picture pixel averages the window pixels it covers, still
     // premultiplied as the compositor wrote them.
@@ -196,11 +195,21 @@ static bool write_png(const struct snapshot *s, const char *path) {
     }
     int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
     FILE *file = fd < 0 ? NULL : fdopen(fd, "wb");
-    bool ok = file && png_image_write_to_stdio(&image, file, 0, pixels, 0, NULL) != 0;
+    bool ok = false;
+    if (file && raw) {
+        uint32_t size[] = { htole32(width), htole32(height) };
+        ok = fwrite(size, sizeof(size), 1, file) == 1 && fwrite(pixels, bytes, 1, file) == 1;
+    } else if (file) {
+        png_image image = { .version = PNG_IMAGE_VERSION, .width = width, .height = height,
+                            .format = PNG_FORMAT_RGBA, .flags = PNG_IMAGE_FLAG_FAST };
+        ok = png_image_write_to_stdio(&image, file, 0, pixels, 0, NULL) != 0;
+        png_image_free(&image);
+    }
     if (file) { if (fclose(file) != 0) ok = false; }
     else if (fd >= 0) close(fd);
     if (!ok && fd >= 0) unlink(path);
-    free(pixels); png_image_free(&image); return ok;
+    free(pixels);
+    return ok;
 }
 
 int main(int argc, char **argv) {
@@ -223,7 +232,8 @@ int main(int argc, char **argv) {
     s.frame = hyprland_toplevel_export_manager_v1_capture_toplevel(s.manager, 0, (uint32_t)address);
     hyprland_toplevel_export_frame_v1_add_listener(s.frame, &frame_listener, &s);
     if (!dispatch_until(&s, now_ms() + 3000)) goto cleanup;
-    ok = write_png(&s, argv[2]);
+    const char *raw = getenv("ENZUI_SNAPSHOT_RGBA");
+    ok = write_picture(&s, argv[2], raw && !strcmp(raw, "1"));
     if (ok) printf("%u %u\n", s.width, s.height);
 cleanup:
     if (s.sync) wl_callback_destroy(s.sync);
@@ -234,6 +244,6 @@ cleanup:
     if (s.shm) wl_shm_destroy(s.shm);
     if (s.registry) wl_registry_destroy(s.registry);
     if (s.display) wl_display_disconnect(s.display);
-    if (!ok) fprintf(stderr, "window-snapshot: capture or PNG write failed\n");
+    if (!ok) fprintf(stderr, "window-snapshot: capture or picture write failed\n");
     return ok ? 0 : 1;
 }

@@ -138,7 +138,6 @@ pub struct SpreadWindow {
     pub pid: u32,
     pub title: String,
     pub class: String,
-    pub image: Option<std::path::PathBuf>,
     pub at: [f32; 2],
     pub size: [f32; 2],
 }
@@ -148,6 +147,8 @@ pub struct SpreadWindow {
 pub struct SpreadDesktop {
     /// The compositor monitor ID for the shell output.
     pub output_id: i64,
+    /// The compositor output name used to place the spread.
+    pub output_name: String,
     /// The output's position and size, logical.
     pub output: [f32; 4],
     /// Physical pixels per logical pixel on the output.
@@ -196,7 +197,6 @@ fn spread_window(
             pid: target.pid,
             title: display_text(value["title"].as_str().unwrap_or(""), 256),
             class: display_text(class, 128),
-            image: crate::search::catalogue::icon_for_app_id(class),
             at,
             size,
         },
@@ -250,8 +250,13 @@ impl Compositor {
             windows.truncate(SPREAD_LIMIT);
         }
         windows.sort_by_key(|(history, _)| std::cmp::Reverse(*history));
+        let output_name = output["name"]
+            .as_str()
+            .ok_or_else(|| tr("shell-missing-output"))?
+            .to_owned();
         Ok(SpreadDesktop {
             output_id: monitor,
+            output_name,
             output: geometry,
             scale: scale as f32,
             desktop,

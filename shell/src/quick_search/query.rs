@@ -130,6 +130,22 @@ impl Shell {
             self.search_file_query(),
         ])
     }
+    pub(super) fn refresh_search_sources(&mut self) -> Task<ShellMessage> {
+        Task::batch([
+            self.search_check_activation(),
+            self.search_icons_changed(),
+            self.search_read_windows(),
+        ])
+    }
+
+    pub(crate) fn refresh_overview_search(&mut self) -> Task<ShellMessage> {
+        if std::mem::take(&mut self.search.overview_refresh_pending) && self.search.showing {
+            self.refresh_search_sources()
+        } else {
+            Task::none()
+        }
+    }
+
     // Re-resolve application icons after the icon theme changed.
     pub(crate) fn search_icons_changed(&mut self) -> Task<ShellMessage> {
         self.search.apps_ready = false;

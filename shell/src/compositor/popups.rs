@@ -807,53 +807,25 @@ impl Compositor {
     /// Places the spread over the shell output, leaving the bar and overview Search above it.
     pub async fn prepare_spread(
         &self,
-        metrics: crate::settings::Metrics,
-        bar: crate::settings::BarEdge,
+        desktop: &crate::search::compositor::SpreadDesktop,
         overview: bool,
-    ) -> Result<([f32; 4], f32, f32), String> {
-        let output = self.desktop_output().await?;
-        let name = output["name"]
-            .as_str()
-            .ok_or_else(|| tr("shell-missing-output"))?;
-        let scale = output["scale"]
-            .as_f64()
-            .filter(|s| (0.5..=4.0).contains(s))
-            .ok_or_else(|| tr("shell-missing-output-scale"))?;
-        let width =
-            (output["width"].as_f64().ok_or("Missing output width")? / scale).round() as f32;
-        let height =
-            (output["height"].as_f64().ok_or("Missing output height")? / scale).round() as f32;
-        let band = f32::from(metrics.bar_band());
-        let (top, bottom) = if bar == crate::settings::BarEdge::Top {
-            (band, 0.0)
-        } else {
-            (0.0, band)
-        };
-        if !(1.0..=16384.0).contains(&width) || !(band + 1.0..=16384.0).contains(&height) {
+    ) -> Result<(), String> {
+        let [x, y, width, height] = desktop.output;
+        if !(1.0..=16384.0).contains(&width) || !(1.0..=16384.0).contains(&height) {
             return Err(tr("shell-invalid-spread-geometry").into());
         }
-        let origin = [
-            output["x"]
-                .as_f64()
-                .ok_or_else(|| tr("shell-missing-output-origin"))? as f32,
-            output["y"]
-                .as_f64()
-                .ok_or_else(|| tr("shell-missing-output-origin"))? as f32,
-        ];
         let size = serde_json::json!(format!("{width} {height}"));
         let pinned = !overview;
         let lua = format!(
-            "hl.window_rule({{name='desktop-overlay-windowspread',match={{class='^dev[.]enzui[.]WindowSpread$'}},float=true,pin={pinned},monitor={},move={},size={size},min_size={size},max_size={size},border_size=0,rounding=0,decorate=false,no_anim=true,no_shadow=true,no_blur=true,no_xdg_drags=true,no_initial_focus={overview}}});for _,w in ipairs(hl.get_windows()) do if w.mapped and w.pid=={} and w.class=='dev.enzui.WindowSpread' then hl.dispatch(hl.dsp.window.resize({{window=w,x={width},y={height}}})) hl.dispatch(hl.dsp.window.move({{window=w,x={},y={}}})) end end",
-            serde_json::to_string(name).expect("serializing a string cannot fail"),
+            "hl.window_rule({{name='desktop-overlay-windowspread',match={{class='^dev[.]enzui[.]WindowSpread$'}},float=true,pin={pinned},monitor={},move={},size={size},min_size={size},max_size={size},border_size=0,rounding=0,decorate=false,no_anim=true,no_shadow=true,no_blur=true,no_xdg_drags=true,no_initial_focus={overview}}});for _,w in ipairs(hl.get_windows()) do if w.mapped and w.pid=={} and w.class=='dev.enzui.WindowSpread' then hl.dispatch(hl.dsp.window.resize({{window=w,x={width},y={height}}})) hl.dispatch(hl.dsp.window.move({{window=w,x={x},y={y}}})) end end",
+            serde_json::to_string(&desktop.output_name).expect("serializing a string cannot fail"),
             serde_json::json!("0 0"),
             std::process::id(),
-            origin[0],
-            origin[1],
         );
         if self.request(&["eval", &lua]).await?.trim() != "ok" {
             return Err(tr("shell-window-spread-placement-was-rejected").into());
         }
-        Ok(([origin[0], origin[1], width, height], top, bottom))
+        Ok(())
     }
 
     /// Hides the spread's windows while its pictures stand in for them.

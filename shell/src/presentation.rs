@@ -1,3 +1,5 @@
+pub use crate::panel_geometry::{Projected, inverse_event};
+
 use enzui_widgets::motion::{PanelMotion, SlideDirection};
 use iced::advanced::{
     Renderer as _, Shell, Widget,

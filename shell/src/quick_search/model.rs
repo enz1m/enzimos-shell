@@ -60,6 +60,7 @@ pub(crate) struct State {
     pub(super) focus_revision: u64,
     pub(super) source_revision: u64,
     pub(super) preparing: bool,
+    pub(super) overview_refresh_pending: bool,
     pub(super) presentation: Option<Arc<AtomicBool>>,
     pub(super) geometry: Option<(iced::Size, String)>,
     pub(super) island: Option<IslandPlacement>,

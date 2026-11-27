@@ -89,7 +89,7 @@ impl Shell {
                 self.search.activation = None;
                 self.search.activation_checked = false;
                 self.search.activation_tried.clear();
-                let activation = self.search_check_activation();
+                self.search.overview_refresh_pending = self.search.overview;
                 self.search.preparing = true;
                 self.search.presented = false;
                 if self.metrics.islands.is_some() {
@@ -114,16 +114,18 @@ impl Shell {
                 self.search.file_results.clear();
                 self.search_recompute();
                 let epoch = self.search.epoch;
-                let windows = self.search_read_windows();
+                let refresh = if self.search.overview {
+                    Task::none()
+                } else {
+                    self.refresh_search_sources()
+                };
                 Task::batch([
-                    activation,
+                    refresh,
                     self.close_controls_for_panel(),
                     self.force_close_overview(),
                     self.force_close_notifications(),
                     self.force_close_plugin(),
                     self.force_close_launcher(),
-                    self.search_icons_changed(),
-                    windows,
                     if self.search.overview {
                         Task::done(message(Message::Anchor(epoch, None)))
                     } else {
@@ -329,6 +331,7 @@ impl Shell {
                 self.search.model.set_query(query);
                 self.search.file_results.clear();
                 self.search.file_query = None;
+                let refresh = self.refresh_overview_search();
                 let providers = self.search_ask_providers();
                 self.search_recompute();
                 if resizing {
@@ -337,6 +340,7 @@ impl Shell {
                 Task::batch([
                     self.search_file_query(),
                     providers,
+                    refresh,
                     wait.map_or_else(Task::none, |height_epoch| {
                         Task::perform(
                             async move {
@@ -377,6 +381,7 @@ impl Shell {
                 self.search.feedback = None;
                 self.search.file_query = None;
                 self.search.file_results.clear();
+                let refresh = self.refresh_overview_search();
                 let providers = self.search_ask_providers();
                 self.search_recompute();
                 self.animate_search_height(from, self.search_surface_size().height);
@@ -384,6 +389,7 @@ impl Shell {
                     iced::widget::operation::focus("quick-search-input"),
                     self.search_file_query(),
                     providers,
+                    refresh,
                 ])
             }
             Message::BrowseApps(expanded)

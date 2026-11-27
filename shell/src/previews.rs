@@ -7,6 +7,7 @@ use raster::{
 };
 use std::{
     collections::BTreeMap,
+    io::{BufReader, Read},
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
@@ -135,7 +136,33 @@ fn read_image(path: &Path) -> Result<RgbaImage, String> {
         .map_err(|_| tr("shell-cannot-decode-preview-image").into())
 }
 
-// Installed next to the shell; a development tree builds it under .build.
+fn read_window_picture(path: &Path) -> Result<RgbaImage, String> {
+    let invalid = || tr("shell-cannot-decode-preview-image").to_owned();
+    let file = std::fs::File::open(path).map_err(|_| invalid())?;
+    let length = file.metadata().map_err(|_| invalid())?.len();
+    let mut reader = BufReader::new(file);
+    let mut header = [[0; 4]; 2];
+    for field in &mut header {
+        reader.read_exact(field).map_err(|_| invalid())?;
+    }
+    // Older snapshot helpers ignore ENZUI_SNAPSHOT_RGBA and still write a PNG.
+    if header == [*b"\x89PNG", *b"\r\n\x1a\n"] {
+        return read_image(path);
+    }
+    let [width, height] = header.map(u32::from_le_bytes);
+    let pixels = u64::from(width) * u64::from(height);
+    if !(1..=8192).contains(&width)
+        || !(1..=8192).contains(&height)
+        || pixels > 16 * 1024 * 1024
+        || length != 8 + 4 * pixels
+    {
+        return Err(invalid());
+    }
+    let mut bytes = vec![0; 4 * pixels as usize];
+    reader.read_exact(&mut bytes).map_err(|_| invalid())?;
+    RgbaImage::from_raw(width, height, bytes).ok_or_else(invalid)
+}
+
 /// Asks the snapshot helper for a picture fitting `WxH` pixels: it averages
 /// the window down as it copies it, so a full-size picture is neither
 /// encoded nor decoded. A helper without it writes the window's size, which
@@ -186,6 +213,7 @@ pub async fn capture_window(
                     .ok_or_else(|| tr("shell-invalid-preview-path"))?,
             ])
             .env(SNAPSHOT_FIT, format!("{width}x{height}"))
+            .env("ENZUI_SNAPSHOT_RGBA", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -197,7 +225,7 @@ pub async fn capture_window(
         return Err(tr("shell-the-window-could-not-be-captured").into());
     }
     let image = tokio::task::spawn_blocking(move || {
-        let image = read_image(&path)?;
+        let image = read_window_picture(&path)?;
         // A window that is not being drawn (tucked into the sidebar) comes
         // back as an empty picture; callers show their placeholder instead
         // of a blank card.

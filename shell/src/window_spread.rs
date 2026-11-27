@@ -16,7 +16,13 @@ use enzui_widgets::{
 use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::widget::{column, container, image, mouse_area, pin, stack};
 use iced::{Element, Length, Padding, Subscription, Task, window};
-use std::time::{Duration, Instant};
+use std::{
+    cell::Cell,
+    time::{Duration, Instant},
+};
+
+#[path = "spread_motion.rs"]
+mod motion;
 
 // Floating-desktop window overview using captures while the compositor hides the original
 // windows.
@@ -70,10 +76,17 @@ pub(crate) struct OverviewBand {
     pub search: f32,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct MotionFrames {
+    first: Instant,
+    latest: Instant,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct Spread {
     phase: Phase,
     generation: u64,
+    load_task: Option<iced::task::Handle>,
     window: Option<window::Id>,
     desktop: i64,
     rounding: f32,
@@ -85,7 +98,7 @@ pub(crate) struct Spread {
     close: CloseState,
     chosen: Option<usize>,
     started: Option<Instant>,
-    frame_at: Option<Instant>,
+    frames: Cell<Option<MotionFrames>>,
     // The originals are being hidden; the motion starts once they are.
     hiding: bool,
     // How far out the windows were when closing began.
@@ -110,7 +123,7 @@ pub(crate) enum SpreadMessage {
     Allocated(u64, Vec<image::Allocation>),
     Presented(window::Id),
     Hidden(u64, Result<(), String>),
-    Frame(window::Id, Instant),
+    MotionFinished(window::Id, Instant),
     Hover(u64),
     Leave(u64),
     Select(u64),
@@ -154,6 +167,11 @@ fn ease(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
 }
 
+fn ease_in_out(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 impl Spread {
     pub(crate) fn owns(&self, id: window::Id) -> bool {
         self.window == Some(id)
@@ -172,9 +190,9 @@ impl Spread {
     }
 
     fn progress(&self, now: Instant) -> f32 {
-        let elapsed = self
-            .started
-            .map_or(0.0, |at| now.duration_since(at).as_secs_f32());
+        let elapsed = self.frames.get().map_or(0.0, |frames| {
+            now.saturating_duration_since(frames.first).as_secs_f32()
+        });
         let t = if self.duration <= 0.0 {
             1.0
         } else {
@@ -193,7 +211,7 @@ impl Spread {
             // A finished close keeps the windows' places until the overlay goes.
             Phase::Closing => {
                 if self.started.is_some() {
-                    self.closing_from * (1.0 - ease(t))
+                    self.closing_from * (1.0 - ease_in_out(t))
                 } else {
                     0.0
                 }
@@ -202,12 +220,39 @@ impl Spread {
     }
 
     fn sampled_at(&self, now: Instant) -> Instant {
-        self.frame_at.unwrap_or(now)
+        self.frames.get().map_or(now, |frames| frames.latest)
+    }
+
+    fn motion_finished(&self, at: Instant) -> bool {
+        self.frames.get().is_some_and(|frames| {
+            let duration = if self.phase == Phase::Open {
+                DURATION
+            } else {
+                self.duration
+            };
+            at >= frames.first && at.duration_since(frames.first).as_secs_f32() >= duration
+        })
+    }
+
+    fn sample_frame(&self, at: Instant) -> bool {
+        if self.started.is_none_or(|armed| at < armed) {
+            return false;
+        }
+        let previous = self.frames.get();
+        let finished = previous.is_some_and(|frames| self.motion_finished(frames.latest));
+        self.frames.set(Some(MotionFrames {
+            first: previous.map_or(at, |frames| frames.first),
+            latest: at,
+        }));
+        !finished && self.motion_finished(at)
     }
 
     fn animating(&self) -> bool {
-        self.is_reflowing()
-            || matches!(self.phase, Phase::Opening | Phase::Closing) && self.started.is_some()
+        self.started.is_some()
+            && !self
+                .frames
+                .get()
+                .is_some_and(|frames| self.motion_finished(frames.latest))
     }
 }
 
@@ -289,10 +334,16 @@ async fn load(
     if desktop.windows.is_empty() && overview.is_none() {
         return Err(tr("shell-no-windows-to-spread").into());
     }
-    let (area, top, bottom) = compositor
-        .prepare_spread(metrics, bar, overview.is_some())
-        .await?;
-    let (rounding, _) = compositor.window_rounding().await;
+    let area = desktop.output;
+    let band = f32::from(metrics.bar_band());
+    if area[3] < band + 1.0 {
+        return Err(tr("shell-invalid-spread-geometry").into());
+    }
+    let (top, bottom) = if bar == enzui_shell::settings::BarEdge::Top {
+        (band, 0.0)
+    } else {
+        (0.0, band)
+    };
     let mut insets = Padding::ZERO.top(top).bottom(bottom);
     if let Some((position, dock)) = dock.filter(|(_, dock)| dock.output_id == desktop.output_id) {
         let body = dock.body;
@@ -317,13 +368,18 @@ async fn load(
         None => (None, insets),
     };
     let places = arrange(&desktop.windows, area, insets);
-    let pictures = iced::futures::future::join_all(desktop.windows.iter().zip(&places).map(
+    let capture = iced::futures::future::join_all(desktop.windows.iter().zip(&places).map(
         |(window, (_, to))| {
             let (w, h) = picture_pixels(*to, desktop.scale);
             enzui_shell::previews::capture_window(root.clone(), window.address.clone(), w, h)
         },
-    ))
-    .await;
+    ));
+    let (placed, (rounding, _), pictures) = iced::futures::join!(
+        compositor.prepare_spread(&desktop, overview.is_some()),
+        compositor.window_rounding(),
+        capture,
+    );
+    placed?;
     let mut entries: Vec<_> = desktop
         .windows
         .into_iter()
@@ -348,6 +404,232 @@ async fn load(
         insets,
         strip,
     })
+}
+
+fn tile_picture<'a>(
+    entry: &'a Entry,
+    r: Rect,
+    radius: f32,
+    palette: &enzui_theme::Palette,
+) -> Element<'a, Message> {
+    let surface = palette.surface;
+    let text = palette.text;
+    match &entry.picture {
+        // On the surface colour: a window whose frame the compositor
+        // paints (glass) leaves that frame clear in its picture.
+        Some(handle) => container(
+            image(handle.clone())
+                .width(r.width)
+                .height(r.height)
+                .content_fit(iced::ContentFit::Fill)
+                .border_radius(radius),
+        )
+        .width(r.width)
+        .height(r.height)
+        .style(move |_| container::Style {
+            background: Some(surface.into()),
+            border: iced::Border {
+                radius: radius.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into(),
+        None => {
+            let (name, icon) = enzui_shell::search::catalogue::app_identity(&entry.window.class);
+            container(
+                column![
+                    match icon {
+                        Some(path) => enzui_shell::icon_theme::source(&path).into_element(48.0),
+                        None => enz_icon("app-window").size(32.0).into_element(),
+                    },
+                    enz_text(name.unwrap_or_else(|| entry.window.class.clone()))
+                        .size_px(enzui_theme::text_scale::effective().apply_px(13.0))
+                        .single_line_elided()
+                        .into_element()
+                ]
+                .spacing(8)
+                .align_x(iced::Alignment::Center),
+            )
+            .center(Length::Fill)
+            .width(r.width)
+            .height(r.height)
+            .style(move |_| container::Style {
+                background: Some(surface.into()),
+                border: iced::Border {
+                    radius: radius.into(),
+                    ..Default::default()
+                },
+                text_color: Some(text),
+                ..Default::default()
+            })
+            .into()
+        }
+    }
+}
+
+fn tile_label(entry: &Entry) -> String {
+    if entry.window.title.is_empty() {
+        enzui_shell::search::catalogue::app_identity(&entry.window.class)
+            .0
+            .unwrap_or_else(|| entry.window.class.clone())
+    } else {
+        entry.window.title.clone()
+    }
+}
+
+fn framed_picture<'a>(
+    entry: &'a Entry,
+    r: Rect,
+    rounding: f32,
+    selected: bool,
+    palette: &enzui_theme::Palette,
+) -> Element<'a, Message> {
+    let radius = rounding * r.width / entry.from.width.max(1.0);
+    let accent = palette.accent;
+    container(tile_picture(entry, r, radius, palette))
+        .padding(RING)
+        .width(r.width + 2.0 * RING)
+        .height(r.height + 2.0 * RING)
+        .style(move |_| container::Style {
+            border: iced::Border {
+                radius: (radius + RING).into(),
+                width: if selected { 3.0 } else { 0.0 },
+                color: accent,
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+fn picture_button<'a>(
+    picture: Element<'a, Message>,
+    entry: &Entry,
+    label: &str,
+    overview: bool,
+) -> Element<'a, Message> {
+    let id = entry.window.stable_id;
+    let activate = Message::Spread(SpreadMessage::Pick(id));
+    if overview {
+        let name = entry.shortcut.map_or_else(
+            || label.to_owned(),
+            |key| {
+                enzui_shell::tr!(
+                    "shell-overview-window-shortcut",
+                    "title" => enzui_shell::i18n::argument(&label),
+                    "key" => key
+                )
+            },
+        );
+        focus_button(picture, activate)
+            .semantics(Semantics::new(Role::Button).label(name))
+            .id(format!("overview-window-{id:x}").into())
+            .style_focus(|_, _| Default::default())
+            .into()
+    } else {
+        mouse_area(picture)
+            .on_press(activate)
+            .interaction(iced::mouse::Interaction::Pointer)
+            .into()
+    }
+}
+
+fn tile_caption<'a>(
+    entry: &Entry,
+    label: String,
+    selected: bool,
+    overview: bool,
+    show_close: bool,
+    palette: &enzui_theme::Palette,
+) -> Element<'a, Message> {
+    let icon = match enzui_shell::search::catalogue::app_identity(&entry.window.class).1 {
+        Some(path) => enzui_shell::icon_theme::source(&path).into_element(18.0),
+        None => enz_icon("app-window").size(16.0).into_element(),
+    };
+    let chip_fill = if selected {
+        palette.accent_soft
+    } else {
+        palette.surface_elevated
+    };
+    let title = enz_text(label.clone())
+        .size_px(enzui_theme::text_scale::effective().apply_px(CAPTION_TEXT))
+        .weight_rung(if selected {
+            enzui_theme::WeightRung::Semibold
+        } else {
+            enzui_theme::WeightRung::Medium
+        })
+        .single_line_elided()
+        .into_element();
+    let mut caption = iced::widget::row![icon, title]
+        .spacing(6)
+        .align_y(iced::Alignment::Center);
+    if let Some(shortcut) = entry.shortcut {
+        let accent = palette.accent;
+        let badge = container(
+            enz_text(shortcut)
+                .size_px(12.0)
+                .weight_rung(enzui_theme::WeightRung::Semibold)
+                .color(palette.on_accent())
+                .into_element(),
+        )
+        .center(Length::Fixed(20.0))
+        .style(move |_| container::Style {
+            background: Some(accent.into()),
+            border: iced::Border {
+                radius: 10.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        caption = caption.push(badge);
+    }
+    let text = palette.text;
+    let chip = container(caption)
+        .padding([CAPTION_PADDING_Y, 12.0])
+        .width(Length::Shrink)
+        .style(move |_| container::Style {
+            background: Some(chip_fill.into()),
+            border: iced::Border {
+                radius: 999.0.into(),
+                ..Default::default()
+            },
+            text_color: Some(text),
+            ..Default::default()
+        });
+    if !overview {
+        return chip.into();
+    }
+
+    let id = entry.window.stable_id;
+    let mut controls = iced::widget::row![
+        mouse_area(chip)
+            .on_press(Message::Spread(SpreadMessage::Select(id)))
+            .interaction(iced::mouse::Interaction::Pointer)
+    ]
+    .spacing(4)
+    .align_y(iced::Alignment::Center);
+    if show_close {
+        let name = enzui_shell::tr!(
+            "shell-overview-close-window",
+            "title" => enzui_shell::i18n::argument(&label)
+        );
+        controls = controls.push(
+            enz_clickable(
+                enz_icon("action.close").size(16.0).into_element(),
+                Message::Spread(SpreadMessage::Close(id)),
+            )
+            .aria_label(name)
+            .radius(CLOSE_SIZE / 2.0)
+            .width(CLOSE_SIZE)
+            .height(CLOSE_SIZE)
+            .tokens(enzui_widgets::clickable::ClickableTokens {
+                background: palette.surface_elevated,
+                ..enzui_widgets::clickable::ClickableTokens::from_palette(palette)
+            })
+            .into_element(),
+        );
+    }
+    controls.into()
 }
 
 impl Shell {
@@ -386,6 +668,7 @@ impl Shell {
             SpreadMessage::Loaded(sent, result)
                 if sent == generation && self.spread.phase == Phase::Loading =>
             {
+                self.spread.load_task = None;
                 match result {
                     Ok(loaded) => {
                         self.spread.desktop = loaded.desktop;
@@ -404,7 +687,7 @@ impl Shell {
                         eprintln!("enzui-shell spread: {error}");
                         // Search, opened with it, stays on its own.
                         self.overview_spread_failed();
-                        Task::none()
+                        self.refresh_overview_search()
                     }
                 }
             }
@@ -429,37 +712,34 @@ impl Shell {
                 // and a clock started before would jump.
                 if self.spread.phase == Phase::Opening && self.spread.started.is_none() {
                     self.spread.started = Some(Instant::now());
-                    self.spread.frame_at = None;
+                    self.spread.frames.set(None);
                 }
                 self.redraw_only = self.spread.window;
                 Task::none()
             }
             SpreadMessage::Hidden(..) => Task::none(),
-            SpreadMessage::Frame(id, _) if !self.spread.owns(id) => {
-                self.quiet = true;
-                Task::none()
-            }
-            SpreadMessage::Frame(_, at) => {
-                self.redraw_only = self.spread.window;
-                self.spread.frame_at = Some(at);
-                let done = self.spread.started.is_some_and(|started| {
-                    at.saturating_duration_since(started).as_secs_f32() >= self.spread.duration
-                });
+            SpreadMessage::MotionFinished(id, at)
+                if self.spread.owns(id) && self.spread.motion_finished(at) =>
+            {
+                self.redraw_only = Some(id);
                 match self.spread.phase {
-                    Phase::Opening if done => {
+                    Phase::Opening => {
+                        self.spread.started = None;
                         self.spread.phase = Phase::Open;
                         if self.activities {
                             self.redraw_only = None;
                         }
-                        self.check_spread_windows_if_dirty()
+                        Task::batch([
+                            self.refresh_overview_search(),
+                            self.check_spread_windows_if_dirty(),
+                        ])
                     }
                     Phase::Open if self.spread.is_reflowing() => {
-                        if self.spread.finish_reflow_frame(at) {
-                            self.redraw_only = None;
-                        }
+                        self.spread.finish_reflow_frame(at);
                         Task::none()
                     }
-                    Phase::Closing if done && self.spread.started.take().is_some() => {
+                    Phase::Closing => {
+                        self.spread.started = None;
                         // The pick is raised now, under its picture; it is
                         // focused again once the overlay has gone.
                         let chosen = self
@@ -477,6 +757,10 @@ impl Shell {
                     }
                     _ => Task::none(),
                 }
+            }
+            SpreadMessage::MotionFinished(..) => {
+                self.quiet = true;
+                Task::none()
             }
             SpreadMessage::Hover(id)
                 if self.spread.phase == Phase::Open && !self.spread.is_reflowing() =>
@@ -559,10 +843,13 @@ impl Shell {
         } else {
             None
         };
-        Task::perform(
+        let (load, handle) = Task::perform(
             load(root, compositor, metrics, bar, overview, dock),
             move |result| Message::Spread(SpreadMessage::Loaded(generation, result)),
         )
+        .abortable();
+        self.spread.load_task = Some(handle.abort_on_drop());
+        load
     }
 
     fn open_spread_window(&mut self) -> Task<Message> {
@@ -660,6 +947,10 @@ impl Shell {
         let with_search = self.activities;
         let search = self.overview_spread_closing();
         let spread = match self.spread.phase {
+            Phase::Opening if !self.spread.hiding => {
+                self.spread.chosen = chosen.filter(|index| *index < self.spread.entries.len());
+                self.end_spread()
+            }
             Phase::Opening | Phase::Open => {
                 let now = Instant::now();
                 let sample = self.spread.sampled_at(now);
@@ -668,7 +959,7 @@ impl Shell {
                 self.spread.phase = Phase::Closing;
                 self.spread.chosen = chosen.filter(|index| *index < self.spread.entries.len());
                 self.spread.started = Some(now);
-                self.spread.frame_at = None;
+                self.spread.frames.set(None);
                 if !with_search {
                     self.redraw_only = self.spread.window;
                 }
@@ -846,27 +1137,19 @@ impl Shell {
         .filter_map(|(owner, (window, key))| {
             (owner == window).then_some(Message::Spread(SpreadMessage::Key(key)))
         });
-        let frames = if self.spread.animating() {
-            iced::event::listen_raw(|event, _, window| match event {
-                iced::Event::Window(window::Event::RedrawRequested(at)) => {
-                    Some(Message::Spread(SpreadMessage::Frame(window, at)))
-                }
-                _ => None,
-            })
-        } else {
-            Subscription::none()
-        };
         let presented = if self.spread.ready_frames > 0 {
             iced::event::listen_raw(|event, _, window| match event {
-                iced::Event::Window(window::Event::RedrawRequested(_)) => {
-                    Some(Message::Spread(SpreadMessage::Presented(window)))
-                }
+                iced::Event::Window(window::Event::RedrawRequested(_)) => Some(window),
                 _ => None,
+            })
+            .with(id)
+            .filter_map(|(owner, window)| {
+                (owner == window).then_some(Message::Spread(SpreadMessage::Presented(window)))
             })
         } else {
             Subscription::none()
         };
-        Subscription::batch([keys, frames, presented])
+        Subscription::batch([keys, presented])
     }
 
     // The desktops beside Search: each one's preview, the current one ringed,
@@ -981,320 +1264,17 @@ impl Shell {
         }
         let tokens = self.window_tokens(Some(id));
         let palette = tokens.palette;
-        let at = self.spread.sampled_at(Instant::now());
-        let p = self.spread.progress(at);
-        let open = self.spread.phase == Phase::Open;
-        let close_tile = if open && self.spread.strip.is_some() {
-            self.spread.current_tile()
-        } else {
-            None
-        };
-        let reflow = self.spread.reflow_progress(at);
-        let footer = caption_height();
-        let scrim = iced::Color {
-            a: 0.32 * p,
-            ..iced::Color::BLACK
-        };
-        let mut layers: Vec<Element<'_, Message>> = vec![
-            mouse_area(
-                container(iced::widget::space())
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .style(move |_| container::Style {
-                        background: Some(scrim.into()),
-                        ..Default::default()
-                    }),
-            )
-            .on_press(Message::Spread(SpreadMessage::Dismiss))
-            .into(),
-        ];
-        if !self.spread.ready {
-            return Some(
-                stack(layers)
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .into(),
-            );
-        }
-        if let Some(strip) = self.spread.strip {
-            layers.push(self.overview_strip(strip, &palette));
-        }
-        // Bottom-most first; a window being picked flies back on top, where
-        // it will be.
-        let mut order: Vec<usize> = (0..self.spread.entries.len()).collect();
-        if let Some(chosen) = self
-            .spread
-            .chosen
-            .filter(|_| self.spread.phase == Phase::Closing)
-        {
-            order.retain(|index| *index != chosen);
-            order.push(chosen);
-        }
-        for (index, entry) in order
-            .into_iter()
-            .filter_map(|index| Some((index, self.spread.entries.get(index)?)))
-        {
-            let gone = self.spread.entry_gone(entry);
-            if gone && !open {
-                continue;
+        let scrim = mouse_area(motion::backdrop(&self.spread))
+            .on_press(Message::Spread(SpreadMessage::Dismiss));
+        let mut layers: Vec<Element<'_, Message>> = vec![scrim.into()];
+        if self.spread.ready {
+            if let Some(strip) = self.spread.strip {
+                layers.push(self.overview_strip(strip, &palette));
             }
-            let motion = reflow.and_then(|t| self.spread.tile_motion(index, t));
-            let (r, opacity) = motion.map_or_else(
-                || (entry.from.lerp(entry.to, p), 1.0),
-                |(r, _, opacity)| (r, opacity),
-            );
-            let id = entry.window.stable_id;
-            // The window's own rounded corners, at the picture's scale.
-            let radius = self.spread.rounding * r.width / entry.from.width.max(1.0);
-            let selected =
-                open && (self.spread.selected == Some(id) || self.spread.hovered == Some(id));
-            let picture: Element<'_, Message> = match &entry.picture {
-                // On the surface colour: a window whose frame the compositor
-                // paints (glass) leaves that frame clear in its picture.
-                Some(handle) => container(
-                    image(handle.clone())
-                        .width(r.width)
-                        .height(r.height)
-                        .opacity(opacity)
-                        .content_fit(iced::ContentFit::Fill)
-                        .border_radius(radius),
-                )
-                .width(r.width)
-                .height(r.height)
-                .style(move |_| container::Style {
-                    background: Some(
-                        iced::Color {
-                            a: palette.surface.a * opacity,
-                            ..palette.surface
-                        }
-                        .into(),
-                    ),
-                    border: iced::Border {
-                        radius: radius.into(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                })
-                .into(),
-                // No picture yet: the app's own icon and name, never its raw ID.
-                None => container(
-                    column![
-                        match enzui_shell::search::catalogue::app_identity(&entry.window.class).1 {
-                            Some(path) => enzui_shell::icon_theme::source(&path).into_element(48.0),
-                            None => enz_icon("app-window").size(32.0).into_element(),
-                        },
-                        enz_text(
-                            enzui_shell::search::catalogue::app_identity(&entry.window.class)
-                                .0
-                                .unwrap_or_else(|| entry.window.class.clone())
-                        )
-                        .size_px(enzui_theme::text_scale::effective().apply_px(13.0))
-                        .single_line_elided()
-                        .into_element()
-                    ]
-                    .spacing(8)
-                    .align_x(iced::Alignment::Center),
-                )
-                .center(Length::Fill)
-                .width(r.width)
-                .height(r.height)
-                .style(move |_| container::Style {
-                    background: Some(
-                        iced::Color {
-                            a: palette.surface.a * opacity,
-                            ..palette.surface
-                        }
-                        .into(),
-                    ),
-                    border: iced::Border {
-                        radius: radius.into(),
-                        ..Default::default()
-                    },
-                    text_color: Some(palette.text),
-                    ..Default::default()
-                })
-                .into(),
-            };
-            let accent = palette.accent;
-            // The ring sits outside the picture, which would cover it.
-            let framed = container(picture)
-                .padding(RING)
-                .width(r.width + 2.0 * RING)
-                .height(r.height + 2.0 * RING)
-                .style(move |_| container::Style {
-                    border: iced::Border {
-                        radius: (radius + RING).into(),
-                        width: if selected { 3.0 } else { 0.0 },
-                        color: iced::Color {
-                            a: accent.a * opacity,
-                            ..accent
-                        },
-                    },
-                    ..Default::default()
-                });
-            let label = if entry.window.title.is_empty() {
-                enzui_shell::search::catalogue::app_identity(&entry.window.class)
-                    .0
-                    .unwrap_or_else(|| entry.window.class.clone())
+            if self.spread.phase == Phase::Open && !self.spread.is_reflowing() {
+                self.resting_tiles(&palette, &mut layers);
             } else {
-                entry.window.title.clone()
-            };
-            if gone {
-                layers.push(pin(framed).x(r.x - RING).y(r.y - RING).into());
-                continue;
-            }
-            let activate = Message::Spread(SpreadMessage::Pick(id));
-            let overview = self.spread.strip.is_some();
-            let pick: Element<'_, Message> = if open && overview {
-                let name = entry.shortcut.map_or_else(
-                    || label.clone(),
-                    |key| {
-                        enzui_shell::tr!(
-                            "shell-overview-window-shortcut",
-                            "title" => enzui_shell::i18n::argument(&label),
-                            "key" => key
-                        )
-                    },
-                );
-                focus_button(framed, activate)
-                    .semantics(Semantics::new(Role::Button).label(name))
-                    .id(format!("overview-window-{id:x}").into())
-                    .style_focus(|_, _| Default::default())
-                    .into()
-            } else {
-                mouse_area(framed).on_press(activate).into()
-            };
-            let hover = Message::Spread(SpreadMessage::Hover(id));
-            // Every window is named below its picture (app icon and title),
-            // so it is recognised without reading its scaled-down chrome; the
-            // chosen one's caption takes the accent.
-            if open {
-                let icon: Element<'_, Message> =
-                    match enzui_shell::search::catalogue::app_identity(&entry.window.class).1 {
-                        Some(path) => enzui_shell::icon_theme::source(&path).into_element(18.0),
-                        None => enz_icon("app-window").size(16.0).into_element(),
-                    };
-                let chip_fill = if selected {
-                    palette.accent_soft
-                } else {
-                    palette.surface_elevated
-                };
-                let title = enz_text(label.clone())
-                    .size_px(enzui_theme::text_scale::effective().apply_px(CAPTION_TEXT))
-                    .weight_rung(if selected {
-                        enzui_theme::WeightRung::Semibold
-                    } else {
-                        enzui_theme::WeightRung::Medium
-                    })
-                    .single_line_elided()
-                    .into_element();
-                let mut caption = iced::widget::row![icon, title]
-                    .spacing(6)
-                    .align_y(iced::Alignment::Center);
-                if let Some(shortcut) = entry.shortcut {
-                    let badge = container(
-                        enz_text(shortcut)
-                            .size_px(12.0)
-                            .weight_rung(enzui_theme::WeightRung::Semibold)
-                            .color(palette.on_accent())
-                            .into_element(),
-                    )
-                    .center(Length::Fixed(20.0))
-                    .style(move |_| container::Style {
-                        background: Some(palette.accent.into()),
-                        border: iced::Border {
-                            radius: 10.0.into(),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    });
-                    caption = caption.push(badge);
-                }
-                let chip = container(caption)
-                    .padding([CAPTION_PADDING_Y, 12.0])
-                    .width(Length::Shrink)
-                    .style(move |_| container::Style {
-                        background: Some(chip_fill.into()),
-                        border: iced::Border {
-                            radius: 999.0.into(),
-                            ..Default::default()
-                        },
-                        text_color: Some(palette.text),
-                        ..Default::default()
-                    });
-                let caption_y = motion.map_or_else(
-                    || caption_line(entry.to, self.spread.entries.iter().map(|other| other.to)),
-                    |(_, y, _)| y,
-                ) + CAPTION_GAP;
-                if overview {
-                    let mut controls = iced::widget::row![
-                        mouse_area(chip)
-                            .on_press(Message::Spread(SpreadMessage::Select(id)))
-                            .interaction(iced::mouse::Interaction::Pointer)
-                    ]
-                    .spacing(4)
-                    .align_y(iced::Alignment::Center);
-                    if selected || close_tile == Some(id) {
-                        let name = enzui_shell::tr!(
-                            "shell-overview-close-window",
-                            "title" => enzui_shell::i18n::argument(&label)
-                        );
-                        let close = enz_clickable(
-                            enz_icon("action.close").size(16.0).into_element(),
-                            Message::Spread(SpreadMessage::Close(id)),
-                        )
-                        .aria_label(name)
-                        .radius(CLOSE_SIZE / 2.0)
-                        .width(CLOSE_SIZE)
-                        .height(CLOSE_SIZE)
-                        .tokens(
-                            enzui_widgets::clickable::ClickableTokens {
-                                background: palette.surface_elevated,
-                                ..enzui_widgets::clickable::ClickableTokens::from_palette(&palette)
-                            },
-                        );
-                        controls = controls.push(close.into_element());
-                    }
-                    let width = r.width + 2.0 * RING;
-                    let height = caption_y - r.y + RING + footer;
-                    let tile = stack![
-                        iced::widget::space().width(width).height(height),
-                        pick,
-                        pin(container(controls).center_x(width)).y(caption_y - r.y + RING),
-                    ]
-                    .width(width)
-                    .height(height);
-                    layers.push(
-                        pin(mouse_area(tile)
-                            .on_enter(hover)
-                            .on_exit(Message::Spread(SpreadMessage::Leave(id))))
-                        .x(r.x - RING)
-                        .y(r.y - RING)
-                        .into(),
-                    );
-                } else {
-                    layers.push(
-                        pin(mouse_area(pick)
-                            .on_enter(hover)
-                            .interaction(iced::mouse::Interaction::Pointer))
-                        .x(r.x - RING)
-                        .y(r.y - RING)
-                        .into(),
-                    );
-                    layers.push(
-                        pin(container(chip).center_x(r.width.max(120.0)))
-                            .x(r.x + r.width / 2.0 - r.width.max(120.0) / 2.0)
-                            .y(caption_y)
-                            .into(),
-                    );
-                }
-            } else {
-                layers.push(
-                    pin(mouse_area(pick).on_enter(hover))
-                        .x(r.x - RING)
-                        .y(r.y - RING)
-                        .into(),
-                );
+                layers.push(motion::tiles(&self.spread, id, &palette));
             }
         }
         Some(
@@ -1303,6 +1283,67 @@ impl Shell {
                 .height(Length::Fill)
                 .into(),
         )
+    }
+
+    fn resting_tiles<'a>(
+        &'a self,
+        palette: &enzui_theme::Palette,
+        layers: &mut Vec<Element<'a, Message>>,
+    ) {
+        let overview = self.spread.strip.is_some();
+        let close_tile = self.spread.current_tile();
+        let footer = caption_height();
+        for entry in &self.spread.entries {
+            let r = entry.to;
+            let id = entry.window.stable_id;
+            let selected = self.spread.selected == Some(id) || self.spread.hovered == Some(id);
+            let picture = framed_picture(entry, r, self.spread.rounding, selected, palette);
+            let label = tile_label(entry);
+            let pick = picture_button(picture, entry, &label, overview);
+            let chip = tile_caption(
+                entry,
+                label,
+                selected,
+                overview,
+                selected || close_tile == Some(id),
+                palette,
+            );
+            let hover = Message::Spread(SpreadMessage::Hover(id));
+            let caption_y =
+                caption_line(r, self.spread.entries.iter().map(|other| other.to)) + CAPTION_GAP;
+            if overview {
+                let width = r.width + 2.0 * RING;
+                let height = caption_y - r.y + RING + footer;
+                let tile = stack![
+                    iced::widget::space().width(width).height(height),
+                    pick,
+                    pin(container(chip).center_x(width)).y(caption_y - r.y + RING),
+                ]
+                .width(width)
+                .height(height);
+                layers.push(
+                    pin(mouse_area(tile)
+                        .on_enter(hover)
+                        .on_exit(Message::Spread(SpreadMessage::Leave(id))))
+                    .x(r.x - RING)
+                    .y(r.y - RING)
+                    .into(),
+                );
+            } else {
+                layers.push(
+                    pin(mouse_area(pick).on_enter(hover))
+                        .x(r.x - RING)
+                        .y(r.y - RING)
+                        .into(),
+                );
+                layers.push(
+                    pin(container(chip).center_x(r.width.max(120.0)))
+                        .x(r.x + r.width / 2.0 - r.width.max(120.0) / 2.0)
+                        .y(caption_y)
+                        .into(),
+                );
+            }
+        }
     }
 }
 
@@ -1338,7 +1379,6 @@ mod tests {
                         pid: 2,
                         title: format!("Window {stable_id}"),
                         class: "fixture".into(),
-                        image: None,
                         at: [rect.x, rect.y],
                         size: [rect.width, rect.height],
                     },
@@ -1401,7 +1441,6 @@ mod tests {
             pid: 2,
             title: "Files".into(),
             class: "files".into(),
-            image: None,
             at: [0.0, 0.0],
             size: [800.0, 600.0],
         };
@@ -1448,12 +1487,12 @@ mod tests {
         assert!(shell.quiet);
         shell.quiet = false;
         shell.redraw_only = None;
-        let _ = shell.spread_message(SpreadMessage::Frame(window::Id::unique(), Instant::now()));
+        let _ = shell.spread_message(SpreadMessage::MotionFinished(
+            window::Id::unique(),
+            Instant::now(),
+        ));
         assert!(shell.quiet);
         assert_eq!(shell.redraw_only, None);
-        let _ = shell.spread_message(SpreadMessage::Frame(id, Instant::now()));
-        assert_eq!(shell.redraw_only, Some(id));
-        shell.redraw_only = None;
         let _ = shell.spread_message(SpreadMessage::Dismiss);
         assert!(shell.spread.phase == Phase::Closing);
         assert_eq!(shell.redraw_only, Some(id));
@@ -1471,11 +1510,15 @@ mod tests {
         let started = Instant::now();
         shell.spread.window = Some(id);
         shell.spread.phase = Phase::Opening;
+        shell.spread.hiding = true;
         shell.spread.duration = 10.0;
         shell.spread.started = Some(started);
 
-        let half = started + Duration::from_secs(5);
-        let _ = shell.spread_message(SpreadMessage::Frame(id, half));
+        let first_frame = started + Duration::from_millis(100);
+        assert!(!shell.spread.sample_frame(first_frame));
+        assert_eq!(shell.spread.progress(first_frame), 0.0);
+        let half = first_frame + Duration::from_secs(5);
+        assert!(!shell.spread.sample_frame(half));
         assert!(shell.spread.phase == Phase::Opening);
         let shown = shell
             .spread
@@ -1491,7 +1534,13 @@ mod tests {
             "the close begins where the opening was shown"
         );
 
-        let _ = shell.spread_message(SpreadMessage::Frame(id, restart + Duration::from_secs(11)));
+        let first_frame = restart + Duration::from_millis(100);
+        assert!(!shell.spread.sample_frame(first_frame));
+        assert!((shell.spread.progress(first_frame) - shown).abs() < 1e-4);
+        let end = first_frame + Duration::from_secs(11);
+        assert!(shell.spread.sample_frame(end));
+        assert!(!shell.spread.sample_frame(end));
+        let _ = shell.spread_message(SpreadMessage::MotionFinished(id, end));
         assert!(
             shell.spread.started.is_none(),
             "a finished close restores the windows"

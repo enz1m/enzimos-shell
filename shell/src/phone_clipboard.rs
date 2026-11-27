@@ -70,9 +70,8 @@ async fn follow(
     mut output: iced::futures::channel::mpsc::Sender<Message>,
 ) {
     iced::futures::pin_mut!(activity);
-    let mut interval = tokio::time::interval(Duration::from_millis(300));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut active = false;
+    let mut next_poll = tokio::time::Instant::now();
     let mut since = None;
     let mut current = Stop(None);
     let mut quiet = Quiet::default();
@@ -80,46 +79,42 @@ async fn follow(
         enum Update {
             Activity(Option<State>),
             Reply(Result<Reply, std::io::Error>),
-            Tick,
         }
         let update = tokio::select! {
             biased;
             state = activity.next() => Update::Activity(state),
-            _ = interval.tick() => Update::Tick,
-        };
-        let update = if matches!(update, Update::Tick) && active && quiet.poll_due() {
-            let text = current.0.as_ref().and_then(|handle| {
-                handle
-                    .pending
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .take()
-            });
-            let exchange = async {
-                if let Some(text) = text {
-                    enzimos_phone_client::request(
-                        &path,
-                        &ControlRequest::ClipboardPublish { text },
-                    )
-                    .await?;
+            () = tokio::time::sleep_until(next_poll), if active => {
+                let text = current.0.as_ref().and_then(|handle| {
+                    handle
+                        .pending
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take()
+                });
+                let exchange = async {
+                    if let Some(text) = text {
+                        enzimos_phone_client::request(
+                            &path,
+                            &ControlRequest::ClipboardPublish { text },
+                        )
+                        .await?;
+                    }
+                    enzimos_phone_client::request(&path, &ControlRequest::ClipboardPoll { since }).await
+                };
+                tokio::select! {
+                    biased;
+                    state = activity.next() => Update::Activity(state),
+                    reply = exchange => Update::Reply(reply),
                 }
-                enzimos_phone_client::request(&path, &ControlRequest::ClipboardPoll { since }).await
-            };
-            tokio::select! {
-                biased;
-                state = activity.next() => Update::Activity(state),
-                reply = exchange => Update::Reply(reply),
             }
-        } else {
-            update
         };
         let notice = match update {
-            Update::Tick => continue,
             Update::Activity(state) => {
                 quiet = Quiet::default();
                 revoke(&mut current.0);
                 since = None;
                 active = state == Some(State::Active);
+                next_poll = tokio::time::Instant::now();
                 if state.is_none() {
                     return;
                 }
@@ -130,7 +125,7 @@ async fn follow(
                 }
             }
             Update::Reply(Ok(reply)) if reply.0["ok"] == true && reply.0["available"] == true => {
-                quiet.skip = 0;
+                next_poll = tokio::time::Instant::now() + ACTIVE_POLL_PERIOD;
                 since = reply.0["revision"].as_u64();
                 let handle = current.0.get_or_insert_with(|| Handle {
                     authority: Arc::new(AtomicBool::new(true)),
@@ -147,7 +142,7 @@ async fn follow(
                 }
             }
             Update::Reply(_) => {
-                quiet.skip = IDLE_POLL_TICKS - 1;
+                next_poll = tokio::time::Instant::now() + UNAVAILABLE_POLL_PERIOD;
                 revoke(&mut current.0);
                 since = None;
                 Notice {
@@ -168,17 +163,9 @@ async fn follow(
 // Each notice redraws the whole shell, so unchanged ones are dropped.
 #[derive(Default)]
 struct Quiet {
-    skip: u8,
     sent: Option<(Option<usize>, bool, Instant)>,
 }
 impl Quiet {
-    fn poll_due(&mut self) -> bool {
-        if self.skip == 0 {
-            return true;
-        }
-        self.skip -= 1;
-        false
-    }
     // Unchanged notices still go out every RESEND so a busy channel is retried.
     fn should_send(&mut self, notice: &Notice, now: Instant) -> bool {
         let handle = notice
@@ -196,7 +183,8 @@ impl Quiet {
         true
     }
 }
-const IDLE_POLL_TICKS: u8 = 10;
+const ACTIVE_POLL_PERIOD: Duration = Duration::from_millis(300);
+const UNAVAILABLE_POLL_PERIOD: Duration = Duration::from_secs(3);
 const RESEND: Duration = Duration::from_secs(5);
 
 #[cfg(test)]

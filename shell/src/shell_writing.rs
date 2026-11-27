@@ -409,13 +409,18 @@ async fn capture(compositor: &Compositor) -> Result<Selection, String> {
             .ok()
             .flatten()
             .ok_or_else(|| tr("writing-select-text"))?;
-        if compositor
-            .writing_request(&format!("verify-primary {token}"))
-            .await
-            .as_deref()
-            == Ok("ok")
-        {
-            return Selection::new(None, result).ok_or_else(|| tr("writing-select-text").into());
+        let request = writing_payload(&format!("verify-primary {token} "), &result);
+        let reply = compositor.writing_request(&request).await;
+        match reply.as_deref() {
+            Ok("editable") => {
+                return Selection::new(Some(token), result)
+                    .ok_or_else(|| tr("writing-select-text").into());
+            }
+            Ok("ok") => {
+                return Selection::new(None, result)
+                    .ok_or_else(|| tr("writing-select-text").into());
+            }
+            _ => {}
         }
     }
     Selection::from_reply(&reply).ok_or_else(|| tr("writing-select-text").into())
@@ -445,12 +450,18 @@ async fn read_primary() -> Option<String> {
     }
 }
 
-async fn replace(compositor: &Compositor, token: u64, text: &str) -> bool {
+fn writing_payload(prefix: &str, text: &str) -> String {
     use std::fmt::Write as _;
-    let mut request = format!("replace {token} ");
+    let mut request = String::with_capacity(prefix.len() + text.len() * 2);
+    request.push_str(prefix);
     for byte in text.bytes() {
         let _ = write!(request, "{byte:02x}");
     }
+    request
+}
+
+async fn replace(compositor: &Compositor, token: u64, text: &str) -> bool {
+    let request = writing_payload(&format!("replace {token} "), text);
     for _ in 0..8 {
         tokio::time::sleep(Duration::from_millis(55)).await;
         if session_lock::locking() {

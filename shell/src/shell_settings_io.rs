@@ -85,7 +85,14 @@ impl Shell {
             self.controllers_generation = self.controllers_generation.wrapping_add(1);
             self.controllers = Default::default();
         }
+        let mirror_changed = self.desired_settings.display_mirror != settings.display_mirror;
         self.desired_settings = settings.clone();
+        let mirror = if mirror_changed {
+            self.next_tick_at = Instant::now() + self.idle_tick_period();
+            self.mirror_tick(false)
+        } else {
+            Task::none()
+        };
         // A changed clock format shows now, not at the next minute.
         self.clock = super::shell_window_settings::clock(&self.desired_settings.session);
         self.activity_settings_changed();
@@ -195,6 +202,7 @@ impl Shell {
             sidebar,
             regions,
             activity,
+            mirror,
             self.notification_preferences(),
             self.search_preferences(),
             self.sync_input_method(),

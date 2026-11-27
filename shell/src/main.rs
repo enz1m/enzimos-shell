@@ -344,6 +344,7 @@ impl Shell {
             },
             Message::FrameStopped,
         );
+        let schedule = shell_schedule::Schedule::new(Instant::now());
         let mut shell = Self {
             dock: Default::default(),
             compositor,
@@ -444,8 +445,8 @@ impl Shell {
             screen_reader: None,
             switch_user: false,
             crashes_seen: None,
-            schedule: shell_schedule::Schedule::new(Instant::now()),
-            next_tick_at: Instant::now() + shell_schedule::SLOW_TICK,
+            next_tick_at: schedule.session_restore_at,
+            schedule,
             sharing_watch: Self::watch_sharing_grant(),
             session_restored: false,
             session_forgotten: false,

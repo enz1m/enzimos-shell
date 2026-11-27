@@ -142,7 +142,20 @@ impl Shell {
         let now = chrono::Local::now();
         let into_minute =
             f64::from(now.second()) + f64::from(now.nanosecond().min(999_999_999)) / 1e9;
-        crate::shell_schedule::tick_period(false, into_minute)
+        let mut wait = crate::shell_schedule::tick_period(false, into_minute);
+        if self.desired_settings.display_mirror {
+            wait = wait.min(Duration::from_secs(10));
+        }
+        if !self.session_restored
+            && enzui_shell::desktop_session::mode() == enzui_shell::desktop_session::Mode::Installed
+            && let Some(restore) = self
+                .schedule
+                .session_restore_at
+                .checked_duration_since(Instant::now())
+        {
+            wait = wait.min(restore);
+        }
+        wait
     }
 
     /// [`Message::Tick`]: every 2 s while [`Self::tick_busy`], otherwise once
@@ -179,13 +192,7 @@ impl Shell {
         Some(service)
     }
 
-    /// How often [`Message::SettingsTick`] runs. It polls quickly only while
-    /// it has something to finish: settings without a folder watch, or bar
-    /// regions the compositor has not taken yet. Otherwise it only backs up
-    /// the folder watch, expires clipboard history (kept for hours) and
-    /// backs up the output check that desktop events run, so an idle
-    /// desktop wakes for it every 10 s.
-    pub(crate) fn settings_tick_period(&self) -> Duration {
+    pub(crate) fn settings_tick_subscription(&self) -> Subscription<Message> {
         let regions_pending = self.bar_regions_busy
             || self.bar_regions_retry.is_some()
             || (self.bar_ready
@@ -195,9 +202,9 @@ impl Shell {
                     self.bar_regions_sent != Some((self.bar_epoch, *serial))
                 }));
         if self.settings_watch.is_none() || regions_pending {
-            Duration::from_millis(250)
+            iced::time::every(Duration::from_millis(250)).map(|_| Message::SettingsTick)
         } else {
-            Duration::from_secs(10)
+            Subscription::none()
         }
     }
 

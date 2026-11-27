@@ -48,7 +48,7 @@ impl Shell {
                 .map_or_else(Subscription::none, |watch| {
                     watch.subscription().map(|_| Message::SharingChanged)
                 }),
-            iced::time::every(self.settings_tick_period()).map(|_| Message::SettingsTick),
+            self.settings_tick_subscription(),
             enzui_shell::backup_notices::subscription().map(|()| Message::BackupCheck),
             enzui_shell::backup_activity::subscription().map(|()| Message::BackupCheck),
             enzui_shell::desktop_glass::luminance_changes().map(|()| Message::GlassBackdrop(false)),

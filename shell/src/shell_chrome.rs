@@ -35,34 +35,8 @@ impl Shell {
                 Task::none()
             }
             Message::SettingsTick => {
-                let expired = self.clipboard_expire();
-                let search_expired = self.search.clipboard.expire();
-                if search_expired {
-                    self.search_recompute();
-                }
-                self.quiet = !expired && !search_expired;
-                // With a folder watch, the poll is only a slow safety net
-                // for a change the watch missed.
-                let due = self.settings_watch.is_none()
-                    || self
-                        .settings_read_at
-                        .is_none_or(|at| at.elapsed() >= Duration::from_secs(30));
-                let settings = if !due || self.settings_read_busy || self.settings_save_busy {
-                    Task::none()
-                } else {
-                    self.read_settings()
-                };
-                // Outputs added or removed are checked on the compositor's
-                // events (DesktopChanged); this is the safety net.
-                let outputs = if self
-                    .outputs_checked
-                    .is_none_or(|at| at.elapsed() >= Duration::from_secs(30))
-                {
-                    self.check_outputs()
-                } else {
-                    Task::none()
-                };
-                Task::batch([settings, self.publish_bar_regions(), outputs])
+                self.quiet = true;
+                self.settings_maintenance()
             }
             Message::FrameStopped(result) => {
                 if let Err(error) = result {
@@ -569,6 +543,7 @@ impl Shell {
                     calendar,
                     countdown,
                     crashes,
+                    self.settings_maintenance(),
                 ])
             }
             Message::ShowLauncher if self.overview.is_some() || self.overview_opening => {
@@ -811,7 +786,13 @@ impl Shell {
                 if accessibility {
                     self.screen_reader = crate::shell_accessibility::screen_reader();
                 }
-                if self.control_opening
+                let refresh =
+                    if !self.control_requested && !self.control_visible && !self.system_busy {
+                        self.refresh_system(None)
+                    } else {
+                        Task::none()
+                    };
+                let panel = if self.control_opening
                     || self.control_center.is_some_and(|_| !self.control_started)
                 {
                     self.control_requested = !self.control_requested;
@@ -822,7 +803,7 @@ impl Shell {
                     } else {
                         self.control_requested = true;
                         if content_changed {
-                            return self.reflow_controls();
+                            return Task::batch([self.reflow_controls(), refresh]);
                         }
                         self.control_visible = true;
                         self.control_frames = 2;
@@ -835,7 +816,8 @@ impl Shell {
                 } else {
                     self.control_requested = true;
                     Task::batch([self.force_close_launcher(), self.warm_controls()])
-                }
+                };
+                Task::batch([panel, refresh])
             }
 
             Message::WarmControls => self.warm_controls(),
@@ -1482,6 +1464,36 @@ impl Shell {
 }
 
 impl Shell {
+    fn settings_maintenance(&mut self) -> Task<Message> {
+        let expired = self.clipboard_expire();
+        let search_expired = self.search.clipboard.expire();
+        if search_expired {
+            self.search_recompute();
+        }
+        if expired || search_expired {
+            self.quiet = false;
+            self.redraw_only = None;
+        }
+        let due = self.settings_watch.is_none()
+            || self
+                .settings_read_at
+                .is_none_or(|at| at.elapsed() >= Duration::from_secs(30));
+        let settings = if due && !self.settings_read_busy && !self.settings_save_busy {
+            self.read_settings()
+        } else {
+            Task::none()
+        };
+        let outputs = if self
+            .outputs_checked
+            .is_none_or(|at| at.elapsed() >= Duration::from_secs(30))
+        {
+            self.check_outputs()
+        } else {
+            Task::none()
+        };
+        Task::batch([settings, self.publish_bar_regions(), outputs])
+    }
+
     // Every 2 s tick: once a minute, with screen time on and the session
     // unlocked, adds the minute (and the focused app) to the local history.
     fn screen_time_tick(&mut self, now: Instant) -> Task<Message> {
@@ -1519,7 +1531,7 @@ impl Shell {
 
     // Each tick: gives the compositor the mirroring setting when it changed,
     // and while mirroring every 10 s (`system_due`) so a new display joins.
-    fn mirror_tick(&mut self, system_due: bool) -> Task<Message> {
+    pub(crate) fn mirror_tick(&mut self, system_due: bool) -> Task<Message> {
         let wanted = self.desired_settings.display_mirror;
         if self.mirror_busy || (self.mirror_applied == Some(wanted) && !(wanted && system_due)) {
             return Task::none();

@@ -1,16 +1,12 @@
 //! When the desktop's periodic work runs.
 //!
 //! The shell tick fires every 2 s only while something on screen needs it (a
-//! countdown, an open panel, a sharing grant nobody watches). Otherwise it
-//! fires at the next minute boundary, for the clock, and at least every 10 s,
-//! for the system's state. The periodic jobs keep their own deadlines, so a
-//! slower tick changes when they are noticed, not how often they run.
+//! countdown, an open panel, or a sharing grant without a watch). The idle
+//! tick aligns background maintenance with the clock's minute boundary.
 use std::time::{Duration, Instant};
 
 /// The tick while something needs it.
 pub(crate) const FAST_TICK: Duration = Duration::from_secs(2);
-/// The longest an idle tick waits.
-pub(crate) const SLOW_TICK: Duration = Duration::from_secs(10);
 
 /// A job that runs every `every`, first at `next`.
 #[derive(Clone, Copy, Debug)]
@@ -84,12 +80,11 @@ impl Schedule {
 }
 
 /// The tick's period: [`FAST_TICK`] while `busy`, otherwise until just after
-/// the next minute of `seconds_into_minute` (so the clock turns on time), and
-/// never longer than [`SLOW_TICK`].
+/// the next minute of `seconds_into_minute`.
 pub(crate) fn tick_period(busy: bool, seconds_into_minute: f64) -> Duration {
     if busy {
         return FAST_TICK;
     }
     let left = (60.0 - seconds_into_minute.clamp(0.0, 60.0)).max(0.0) + 0.05;
-    Duration::from_secs_f64(left).clamp(Duration::from_millis(50), SLOW_TICK)
+    Duration::from_secs_f64(left)
 }

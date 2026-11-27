@@ -1,5 +1,5 @@
 use super::{
-    CAPTION_GAP, Message, Phase, RING, Spread, SpreadMessage, framed_picture, picture_button,
+    CAPTION_GAP, Message, Phase, RING, Rect, Spread, SpreadMessage, framed_picture, picture_button,
     tile_caption, tile_label,
 };
 use enzui_shell::presentation::{Projected, inverse_event};
@@ -60,6 +60,8 @@ pub(super) fn tiles<'a>(
     spread: &'a Spread,
     window: window::Id,
     palette: &enzui_theme::Palette,
+    strip: Option<(Rect, Element<'a, Message>)>,
+    strip_offset: f32,
 ) -> Element<'a, Message> {
     let reflow = spread.is_reflowing();
     let chosen = spread.chosen.filter(|_| spread.phase == Phase::Closing);
@@ -70,6 +72,17 @@ pub(super) fn tiles<'a>(
     let close_tile = if reflow { spread.current_tile() } else { None };
     let mut parts = Vec::new();
     let mut children = Vec::new();
+    if let Some((rect, child)) = strip {
+        parts.push(Part {
+            index: 0,
+            kind: PartKind::Strip {
+                rect,
+                offset: strip_offset,
+            },
+            interactive: reflow,
+        });
+        children.push(child);
+    }
     for index in order {
         let entry = &spread.entries[index];
         let gone = spread.entry_gone(entry);
@@ -94,7 +107,7 @@ pub(super) fn tiles<'a>(
         parts.push(Part {
             index,
             kind: PartKind::Picture { width: base.width },
-            interactive: !gone,
+            interactive: !gone && spread.swipe.get().is_none() && spread.settle.is_none(),
         });
         children.push(if gone {
             picture
@@ -138,6 +151,7 @@ pub(super) fn tiles<'a>(
 enum PartKind {
     Picture { width: f32 },
     Caption,
+    Strip { rect: Rect, offset: f32 },
 }
 
 struct Part {
@@ -175,6 +189,15 @@ impl Tiles<'_> {
         origin: Point,
         sample: MotionSample,
     ) -> Option<(Transformation, f32)> {
+        if let PartKind::Strip { rect, offset } = part.kind {
+            return Some((
+                Transformation::translate(
+                    origin.x + rect.x,
+                    origin.y + rect.y + offset * (1.0 - sample.travel),
+                ),
+                sample.travel,
+            ));
+        }
         let entry = &self.spread.entries[part.index];
         let (r, caption, alpha) = if let Some(t) = sample.reflow {
             self.spread.tile_motion(part.index, t)?
@@ -189,6 +212,7 @@ impl Tiles<'_> {
                 let scale = r.width / width.max(1.0);
                 (r.x - RING * scale, r.y - RING * scale, scale)
             }
+            PartKind::Strip { .. } => unreachable!(),
             PartKind::Caption => (
                 r.x + (r.width - size.width) / 2.0,
                 caption + CAPTION_GAP,
@@ -221,7 +245,7 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Tiles<'_> {
     }
 
     fn frame_interest(&self, _: &Tree) -> bool {
-        self.spread.animating()
+        self.spread.animating() || self.spread.tracking_swipe()
     }
 
     fn operate(
@@ -269,7 +293,9 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Tiles<'_> {
         viewport: &Rectangle,
     ) {
         if let Event::Window(window::Event::RedrawRequested(at)) = event {
-            if self.spread.animating() {
+            if self.spread.tracking_swipe() {
+                shell.request_redraw();
+            } else if self.spread.animating() {
                 if self.spread.sample_frame(*at) {
                     shell.publish(Message::Spread(SpreadMessage::MotionFinished(
                         self.window,
@@ -366,6 +392,9 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Tiles<'_> {
             else {
                 continue;
             };
+            if alpha <= 0.0 {
+                continue;
+            }
             let inverse = transform.inverse();
             let draw = |renderer: &mut iced::Renderer| {
                 renderer.with_transformation(transform, |renderer| {

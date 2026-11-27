@@ -93,6 +93,7 @@ struct Shell {
     activities: bool,
     // A desktop chosen in the overview is coming up; the overview follows it.
     activities_following: bool,
+    activities_swipe: Option<activities::Swipe>,
     emoji: shell_emoji::EmojiPicker,
     writing: shell_writing::WritingTools,
     capture: shell_capture::Capture,
@@ -366,6 +367,7 @@ impl Shell {
             spread: Default::default(),
             activities: false,
             activities_following: false,
+            activities_swipe: None,
             emoji: Default::default(),
             writing: Default::default(),
             capture: Default::default(),
@@ -606,6 +608,13 @@ impl Shell {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        if let Message::OverviewSwipe(enzui_shell::commands::OverviewSwipe::Update(progress)) =
+            message
+        {
+            // The spread samples the latest position on its own redraws.
+            self.update_activities_swipe(progress);
+            return window::invalidate(window::Invalidation::none());
+        }
         self.quiet = false;
         self.redraw_only = None;
         let traced = message_trace().map(|_| message.trace_kind());
@@ -778,6 +787,7 @@ impl Shell {
             }
             Message::Activity(message) => self.activity_message(message),
             Message::Command(command) => self.run_command(command),
+            Message::OverviewSwipe(swipe) => self.activities_swipe(swipe),
             Message::Osd(message) => self.osd_message(message),
             Message::Dictation(message) => self.dictation_message(message),
             Message::GlassBound(id, result) => self.glass_bound(id, result),

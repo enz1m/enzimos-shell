@@ -129,8 +129,89 @@ impl Command {
     }
 }
 
+/// A vertical three-finger swipe from the compositor's gesture bindings.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum OverviewSwipe {
+    /// Motion crossed the compositor's axis-lock threshold.
+    Begin {
+        /// An upward swipe requests opening.
+        opening: bool,
+    },
+    /// Signed travel toward the requested endpoint, clamped to the unit interval.
+    Update(f32),
+    /// The fingers lifted or the compositor cancelled the gesture.
+    End {
+        /// Travel in the unit interval.
+        progress: f32,
+        /// Release velocity in progress units per second toward the requested endpoint.
+        velocity: f32,
+        /// An interrupted gesture returns to its original endpoint.
+        cancelled: bool,
+    },
+    /// Gesture reporting was interrupted by a settings change or disconnect.
+    Cancel,
+}
+
+/// Input from the compositor's event socket.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Event {
+    /// A discrete compositor binding.
+    Command(Command),
+    /// A sample from the overview swipe.
+    OverviewSwipe(OverviewSwipe),
+}
+
+impl Event {
+    fn parse(line: &[u8]) -> Option<Self> {
+        if let Some(command) = Command::parse(line) {
+            return Some(Self::Command(command));
+        }
+        let text = std::str::from_utf8(line).ok()?.trim_end();
+        let swipe = match text {
+            "configreloaded>>" | "custom>>enzui-overview-swipe:cancel" => OverviewSwipe::Cancel,
+            "custom>>enzui-overview-swipe:begin:up" => OverviewSwipe::Begin { opening: true },
+            "custom>>enzui-overview-swipe:begin:down" => OverviewSwipe::Begin { opening: false },
+            _ => {
+                let mut fields = text
+                    .strip_prefix("custom>>enzui-overview-swipe:")?
+                    .split(':');
+                let phase = fields.next()?;
+                let progress = fields.next()?.parse().ok()?;
+                if !(0.0..=1.0).contains(&progress) {
+                    return None;
+                }
+                let sample = match phase {
+                    "update" => OverviewSwipe::Update(progress),
+                    "end" => {
+                        let velocity = fields.next()?.parse().ok()?;
+                        if !(-8.0..=8.0).contains(&velocity) {
+                            return None;
+                        }
+                        let cancelled = match fields.next()? {
+                            "0" => false,
+                            "1" => true,
+                            _ => return None,
+                        };
+                        OverviewSwipe::End {
+                            progress,
+                            velocity,
+                            cancelled,
+                        }
+                    }
+                    _ => return None,
+                };
+                if fields.next().is_some() {
+                    return None;
+                }
+                sample
+            }
+        };
+        Some(Self::OverviewSwipe(swipe))
+    }
+}
+
 /// Commands from the compositor's event socket, reconnecting after a loss.
-pub fn subscription(socket: Option<std::path::PathBuf>) -> iced::Subscription<Command> {
+pub fn subscription(socket: Option<std::path::PathBuf>) -> iced::Subscription<Event> {
     iced::Subscription::run_with(socket, stream)
 }
 
@@ -138,9 +219,7 @@ pub fn subscription(socket: Option<std::path::PathBuf>) -> iced::Subscription<Co
     clippy::ref_option,
     reason = "Subscription::run_with borrows its hashed Option<PathBuf> data as a whole."
 )]
-fn stream(
-    socket: &Option<std::path::PathBuf>,
-) -> impl iced::futures::Stream<Item = Command> + use<> {
+fn stream(socket: &Option<std::path::PathBuf>) -> impl iced::futures::Stream<Item = Event> + use<> {
     use iced::futures::SinkExt;
     use std::os::unix::fs::MetadataExt;
     use tokio::io::{AsyncBufReadExt, AsyncReadExt};
@@ -167,13 +246,20 @@ fn stream(
                         Ok(0) | Err(_) => break,
                         Ok(_) if line.len() > 65536 => break,
                         Ok(_) => {
-                            if let Some(command) = Command::parse(&line)
-                                && output.send(command).await.is_err()
+                            if let Some(event) = Event::parse(&line)
+                                && output.send(event).await.is_err()
                             {
                                 return;
                             }
                         }
                     }
+                }
+                if output
+                    .send(Event::OverviewSwipe(OverviewSwipe::Cancel))
+                    .await
+                    .is_err()
+                {
+                    return;
                 }
             }
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;

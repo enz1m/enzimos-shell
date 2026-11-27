@@ -1,6 +1,6 @@
 use super::{Message, Shell};
 use crate::shell_osd::Level;
-use enzui_shell::commands::Command;
+use enzui_shell::commands::{Command, Event};
 use enzui_shell::i18n::tr;
 use enzui_shell::settings::Change as SettingChange;
 use enzui_shell::system_controls::Action;
@@ -10,7 +10,10 @@ const STEP: u8 = 5;
 
 impl Shell {
     pub(crate) fn command_subscription(&self) -> iced::Subscription<Message> {
-        self.compositor.commands().map(Message::Command)
+        self.compositor.commands().map(|event| match event {
+            Event::Command(command) => Message::Command(command),
+            Event::OverviewSwipe(swipe) => Message::OverviewSwipe(swipe),
+        })
     }
 
     pub(crate) fn run_command(&mut self, command: Command) -> Task<Message> {

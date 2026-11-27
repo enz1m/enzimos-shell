@@ -7,8 +7,8 @@ use super::{
 };
 
 impl Compositor {
-    /// Shell commands raised by key bindings (`crate::commands`).
-    pub fn commands(&self) -> iced::Subscription<crate::commands::Command> {
+    /// Shell input raised by compositor bindings.
+    pub fn commands(&self) -> iced::Subscription<crate::commands::Event> {
         let socket = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())

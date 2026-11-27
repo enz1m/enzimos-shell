@@ -82,6 +82,53 @@ struct MotionFrames {
     latest: Instant,
 }
 
+#[derive(Debug)]
+struct SwipeSettle {
+    from: f32,
+    to: f32,
+    velocity: f32,
+    slope: f32,
+    duration: f32,
+}
+
+impl SwipeSettle {
+    fn new(from: f32, to: f32, velocity: f32, duration: f32) -> Self {
+        let mut settle = Self {
+            from,
+            to,
+            velocity,
+            slope: 0.0,
+            duration: 0.0,
+        };
+        settle.set_duration(duration);
+        settle
+    }
+
+    fn set_duration(&mut self, duration: f32) {
+        let distance = self.to - self.from;
+        self.duration = if distance.abs() < 0.001 {
+            0.0
+        } else {
+            duration * (0.55 + 0.45 * distance.abs())
+        };
+        self.slope = if self.duration > 0.0 {
+            (self.velocity * self.duration / distance).clamp(0.0, 3.0)
+        } else {
+            0.0
+        };
+    }
+
+    fn position(&self, elapsed: f32) -> f32 {
+        let t = if self.duration > 0.0 {
+            (elapsed / self.duration).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let fraction = (ease_in_out(t) + self.slope * t * (1.0 - t).powi(2)).clamp(0.0, 1.0);
+        self.from + (self.to - self.from) * fraction
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct Spread {
     phase: Phase,
@@ -101,6 +148,9 @@ pub(crate) struct Spread {
     frames: Cell<Option<MotionFrames>>,
     // The originals are being hidden; the motion starts once they are.
     hiding: bool,
+    hidden: bool,
+    swipe: Cell<Option<f32>>,
+    settle: Option<SwipeSettle>,
     // How far out the windows were when closing began.
     closing_from: f32,
     duration: f32,
@@ -189,10 +239,52 @@ impl Spread {
         self.phase != Phase::Idle
     }
 
+    pub(crate) fn begin_swipe(&mut self) -> Option<f32> {
+        if !matches!(self.phase, Phase::Loading | Phase::Opening | Phase::Open) {
+            return None;
+        }
+        let at = self.sampled_at(Instant::now());
+        let from = self.progress(at);
+        self.freeze_reflow(at);
+        self.swipe.set(Some(from));
+        self.settle = None;
+        self.started = None;
+        self.frames.set(None);
+        if self.phase == Phase::Open {
+            self.phase = Phase::Opening;
+        }
+        Some(from)
+    }
+
+    pub(crate) fn reverse_swipe_close(&mut self) -> Option<f32> {
+        if self.phase != Phase::Closing
+            || self.settle.is_none()
+            || (self.hidden && self.started.is_none())
+        {
+            return None;
+        }
+        self.phase = Phase::Opening;
+        self.begin_swipe()
+    }
+
+    pub(crate) fn update_swipe(&self, progress: f32) {
+        if self.swipe.get().is_some() {
+            self.swipe.set(Some(progress));
+        }
+    }
+
     fn progress(&self, now: Instant) -> f32 {
         let elapsed = self.frames.get().map_or(0.0, |frames| {
             now.saturating_duration_since(frames.first).as_secs_f32()
         });
+        if self.hidden {
+            if let Some(progress) = self.swipe.get() {
+                return progress;
+            }
+            if let Some(settle) = &self.settle {
+                return settle.position(elapsed);
+            }
+        }
         let t = if self.duration <= 0.0 {
             1.0
         } else {
@@ -225,11 +317,16 @@ impl Spread {
 
     fn motion_finished(&self, at: Instant) -> bool {
         self.frames.get().is_some_and(|frames| {
-            let duration = if self.phase == Phase::Open {
-                DURATION
-            } else {
-                self.duration
-            };
+            let duration = self.settle.as_ref().map_or_else(
+                || {
+                    if self.phase == Phase::Open {
+                        DURATION
+                    } else {
+                        self.duration
+                    }
+                },
+                |settle| settle.duration,
+            );
             at >= frames.first && at.duration_since(frames.first).as_secs_f32() >= duration
         })
     }
@@ -245,6 +342,10 @@ impl Spread {
             latest: at,
         }));
         !finished && self.motion_finished(at)
+    }
+
+    fn tracking_swipe(&self) -> bool {
+        self.hidden && self.swipe.get().is_some()
     }
 
     fn animating(&self) -> bool {
@@ -685,7 +786,6 @@ impl Shell {
                             ..Spread::default()
                         };
                         eprintln!("enzui-shell spread: {error}");
-                        // Search, opened with it, stays on its own.
                         self.overview_spread_failed();
                         self.refresh_overview_search()
                     }
@@ -704,13 +804,22 @@ impl Shell {
             SpreadMessage::Presented(id) => self.spread_presented(id),
             SpreadMessage::Hidden(sent, Err(error)) if sent == generation => {
                 eprintln!("enzui-shell spread: {error}");
-                self.close_spread(None)
+                if self.spread.phase == Phase::Closing && self.spread.settle.is_some() {
+                    self.end_spread()
+                } else {
+                    self.close_spread(None)
+                }
             }
             SpreadMessage::Hidden(sent, Ok(())) if sent == generation => {
+                self.spread.hidden = true;
                 // The motion starts once the originals are hidden: the
                 // compositor's work to hide them stalls the first frames,
                 // and a clock started before would jump.
-                if self.spread.phase == Phase::Opening && self.spread.started.is_none() {
+                if self.spread.swipe.get().is_none()
+                    && self.spread.started.is_none()
+                    && (self.spread.phase == Phase::Opening
+                        || (self.spread.phase == Phase::Closing && self.spread.settle.is_some()))
+                {
                     self.spread.started = Some(Instant::now());
                     self.spread.frames.set(None);
                 }
@@ -725,6 +834,7 @@ impl Shell {
                 match self.spread.phase {
                     Phase::Opening => {
                         self.spread.started = None;
+                        self.spread.settle = None;
                         self.spread.phase = Phase::Open;
                         if self.activities {
                             self.redraw_only = None;
@@ -864,6 +974,9 @@ impl Shell {
                     self.desired_settings.compositor.animation_rate,
                 )
         };
+        if let Some(settle) = &mut self.spread.settle {
+            settle.set_duration(self.spread.duration);
+        }
         self.spread.window = Some(id);
         self.spread.selected = None;
         self.spread.ready = false;
@@ -943,6 +1056,29 @@ impl Shell {
         )
     }
 
+    pub(crate) fn settle_spread_swipe(
+        &mut self,
+        position: Option<f32>,
+        open: bool,
+        velocity: f32,
+    ) -> Task<Message> {
+        let Some(tracked) = self.spread.swipe.take() else {
+            return Task::none();
+        };
+        if !open && !self.spread.hiding {
+            return self.end_spread();
+        }
+        let from = position.unwrap_or(tracked);
+        let to = if open { 1.0 } else { 0.0 };
+        if self.spread.phase != Phase::Loading {
+            self.spread.phase = if open { Phase::Opening } else { Phase::Closing };
+        }
+        self.spread.settle = Some(SwipeSettle::new(from, to, velocity, self.spread.duration));
+        self.spread.frames.set(None);
+        self.spread.started = self.spread.hidden.then(Instant::now);
+        Task::none()
+    }
+
     pub(crate) fn close_spread(&mut self, chosen: Option<usize>) -> Task<Message> {
         let with_search = self.activities;
         let search = self.overview_spread_closing();
@@ -955,6 +1091,8 @@ impl Shell {
                 let now = Instant::now();
                 let sample = self.spread.sampled_at(now);
                 self.spread.closing_from = self.spread.progress(sample);
+                self.spread.swipe.set(None);
+                self.spread.settle = None;
                 self.spread.freeze_reflow(sample);
                 self.spread.phase = Phase::Closing;
                 self.spread.chosen = chosen.filter(|index| *index < self.spread.entries.len());
@@ -1241,21 +1379,10 @@ impl Shell {
                 );
             }
         }
-        let from = if self.bar == enzui_shell::settings::BarEdge::Bottom {
-            12.0
-        } else {
-            -12.0
-        };
-        let shown = enzui_widgets::motion::animated(
-            container(cards).center_x(strip.width).height(strip.height),
-        )
-        .enters_from(iced::Vector::new(0.0, from), 0.0)
-        .opacity(if self.spread.phase == Phase::Closing {
-            0.0
-        } else {
-            1.0
-        });
-        pin(shown).x(strip.x).y(strip.y).into()
+        container(cards)
+            .center_x(strip.width)
+            .height(strip.height)
+            .into()
     }
 
     pub(crate) fn spread_view(&self, id: window::Id) -> Option<Element<'_, Message>> {
@@ -1268,13 +1395,28 @@ impl Shell {
             .on_press(Message::Spread(SpreadMessage::Dismiss));
         let mut layers: Vec<Element<'_, Message>> = vec![scrim.into()];
         if self.spread.ready {
-            if let Some(strip) = self.spread.strip {
-                layers.push(self.overview_strip(strip, &palette));
-            }
+            let strip = self
+                .spread
+                .strip
+                .map(|rect| (rect, self.overview_strip(rect, &palette)));
             if self.spread.phase == Phase::Open && !self.spread.is_reflowing() {
+                if let Some((rect, strip)) = strip {
+                    layers.push(pin(strip).x(rect.x).y(rect.y).into());
+                }
                 self.resting_tiles(&palette, &mut layers);
             } else {
-                layers.push(motion::tiles(&self.spread, id, &palette));
+                let direction = if self.bar == enzui_shell::settings::BarEdge::Bottom {
+                    1.0
+                } else {
+                    -1.0
+                };
+                layers.push(motion::tiles(
+                    &self.spread,
+                    id,
+                    &palette,
+                    strip,
+                    12.0 * direction,
+                ));
             }
         }
         Some(
@@ -1496,6 +1638,53 @@ mod tests {
         let _ = shell.spread_message(SpreadMessage::Dismiss);
         assert!(shell.spread.phase == Phase::Closing);
         assert_eq!(shell.redraw_only, Some(id));
+    }
+
+    #[test]
+    fn swipes_follow_distance_before_release_and_settle_from_the_shown_position() {
+        use enzui_shell::commands::OverviewSwipe;
+
+        let compositor = enzui_shell::compositor::Compositor::new(
+            std::path::PathBuf::from("/usr/bin/true"),
+            "fixture".into(),
+        )
+        .unwrap();
+        let mut shell = Shell::new(compositor, std::path::PathBuf::from("/")).0;
+        shell.metrics.islands = Some(enzui_shell::shell_style::Islands::default());
+        let _ = shell.activities_swipe(OverviewSwipe::Begin { opening: true });
+        assert_eq!(shell.spread.phase, Phase::Loading);
+        assert!(!shell.search.showing);
+
+        shell.spread.phase = Phase::Opening;
+        shell.spread.duration = DURATION;
+        shell.spread.hiding = true;
+        shell.update_activities_swipe(0.25);
+        let generation = shell.spread.generation;
+        assert_eq!(shell.spread.progress(Instant::now()), 0.0);
+        let _ = shell.spread_message(SpreadMessage::Hidden(generation, Ok(())));
+        assert_eq!(shell.spread.progress(Instant::now()), 0.25);
+
+        let _ = shell.activities_swipe(OverviewSwipe::End {
+            progress: 0.25,
+            velocity: 3.0,
+            cancelled: false,
+        });
+        let first = Instant::now();
+        assert!(!shell.spread.sample_frame(first));
+        assert_eq!(shell.spread.progress(first), 0.25);
+        let rest = first + Duration::from_secs(1);
+        assert!(shell.spread.sample_frame(rest));
+        assert_eq!(shell.spread.progress(rest), 1.0);
+
+        let _ = shell.activities_swipe(OverviewSwipe::Begin { opening: false });
+        shell.update_activities_swipe(0.6);
+        assert!((shell.spread.progress(Instant::now()) - 0.4).abs() < 1e-5);
+        let _ = shell.activities_swipe(OverviewSwipe::Cancel);
+        let first = Instant::now();
+        assert!(!shell.spread.sample_frame(first));
+        assert!((shell.spread.progress(first) - 0.4).abs() < 1e-5);
+        assert_eq!(shell.spread.progress(first + Duration::from_secs(1)), 1.0);
+        assert!(shell.activities);
     }
 
     #[test]

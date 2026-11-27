@@ -23,6 +23,43 @@ function enzui_apply_window_borders()
     hl.config({general={col={active_border=active,inactive_border=inactive}}})
     tiled_border_rule(tiled,inactive)
 end
+local function overview_swipe(direction)
+    local distance = 300
+    local sign = direction == "up" and -1 or 1
+    local active, travel, velocity, last_time
+    local function emit(payload)
+        hl.dispatch(hl.dsp.event("enzui-overview-swipe:" .. payload))
+    end
+    return {
+        start = function()
+            active = direction == "down" or not enzui_fullscreen_focused()
+            travel, velocity, last_time = 0, 0, nil
+            if active then emit("begin:" .. direction) end
+        end,
+        update = function(event)
+            if not active then return end
+            local delta = sign * event.delta.y / distance
+            local elapsed = last_time and (event.time_ms - last_time) % 4294967296
+            if elapsed and elapsed > 0 then
+                local weight = 1 - math.exp(-elapsed / 35)
+                velocity = velocity + weight * (delta * 1000 / elapsed - velocity)
+            end
+            last_time = event.time_ms
+            travel = travel + delta
+            emit(string.format("update:%.4f", math.max(0, math.min(1, travel))))
+        end,
+        finish = function(event)
+            if not active then return end
+            active = false
+            local cancelled = event.cancelled or (direction == "up" and enzui_fullscreen_focused())
+            local idle = last_time and (event.time_ms - last_time) % 4294967296 or 110
+            local release = idle < 110 and velocity * math.min(1, (110 - idle) / 70) or 0
+            emit(string.format("end:%.4f:%.4f:%d", math.max(0, math.min(1, travel)),
+                math.max(-8, math.min(8, release)), cancelled and 1 or 0))
+        end,
+    }
+end
+
 function enzui_apply_desktop_preferences(inner,outer,border,rounding,animations,focus_pointer,natural,pointer_speed,animation_rate,device)
     local function integer(value,min,max)
         assert(type(value)=="number" and value%1==0 and value>=min and value<=max,"Invalid desktop preference")
@@ -76,16 +113,11 @@ function enzui_apply_desktop_preferences(inner,outer,border,rounding,animations,
     -- A compositor config reload clears both the gesture bindings and this Lua state.
     if device.gestures and not enzui_trackpad_gestures then
         hl.gesture({fingers=3,direction="horizontal",action="workspace"})
-        hl.gesture({fingers=3,direction="up",action={finish=function(event)
-            if not event.cancelled and not enzui_fullscreen_focused() then
-                hl.dispatch(hl.dsp.event("enzui-command:show-activities"))
-            end
-        end}})
-        hl.gesture({fingers=3,direction="down",action={finish=function(event)
-            if not event.cancelled then hl.dispatch(hl.dsp.event("enzui-command:dismiss-activities")) end
-        end}})
+        hl.gesture({fingers=3,direction="up",action=overview_swipe("up")})
+        hl.gesture({fingers=3,direction="down",action=overview_swipe("down")})
         enzui_trackpad_gestures=true
     elseif not device.gestures and enzui_trackpad_gestures then
+        hl.dispatch(hl.dsp.event("enzui-overview-swipe:cancel"))
         hl.gesture({fingers=3,direction="horizontal",action="unset"})
         hl.gesture({fingers=3,direction="up",action="unset"})
         hl.gesture({fingers=3,direction="down",action="unset"})

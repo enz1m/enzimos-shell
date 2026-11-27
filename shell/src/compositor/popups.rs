@@ -875,6 +875,37 @@ impl Compositor {
         }
     }
 
+    /// Asks the application to close a window currently represented in the spread.
+    pub async fn spread_request_close(&self, id: u64) -> Result<(), String> {
+        let owner = std::process::id();
+        let reply = self
+            .request(&[
+                "eval",
+                &format!("return enzui_spread_request_close({owner}, '{id:x}')"),
+            ])
+            .await?;
+        if reply.trim() == "ok" {
+            Ok(())
+        } else {
+            Err(tr("shell-overview-window-close-failed").into())
+        }
+    }
+
+    /// Returns mapped window identities so a close request is confirmed by disappearance.
+    pub async fn spread_live_windows(&self) -> Result<std::collections::HashSet<u64>, String> {
+        let response = self.request(&["-j", "clients"]).await?;
+        if response.len() > 2 * 1024 * 1024 {
+            return Err(tr("shell-window-list-is-too-large").into());
+        }
+        let windows: Vec<serde_json::Value> =
+            serde_json::from_str(&response).map_err(|_| tr("shell-invalid-window-list"))?;
+        Ok(windows
+            .into_iter()
+            .filter(|window| window["mapped"] != false)
+            .filter_map(|window| u64::from_str_radix(window["stableId"].as_str()?, 16).ok())
+            .collect())
+    }
+
     /// Shows the spread's windows again and focuses the given stable window ID.
     pub async fn spread_restore(&self, focus: Option<u64>) -> Result<(), String> {
         let focus = focus.map_or_else(|| "nil".into(), |id| format!("'{id:x}'"));

@@ -497,10 +497,11 @@ impl Shell {
                 let epoch = self.search.epoch;
                 let revision = self.search.focus_revision;
                 let overview = self.search.overview;
+                let close_prompt_pids = self.spread_close_prompt_pids();
                 perform(
                     async move {
                         compositor
-                            .search_focus_retained(overview)
+                            .search_focus_retained(overview, &close_prompt_pids)
                             .await
                             .unwrap_or(false)
                     },

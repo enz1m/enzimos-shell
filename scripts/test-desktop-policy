@@ -12,9 +12,10 @@ function hl.window_rule(rule)
     rules[rule.name] = target
 end
 function hl.get_windows() return windows end
+function hl.get_active_window() return focused_window end
 function hl.get_workspaces() return { { id = 1 }, { id = 2 } } end
 function hl.get_active_workspace() return { id = 1 } end
-for _, name in ipairs({ "float", "resize", "move", "set_prop", "alter_zorder" }) do
+for _, name in ipairs({ "float", "resize", "move", "set_prop", "alter_zorder", "close" }) do
     hl.dsp.window[name] = function(args) args.kind = name; return args end
 end
 function hl.dispatch(args)
@@ -25,6 +26,7 @@ function hl.dispatch(args)
     elseif args.kind == "set_prop" then window[args.prop] = args.value
     elseif args.kind == "alter_zorder" then window.raised = args.mode
     elseif args.kind == "focus" then focused_window = window
+    elseif args.kind == "close" then window.close_requested = true
     else error("Unexpected dispatch") end
     return { ok = true }
 end
@@ -117,12 +119,22 @@ assert(not pcall(enzui_set_desktop_modes, "false", {}))
 -- The window spread hides a floating desktop's windows and brings them back.
 local front, back, elsewhere = window('0x30'), window('0x31'), window('0x32')
 front.workspace = { id = 1 }; back.workspace = { id = 1 }; elsewhere.workspace = { id = 2 }
-front.stable_id = '18000000'; back.stable_id = '18000001'
+front.stable_id = '18000000'; back.stable_id = '18000001'; elsewhere.stable_id = '18000003'
 windows = { front, back, elsewhere, controls }
 assert(enzui_set_desktop_modes(false, {}) == "ok")
 assert(enzui_spread_hide({ '0x30', '0x31', '0x32', '0x9' }) == "ok")
 assert(front.opacity == "0" and front.opacity_inactive == "0" and back.opacity == "0")
 assert(elsewhere.opacity == nil and controls.opacity == nil, "only this desktop's app windows")
+local spread_surface = window('0x33', "dev.enzui.WindowSpread")
+local search_surface = window('0x34', "dev.enzui.QuickSearch")
+spread_surface.pid = 42; search_surface.pid = 42
+spread_surface.workspace = { id = 1 }; search_surface.workspace = { id = 1 }
+windows = { front, back, elsewhere, controls, spread_surface, search_surface }
+focused_window = spread_surface
+assert(enzui_spread_request_close(42, front.stable_id).ok and front.close_requested)
+assert(front.mapped and front.opacity == "0", "a close request leaves the client free to cancel")
+assert(focused_window == search_surface)
+assert(not enzui_spread_request_close(42, elsewhere.stable_id).ok and not elsewhere.close_requested)
 assert(enzui_spread_restore(back.stable_id) == "ok")
 assert(front.opacity == "1" and back.opacity_inactive == "1" and focused_window == back and back.raised == "top")
 assert(not config.no_warps, "warps restored after focusing")

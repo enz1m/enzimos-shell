@@ -12,7 +12,9 @@ focus it and close the overview. Each desktop numbers its windows from oldest to
 newest. The first nine use **1–9**, the tenth uses **0**, and additional windows
 have no digit shortcut. Use the arrow keys to move between any thumbnails and
 press **Enter** to choose one. Once you start a query, digits, arrows and Enter
-work in Search.
+work in Search. To close a window, hover over its thumbnail or select it and
+use its close button. On a touchscreen, tap the window caption to select it.
+With Search empty, **Delete** closes the selected window.
 
 ## Build and preview
 

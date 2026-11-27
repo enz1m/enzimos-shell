@@ -196,6 +196,7 @@ impl Shell {
                 Task::batch([
                     desktops,
                     snapshot,
+                    self.check_spread_windows(),
                     self.refresh_sidebar(None),
                     self.check_outputs(),
                 ])

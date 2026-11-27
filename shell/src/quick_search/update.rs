@@ -528,8 +528,11 @@ impl Shell {
                     return Task::none();
                 }
                 if let Some(action) = self.activities_window_key(&key, modifiers) {
-                    return if repeat && matches!(key, Key::Character(_) | Key::Named(Named::Enter))
-                    {
+                    return if repeat
+                        && matches!(
+                            key,
+                            Key::Character(_) | Key::Named(Named::Enter | Named::Delete)
+                        ) {
                         Task::none()
                     } else {
                         self.spread_message(action)

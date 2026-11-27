@@ -151,6 +151,7 @@ end
 
 -- Restore hidden windows if the spread overlay disappears or its desktop changes.
 enzui_desktop.spread = enzui_desktop.spread or {}
+enzui_desktop.spread_closing = enzui_desktop.spread_closing or {}
 
 local function set_opacity(window, value)
     hl.dispatch(hl.dsp.window.set_prop({ prop = "opacity", value = value, window = window }))
@@ -184,6 +185,42 @@ function enzui_spread_hide(addresses)
     return "ok"
 end
 
+function enzui_spread_request_close(owner, id)
+    for address, window in pairs(enzui_desktop.spread) do
+        if window.mapped and window.address == address and window.stable_id == id
+            and regular(window) and workspace_of(window) == active_id() then
+            local active = hl.get_active_window()
+            if active and active.pid == owner and active.class == "dev.enzui.WindowSpread" then
+                for _, popup in ipairs(hl.get_windows()) do
+                    if popup.mapped and popup.pid == owner and popup.class == "dev.enzui.QuickSearch"
+                        and workspace_of(popup) == active_id() then
+                        hl.dispatch(hl.dsp.focus({ window = popup }))
+                        break
+                    end
+                end
+            end
+            enzui_desktop.spread_closing[id] = true
+            local result = hl.dispatch(hl.dsp.window.close({ window = window }))
+            if not result.ok then enzui_desktop.spread_closing[id] = nil end
+            return result
+        end
+    end
+    return { ok = false, error = "Window is no longer in the spread" }
+end
+
+local function spread_prompt_focused(window)
+    local old = enzui_desktop.spread_prompt
+    local id = window and window.stable_id
+    if old and old.mapped and old.stable_id == id then return end
+    if old and old.mapped and enzui_desktop.spread[old.address] then set_opacity(old, "0") end
+    enzui_desktop.spread_prompt = nil
+    if id and enzui_desktop.spread_closing[id] and window.mapped then
+        -- A client can show its save prompt inside the original surface.
+        set_opacity(window, "1")
+        enzui_desktop.spread_prompt = window
+    end
+end
+
 function enzui_spread_restore(focus)
     assert(focus == nil or type(focus) == "string" and focus:match("^%x+$"), "Invalid window")
     for address, window in pairs(enzui_desktop.spread) do
@@ -194,6 +231,8 @@ function enzui_spread_restore(focus)
         end
     end
     enzui_desktop.spread = {}
+    enzui_desktop.spread_closing = {}
+    enzui_desktop.spread_prompt = nil
     local target
     for _, window in ipairs(focus and hl.get_windows() or {}) do
         if window.stable_id == focus and regular(window) then target = window end
@@ -220,8 +259,10 @@ if hl.on and not enzui_desktop.spread_bindings then
     enzui_desktop.spread_bindings = {
         hl.on("window.close", function(window)
             if window and window.class == "dev.enzui.WindowSpread" then spread_gone() end
+            if window and window.stable_id then enzui_desktop.spread_closing[window.stable_id] = nil end
         end),
         hl.on("workspace.active", spread_gone),
+        hl.on("window.active", spread_prompt_focused),
     }
 end
 

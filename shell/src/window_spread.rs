@@ -1,10 +1,14 @@
+mod close;
+
 use super::{Message, Shell, window_settings};
+use close::{CloseState, caption_line};
 use enzui_core::semantics::{Role, Semantics};
 use enzui_shell::dock::{Geometry as DockGeometry, Position as DockPosition};
 use enzui_shell::i18n::tr;
 use enzui_shell::search::compositor::SpreadWindow;
 use enzui_shell::spread_layout::{self, Rect};
 use enzui_widgets::{
+    clickable::enz_clickable,
     focus_button::focus_button,
     icon::enz_icon,
     text::{enz_text, line_box_px},
@@ -23,6 +27,7 @@ const CAPTION_TEXT: f32 = 13.0;
 const CAPTION_GAP: f32 = 8.0;
 const CAPTION_PADDING_Y: f32 = 5.0;
 const RING: f32 = 5.0;
+const CLOSE_SIZE: f32 = 32.0;
 const WINDOW_KEYS: [&str; 10] = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"];
 // The overview's desktops strip: room between it, Search and the windows.
 const STRIP_GAP: f32 = 18.0;
@@ -54,6 +59,7 @@ pub(crate) struct Loaded {
     rounding: f32,
     area: [f32; 4],
     entries: Vec<Entry>,
+    insets: Padding,
     strip: Option<Rect>,
 }
 
@@ -73,7 +79,10 @@ pub(crate) struct Spread {
     rounding: f32,
     area: [f32; 4],
     entries: Vec<Entry>,
-    selected: Option<usize>,
+    selected: Option<u64>,
+    hovered: Option<u64>,
+    insets: Padding,
+    close: CloseState,
     chosen: Option<usize>,
     started: Option<Instant>,
     frame_at: Option<Instant>,
@@ -102,8 +111,13 @@ pub(crate) enum SpreadMessage {
     Presented(window::Id),
     Hidden(u64, Result<(), String>),
     Frame(window::Id, Instant),
-    Hover(usize),
-    Pick(usize),
+    Hover(u64),
+    Leave(u64),
+    Select(u64),
+    Pick(u64),
+    Close(u64),
+    CloseRequested(u64, u64, Result<(), String>),
+    LiveWindows(u64, Result<std::collections::HashSet<u64>, String>),
     Dismiss,
     Key(Named),
     Restored(u64, Result<(), String>),
@@ -112,6 +126,7 @@ pub(crate) enum SpreadMessage {
 }
 
 fn assign_window_keys(entries: &mut [Entry]) {
+    entries.iter_mut().for_each(|entry| entry.shortcut = None);
     let mut by_age: Vec<_> = (0..entries.len()).collect();
     by_age.sort_unstable_by_key(|&index| entries[index].window.stable_id);
     for (index, key) in by_age.into_iter().zip(WINDOW_KEYS) {
@@ -130,6 +145,7 @@ fn spread_navigation_key(key: &Key) -> bool {
 
 pub(crate) fn activities_key_candidate(key: &Key) -> bool {
     spread_navigation_key(key)
+        || matches!(key, Key::Named(Named::Delete))
         || matches!(key, Key::Character(text) if matches!(text.as_bytes(), [b'0'..=b'9']))
 }
 
@@ -190,7 +206,8 @@ impl Spread {
     }
 
     fn animating(&self) -> bool {
-        matches!(self.phase, Phase::Opening | Phase::Closing) && self.started.is_some()
+        self.is_reflowing()
+            || matches!(self.phase, Phase::Opening | Phase::Closing) && self.started.is_some()
     }
 }
 
@@ -229,16 +246,23 @@ fn arrange(windows: &[SpreadWindow], area: [f32; 4], insets: Padding) -> Vec<(Re
         .iter()
         .map(|w| Rect::new(w.at[0] - area[0], w.at[1] - area[1], w.size[0], w.size[1]))
         .collect();
+    let to = spread_places(&from, area, insets);
+    from.into_iter().zip(to).collect()
+}
+
+fn spread_places(from: &[Rect], area: [f32; 4], insets: Padding) -> Vec<Rect> {
     let room = Rect::new(
         insets.left + MARGIN,
         insets.top + MARGIN,
         (area[2] - insets.x() - 2.0 * MARGIN).max(1.0),
         (area[3] - insets.y() - 2.0 * MARGIN).max(1.0),
     );
+    spread_layout::layout(from, room, GAP, caption_height() + CAPTION_GAP)
+}
+
+fn caption_height() -> f32 {
     let text = enzui_theme::text_scale::effective().apply_px(CAPTION_TEXT);
-    let caption = line_box_px(text).max(18.0) + 2.0 * CAPTION_PADDING_Y + CAPTION_GAP;
-    let to = spread_layout::layout(&from, room, GAP, caption);
-    from.into_iter().zip(to).collect()
+    (line_box_px(text).max(20.0) + 2.0 * CAPTION_PADDING_Y).max(CLOSE_SIZE)
 }
 
 // Capture at the resting tile size to limit uploads.
@@ -321,6 +345,7 @@ async fn load(
         rounding,
         area,
         entries,
+        insets,
         strip,
     })
 }
@@ -367,6 +392,7 @@ impl Shell {
                         self.spread.rounding = loaded.rounding;
                         self.spread.area = loaded.area;
                         self.spread.entries = loaded.entries;
+                        self.spread.insets = loaded.insets;
                         self.spread.strip = loaded.strip;
                         self.open_spread_window()
                     }
@@ -425,6 +451,12 @@ impl Shell {
                         if self.activities {
                             self.redraw_only = None;
                         }
+                        self.check_spread_windows_if_dirty()
+                    }
+                    Phase::Open if self.spread.is_reflowing() => {
+                        if self.spread.finish_reflow_frame(at) {
+                            self.redraw_only = None;
+                        }
                         Task::none()
                     }
                     Phase::Closing if done && self.spread.started.take().is_some() => {
@@ -446,17 +478,42 @@ impl Shell {
                     _ => Task::none(),
                 }
             }
-            SpreadMessage::Hover(index) if self.spread.phase == Phase::Open => {
-                self.spread.selected = Some(index);
+            SpreadMessage::Hover(id)
+                if self.spread.phase == Phase::Open && !self.spread.is_reflowing() =>
+            {
+                self.spread.hovered = Some(id);
+                if self.spread.strip.is_none() {
+                    self.spread.selected = Some(id);
+                }
                 self.redraw_only = self.spread.window;
                 Task::none()
             }
-            // Moving tiles report hover as they pass under a resting pointer.
-            SpreadMessage::Hover(_) => {
+            SpreadMessage::Leave(id) if self.spread.hovered == Some(id) => {
+                self.spread.hovered = None;
+                self.redraw_only = self.spread.window;
+                Task::none()
+            }
+            SpreadMessage::Select(id) if self.spread.live_index(id).is_some() => {
+                self.spread.selected = Some(id);
+                self.redraw_only = self.spread.window;
+                Task::none()
+            }
+            SpreadMessage::Hover(_) | SpreadMessage::Leave(_) | SpreadMessage::Select(_) => {
                 self.quiet = true;
                 Task::none()
             }
-            SpreadMessage::Pick(index) => self.close_spread(Some(index)),
+            SpreadMessage::Pick(id) => self
+                .spread
+                .live_index(id)
+                .map_or_else(Task::none, |index| self.close_spread(Some(index))),
+            SpreadMessage::Close(id) => self.request_spread_close(id),
+            SpreadMessage::CloseRequested(sent, id, result) if sent == generation => {
+                self.spread_close_requested(id, result)
+            }
+            SpreadMessage::LiveWindows(sent, result) if sent == generation => {
+                self.spread_windows_read(result)
+            }
+            SpreadMessage::CloseRequested(..) | SpreadMessage::LiveWindows(..) => Task::none(),
             SpreadMessage::Dismiss => self.close_spread(None),
             SpreadMessage::Key(key) => {
                 self.redraw_only = self.spread.window;
@@ -605,7 +662,9 @@ impl Shell {
         let spread = match self.spread.phase {
             Phase::Opening | Phase::Open => {
                 let now = Instant::now();
-                self.spread.closing_from = self.spread.progress(self.spread.sampled_at(now));
+                let sample = self.spread.sampled_at(now);
+                self.spread.closing_from = self.spread.progress(sample);
+                self.spread.freeze_reflow(sample);
                 self.spread.phase = Phase::Closing;
                 self.spread.chosen = chosen.filter(|index| *index < self.spread.entries.len());
                 self.spread.started = Some(now);
@@ -694,8 +753,13 @@ impl Shell {
                 .spread
                 .entries
                 .iter()
-                .position(|entry| entry.shortcut == Some(digit.as_str()))
-                .map(SpreadMessage::Pick),
+                .find(|entry| {
+                    entry.shortcut == Some(digit.as_str()) && !self.spread.entry_gone(entry)
+                })
+                .map(|entry| SpreadMessage::Pick(entry.window.stable_id)),
+            Key::Named(Named::Delete) if modifiers.is_empty() => {
+                self.spread.current_tile().map(SpreadMessage::Close)
+            }
             Key::Named(named) if modifiers.is_empty() && spread_navigation_key(key) => {
                 Some(SpreadMessage::Key(*named))
             }
@@ -709,13 +773,19 @@ impl Shell {
         }
         // The window that had focus is stacked last: the arrows start there,
         // and Enter with nothing chosen picks it.
-        let focused = self.spread.entries.len().checked_sub(1);
-        if matches!(key, Named::Enter | Named::Space) {
-            return self.close_spread(self.spread.selected.or(focused));
-        }
-        let Some(selected) = self.spread.selected.or(focused) else {
+        let Some(selected) = self
+            .spread
+            .current_tile()
+            .and_then(|id| self.spread.live_index(id))
+        else {
             return Task::none();
         };
+        if matches!(key, Named::Enter | Named::Space) {
+            return self.close_spread(Some(selected));
+        }
+        if key == Named::Delete {
+            return self.request_spread_close(self.spread.entries[selected].window.stable_id);
+        }
         let current = &self.spread.entries[selected];
         let center = |r: Rect| (r.x + r.width / 2.0, r.y + r.height / 2.0);
         let (cx, cy) = center(current.to);
@@ -724,6 +794,7 @@ impl Shell {
             .entries
             .iter()
             .enumerate()
+            .filter(|(_, entry)| !self.spread.entry_gone(entry))
             .filter_map(|(index, entry)| {
                 let (x, y) = center(entry.to);
                 let (dx, dy) = (x - cx, y - cy);
@@ -742,7 +813,11 @@ impl Shell {
                 (ahead > 1.0).then_some((index, ahead + 2.0 * aside))
             })
             .min_by(|a, b| a.1.total_cmp(&b.1));
-        self.spread.selected = Some(best.map_or(selected, |(index, _)| index));
+        self.spread.selected = Some(
+            self.spread.entries[best.map_or(selected, |(index, _)| index)]
+                .window
+                .stable_id,
+        );
         Task::none()
     }
 
@@ -755,8 +830,13 @@ impl Shell {
             |event, status, window| match event {
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key: ref key @ Key::Named(named),
+                    modifiers,
+                    repeat,
                     ..
-                }) if status == iced::event::Status::Ignored && spread_navigation_key(key) => {
+                }) if status == iced::event::Status::Ignored
+                    && (spread_navigation_key(key)
+                        || named == Named::Delete && modifiers.is_empty() && !repeat) =>
+                {
                     Some((window, named))
                 }
                 _ => None,
@@ -901,8 +981,16 @@ impl Shell {
         }
         let tokens = self.window_tokens(Some(id));
         let palette = tokens.palette;
-        let p = self.spread.progress(self.spread.sampled_at(Instant::now()));
+        let at = self.spread.sampled_at(Instant::now());
+        let p = self.spread.progress(at);
         let open = self.spread.phase == Phase::Open;
+        let close_tile = if open && self.spread.strip.is_some() {
+            self.spread.current_tile()
+        } else {
+            None
+        };
+        let reflow = self.spread.reflow_progress(at);
+        let footer = caption_height();
         let scrim = iced::Color {
             a: 0.32 * p,
             ..iced::Color::BLACK
@@ -931,25 +1019,6 @@ impl Shell {
         if let Some(strip) = self.spread.strip {
             layers.push(self.overview_strip(strip, &palette));
         }
-        // Captions of similar-height windows share one line per row; a much
-        // shorter window keeps its caption under itself.
-        let caption_line = |index: usize| -> f32 {
-            let Some(own) = self.spread.entries.get(index).map(|entry| entry.to) else {
-                return 0.0;
-            };
-            let bottom = own.y + own.height;
-            let line = self
-                .spread
-                .entries
-                .iter()
-                .map(|entry| entry.to)
-                .filter(|other| other.y < own.y + own.height && own.y < other.y + other.height)
-                .map(|other| other.y + other.height)
-                .fold(bottom, f32::max);
-            // Far below its window a caption reads as a separate control: only
-            // near bottoms share a line.
-            if line - bottom > 56.0 { bottom } else { line }
-        };
         // Bottom-most first; a window being picked flies back on top, where
         // it will be.
         let mut order: Vec<usize> = (0..self.spread.entries.len()).collect();
@@ -965,10 +1034,20 @@ impl Shell {
             .into_iter()
             .filter_map(|index| Some((index, self.spread.entries.get(index)?)))
         {
-            let r = entry.from.lerp(entry.to, p);
+            let gone = self.spread.entry_gone(entry);
+            if gone && !open {
+                continue;
+            }
+            let motion = reflow.and_then(|t| self.spread.tile_motion(index, t));
+            let (r, opacity) = motion.map_or_else(
+                || (entry.from.lerp(entry.to, p), 1.0),
+                |(r, _, opacity)| (r, opacity),
+            );
+            let id = entry.window.stable_id;
             // The window's own rounded corners, at the picture's scale.
             let radius = self.spread.rounding * r.width / entry.from.width.max(1.0);
-            let selected = open && self.spread.selected == Some(index);
+            let selected =
+                open && (self.spread.selected == Some(id) || self.spread.hovered == Some(id));
             let picture: Element<'_, Message> = match &entry.picture {
                 // On the surface colour: a window whose frame the compositor
                 // paints (glass) leaves that frame clear in its picture.
@@ -976,13 +1055,20 @@ impl Shell {
                     image(handle.clone())
                         .width(r.width)
                         .height(r.height)
+                        .opacity(opacity)
                         .content_fit(iced::ContentFit::Fill)
                         .border_radius(radius),
                 )
                 .width(r.width)
                 .height(r.height)
                 .style(move |_| container::Style {
-                    background: Some(palette.surface.into()),
+                    background: Some(
+                        iced::Color {
+                            a: palette.surface.a * opacity,
+                            ..palette.surface
+                        }
+                        .into(),
+                    ),
                     border: iced::Border {
                         radius: radius.into(),
                         ..Default::default()
@@ -1013,7 +1099,13 @@ impl Shell {
                 .width(r.width)
                 .height(r.height)
                 .style(move |_| container::Style {
-                    background: Some(palette.surface.into()),
+                    background: Some(
+                        iced::Color {
+                            a: palette.surface.a * opacity,
+                            ..palette.surface
+                        }
+                        .into(),
+                    ),
                     border: iced::Border {
                         radius: radius.into(),
                         ..Default::default()
@@ -1022,34 +1114,6 @@ impl Shell {
                     ..Default::default()
                 })
                 .into(),
-            };
-            let picture = if let Some(shortcut) = entry.shortcut.filter(|_| open) {
-                let scale = (r.width.min(r.height) / 180.0).clamp(0.75, 1.0);
-                let size = 26.0 * scale;
-                let badge = container(
-                    enz_text(shortcut)
-                        .size_px(14.0 * scale)
-                        .weight_rung(enzui_theme::WeightRung::Semibold)
-                        .color(palette.on_accent())
-                        .into_element(),
-                )
-                .center(Length::Fixed(size))
-                .style(move |_| container::Style {
-                    background: Some(palette.accent.into()),
-                    border: iced::Border {
-                        radius: (size / 2.0).into(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                });
-                let inset = 8.0 * scale;
-                stack![
-                    picture,
-                    pin(badge).x((r.width - size - inset).max(0.0)).y(inset)
-                ]
-                .into()
-            } else {
-                picture
             };
             let accent = palette.accent;
             // The ring sits outside the picture, which would cover it.
@@ -1061,7 +1125,10 @@ impl Shell {
                     border: iced::Border {
                         radius: (radius + RING).into(),
                         width: if selected { 3.0 } else { 0.0 },
-                        color: accent,
+                        color: iced::Color {
+                            a: accent.a * opacity,
+                            ..accent
+                        },
                     },
                     ..Default::default()
                 });
@@ -1072,8 +1139,13 @@ impl Shell {
             } else {
                 entry.window.title.clone()
             };
-            let activate = Message::Spread(SpreadMessage::Pick(index));
-            let pick = if open && self.spread.strip.is_some() {
+            if gone {
+                layers.push(pin(framed).x(r.x - RING).y(r.y - RING).into());
+                continue;
+            }
+            let activate = Message::Spread(SpreadMessage::Pick(id));
+            let overview = self.spread.strip.is_some();
+            let pick: Element<'_, Message> = if open && overview {
                 let name = entry.shortcut.map_or_else(
                     || label.clone(),
                     |key| {
@@ -1084,18 +1156,15 @@ impl Shell {
                         )
                     },
                 );
-                mouse_area(
-                    focus_button(framed, activate)
-                        .semantics(Semantics::new(Role::Button).label(name))
-                        .id(format!("overview-window-{:x}", entry.window.stable_id).into())
-                        .style_focus(|_, _| Default::default()),
-                )
+                focus_button(framed, activate)
+                    .semantics(Semantics::new(Role::Button).label(name))
+                    .id(format!("overview-window-{id:x}").into())
+                    .style_focus(|_, _| Default::default())
+                    .into()
             } else {
-                mouse_area(framed).on_press(activate)
-            }
-            .on_enter(Message::Spread(SpreadMessage::Hover(index)))
-            .interaction(iced::mouse::Interaction::Pointer);
-            layers.push(pin(pick).x(r.x - RING).y(r.y - RING).into());
+                mouse_area(framed).on_press(activate).into()
+            };
+            let hover = Message::Spread(SpreadMessage::Hover(id));
             // Every window is named below its picture (app icon and title),
             // so it is recognised without reading its scaled-down chrome; the
             // chosen one's caption takes the accent.
@@ -1110,37 +1179,120 @@ impl Shell {
                 } else {
                     palette.surface_elevated
                 };
-                let chip = container(
-                    iced::widget::row![
-                        icon,
-                        enz_text(label)
-                            .size_px(enzui_theme::text_scale::effective().apply_px(CAPTION_TEXT))
-                            .weight_rung(if selected {
-                                enzui_theme::WeightRung::Semibold
-                            } else {
-                                enzui_theme::WeightRung::Medium
-                            })
-                            .single_line_elided()
-                            .into_element(),
-                    ]
+                let title = enz_text(label.clone())
+                    .size_px(enzui_theme::text_scale::effective().apply_px(CAPTION_TEXT))
+                    .weight_rung(if selected {
+                        enzui_theme::WeightRung::Semibold
+                    } else {
+                        enzui_theme::WeightRung::Medium
+                    })
+                    .single_line_elided()
+                    .into_element();
+                let mut caption = iced::widget::row![icon, title]
                     .spacing(6)
-                    .align_y(iced::Alignment::Center),
-                )
-                .padding([CAPTION_PADDING_Y, 12.0])
-                .width(Length::Shrink)
-                .style(move |_| container::Style {
-                    background: Some(chip_fill.into()),
-                    border: iced::Border {
-                        radius: 999.0.into(),
+                    .align_y(iced::Alignment::Center);
+                if let Some(shortcut) = entry.shortcut {
+                    let badge = container(
+                        enz_text(shortcut)
+                            .size_px(12.0)
+                            .weight_rung(enzui_theme::WeightRung::Semibold)
+                            .color(palette.on_accent())
+                            .into_element(),
+                    )
+                    .center(Length::Fixed(20.0))
+                    .style(move |_| container::Style {
+                        background: Some(palette.accent.into()),
+                        border: iced::Border {
+                            radius: 10.0.into(),
+                            ..Default::default()
+                        },
                         ..Default::default()
-                    },
-                    text_color: Some(palette.text),
-                    ..Default::default()
-                });
+                    });
+                    caption = caption.push(badge);
+                }
+                let chip = container(caption)
+                    .padding([CAPTION_PADDING_Y, 12.0])
+                    .width(Length::Shrink)
+                    .style(move |_| container::Style {
+                        background: Some(chip_fill.into()),
+                        border: iced::Border {
+                            radius: 999.0.into(),
+                            ..Default::default()
+                        },
+                        text_color: Some(palette.text),
+                        ..Default::default()
+                    });
+                let caption_y = motion.map_or_else(
+                    || caption_line(entry.to, self.spread.entries.iter().map(|other| other.to)),
+                    |(_, y, _)| y,
+                ) + CAPTION_GAP;
+                if overview {
+                    let mut controls = iced::widget::row![
+                        mouse_area(chip)
+                            .on_press(Message::Spread(SpreadMessage::Select(id)))
+                            .interaction(iced::mouse::Interaction::Pointer)
+                    ]
+                    .spacing(4)
+                    .align_y(iced::Alignment::Center);
+                    if selected || close_tile == Some(id) {
+                        let name = enzui_shell::tr!(
+                            "shell-overview-close-window",
+                            "title" => enzui_shell::i18n::argument(&label)
+                        );
+                        let close = enz_clickable(
+                            enz_icon("action.close").size(16.0).into_element(),
+                            Message::Spread(SpreadMessage::Close(id)),
+                        )
+                        .aria_label(name)
+                        .radius(CLOSE_SIZE / 2.0)
+                        .width(CLOSE_SIZE)
+                        .height(CLOSE_SIZE)
+                        .tokens(
+                            enzui_widgets::clickable::ClickableTokens {
+                                background: palette.surface_elevated,
+                                ..enzui_widgets::clickable::ClickableTokens::from_palette(&palette)
+                            },
+                        );
+                        controls = controls.push(close.into_element());
+                    }
+                    let width = r.width + 2.0 * RING;
+                    let height = caption_y - r.y + RING + footer;
+                    let tile = stack![
+                        iced::widget::space().width(width).height(height),
+                        pick,
+                        pin(container(controls).center_x(width)).y(caption_y - r.y + RING),
+                    ]
+                    .width(width)
+                    .height(height);
+                    layers.push(
+                        pin(mouse_area(tile)
+                            .on_enter(hover)
+                            .on_exit(Message::Spread(SpreadMessage::Leave(id))))
+                        .x(r.x - RING)
+                        .y(r.y - RING)
+                        .into(),
+                    );
+                } else {
+                    layers.push(
+                        pin(mouse_area(pick)
+                            .on_enter(hover)
+                            .interaction(iced::mouse::Interaction::Pointer))
+                        .x(r.x - RING)
+                        .y(r.y - RING)
+                        .into(),
+                    );
+                    layers.push(
+                        pin(container(chip).center_x(r.width.max(120.0)))
+                            .x(r.x + r.width / 2.0 - r.width.max(120.0) / 2.0)
+                            .y(caption_y)
+                            .into(),
+                    );
+                }
+            } else {
                 layers.push(
-                    pin(container(chip).center_x(r.width.max(120.0)))
-                        .x(r.x + r.width / 2.0 - r.width.max(120.0) / 2.0)
-                        .y(caption_line(index) + CAPTION_GAP)
+                    pin(mouse_area(pick).on_enter(hover))
+                        .x(r.x - RING)
+                        .y(r.y - RING)
                         .into(),
                 );
             }
@@ -1183,6 +1335,7 @@ mod tests {
                     window: SpreadWindow {
                         address: format!("0x{stable_id:x}"),
                         stable_id,
+                        pid: 2,
                         title: format!("Window {stable_id}"),
                         class: "fixture".into(),
                         image: None,
@@ -1245,6 +1398,7 @@ mod tests {
         let window = SpreadWindow {
             address: "0x1".into(),
             stable_id: 1,
+            pid: 2,
             title: "Files".into(),
             class: "files".into(),
             image: None,
@@ -1265,6 +1419,7 @@ mod tests {
                     picture: Some(image::Handle::from_rgba(1, 1, vec![0; 4])),
                     shortcut: None,
                 }],
+                insets: Padding::ZERO,
                 strip: None,
             }),
         ));

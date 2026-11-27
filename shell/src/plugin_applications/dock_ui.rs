@@ -4,6 +4,7 @@ use crate::{
 use enzui_core::{
     context_menu::InvocationKind,
     menu_model::{CheckState, EntryId, MenuEntryModel, MenuModel},
+    semantics::{Role, Semantics},
 };
 use enzui_shell::i18n::tr;
 use enzui_shell::tr;
@@ -37,6 +38,10 @@ use std::{
 const FIND_APPS_WIDTH: f32 = 132.0;
 const MENU_WINDOWS: usize = 16;
 const MENU_GAP: f32 = 6.0;
+
+fn find_apps_width(metrics: enzui_shell::settings::Metrics) -> f32 {
+    FIND_APPS_WIDTH * metrics.text_scale().max(1.0)
+}
 
 fn edge_padding(edge: Position, inset: f32) -> iced::Padding {
     match edge {
@@ -100,6 +105,7 @@ pub(crate) struct Entry {
 }
 pub(crate) struct Menu {
     pub id: String,
+    title: String,
     pub origin: Origin,
     pub model: MenuModel,
     pub state: ContextMenuState,
@@ -250,8 +256,7 @@ fn window_indicator<'a>(
     count: usize,
     color: iced::Color,
     edge: Position,
-    target: f32,
-    frame_inset: f32,
+    slot: iced::Size,
     spacing: enzui_theme::SpacingScale,
 ) -> Element<'a, Message> {
     use iced::{Border, Shadow};
@@ -309,13 +314,14 @@ fn window_indicator<'a>(
         mark()
     };
     let mark = container(ink)
-        .center(target)
-        .padding(edge_padding(edge, spacing.space1 + frame_inset));
+        .center_x(slot.width)
+        .center_y(slot.height)
+        .padding(edge_padding(edge, spacing.space1));
     match edge {
-        Position::Left => mark.align_left(target),
-        Position::Right => mark.align_right(target),
-        Position::Top => mark.align_top(target),
-        _ => mark.align_bottom(target),
+        Position::Left => mark.align_left(slot.width),
+        Position::Right => mark.align_right(slot.width),
+        Position::Top => mark.align_top(slot.height),
+        _ => mark.align_bottom(slot.height),
     }
     .into()
 }
@@ -323,9 +329,9 @@ fn window_indicator<'a>(
 fn progress_mark(
     percent: u8,
     edge: Position,
-    target: f32,
-    width: f32,
-    palette: &enzui_theme::Palette,
+    slot: iced::Size,
+    track: iced::Color,
+    ink: iced::Color,
 ) -> Element<'static, Message> {
     let line = |height, color| {
         container(space())
@@ -337,27 +343,27 @@ fn progress_mark(
                 ..Default::default()
             })
     };
-    let mut layers = vec![line(14.0, palette.border_strong).into()];
+    let mut layers = vec![line(14.0, track).into()];
     if percent > 0 {
         layers.push(
-            container(line(14.0 * f32::from(percent) / 100.0, palette.accent))
+            container(line(14.0 * f32::from(percent) / 100.0, ink))
                 .align_bottom(14.0)
                 .into(),
         );
     }
-    let mark = container(iced::widget::stack(layers)).center_y(target);
+    let mark = container(iced::widget::stack(layers)).center_y(slot.height);
     match edge {
         Position::Left => mark
-            .align_bottom(target)
+            .align_bottom(slot.height)
             .padding(iced::Padding::ZERO.right(3.0).bottom(5.0))
-            .align_right(width),
+            .align_right(slot.width),
         Position::Right => mark
-            .align_bottom(target)
+            .align_bottom(slot.height)
             .padding(iced::Padding::ZERO.left(3.0).bottom(5.0))
-            .align_left(width),
+            .align_left(slot.width),
         _ => mark
             .padding(iced::Padding::ZERO.left(3.0))
-            .align_left(width),
+            .align_left(slot.width),
     }
     .into()
 }
@@ -372,12 +378,12 @@ fn count_label(count: usize) -> String {
 
 fn window_count_badge<'a>(
     label: &str,
-    active: bool,
     size: enzui_widgets::badge::BadgeSizeTokens,
     palette: &enzui_theme::Palette,
+    ink: iced::Color,
 ) -> Element<'a, Message> {
     use enzui_widgets::badge::{BadgeTokens, BadgeTone, enz_badge};
-    let fill = palette.filled_color(if active { palette.accent } else { palette.text });
+    let fill = palette.filled_color(ink);
     let tokens = BadgeTokens {
         default_bg: fill.color,
         default_fg: fill.text,
@@ -393,27 +399,22 @@ fn window_count_badge<'a>(
 fn count_corner<'a>(
     pill: Element<'a, Message>,
     edge: Position,
-    target: f32,
-    frame_inset: f32,
+    slot: iced::Size,
     spacing: enzui_theme::SpacingScale,
 ) -> Element<'a, Message> {
-    let mut padding = iced::Padding::new(spacing.space1);
-    match edge {
-        Position::Left => padding.left += frame_inset,
-        Position::Right => padding.right += frame_inset,
-        Position::Top => padding.top += frame_inset,
-        _ => padding.bottom += frame_inset,
-    }
-    let corner = container(pill).center(target).padding(padding);
+    let corner = container(pill)
+        .center_x(slot.width)
+        .center_y(slot.height)
+        .padding(spacing.space1);
     let corner = if edge == Position::Left {
-        corner.align_left(target)
+        corner.align_left(slot.width)
     } else {
-        corner.align_right(target)
+        corner.align_right(slot.width)
     };
     if edge == Position::Top {
-        corner.align_top(target)
+        corner.align_top(slot.height)
     } else {
-        corner.align_bottom(target)
+        corner.align_bottom(slot.height)
     }
     .into()
 }
@@ -889,7 +890,7 @@ impl Shell {
         let span = if self.dock.entries.is_empty()
             && !matches!(p.position, Position::Left | Position::Right)
         {
-            FIND_APPS_WIDTH
+            find_apps_width(self.metrics)
         } else {
             slots.span(self.dock.entries.len()) + f32::from(divider) * slots.separator_span()
         };
@@ -1164,10 +1165,22 @@ impl Shell {
                     return Task::none();
                 };
                 match result {
-                    Ok(()) => iced_runtime::task::widget_in(
-                        window,
-                        enzui_core::focus::focus_and_reveal_id(nav.id.clone()),
-                    ),
+                    Ok(()) => {
+                        use enzui_core::focus;
+                        let id = nav.id.clone();
+                        window::run(window, |handle| {
+                            focus::set_modality_for(
+                                focus::window_key(handle),
+                                focus::InputModality::Keyboard,
+                            );
+                        })
+                        .then(move |()| {
+                            iced_runtime::task::widget_in(
+                                window,
+                                focus::focus_and_reveal_id(id.clone()),
+                            )
+                        })
+                    }
                     Err(error) => {
                         self.dock.error = Some(error);
                         self.dock_end_keyboard(window, false)
@@ -1545,6 +1558,7 @@ impl Shell {
                 }
                 self.dock.menu = Some(Menu {
                     id,
+                    title: entry.group.title.clone(),
                     origin,
                     model,
                     state,
@@ -1840,7 +1854,7 @@ impl Shell {
     }
 
     pub(crate) fn dock_icons(&self, origin: Origin, vertical: bool) -> Element<'_, Message> {
-        let palette = match origin {
+        let theme = match origin {
             Origin::Bar => match self.bar_dock_material() {
                 Some(material) => match material.glass(None) {
                     Some(style) => self.tokens().on_material(style),
@@ -1849,18 +1863,13 @@ impl Shell {
                 None => self.window_tokens(Some(self.panel)),
             },
             Origin::Dock => self.window_tokens(self.dock.window),
-        }
-        .palette;
+        };
+        let translucent = theme.backdrop().is_some();
+        let palette = theme.palette;
         let p = &self.dock.preferences;
         let slots = dock::Slots::new(p, self.metrics, self.dock_shares_sidebar());
         let size = slots.icon;
         let target = slots.target;
-        let default_highlight = p.highlight_radius == dock::Preferences::default().highlight_radius;
-        let radius = if default_highlight && matches!(origin, Origin::Bar) {
-            self.metrics.bar_item_radius(7.0).min(target / 2.0)
-        } else {
-            f32::from(p.highlight_radius).min(target / 2.0)
-        };
         let edge = match (p.position, self.bar) {
             (Position::Bar, enzui_shell::settings::BarEdge::Top) => Position::Top,
             (Position::Bar, enzui_shell::settings::BarEdge::Bottom) => Position::Bottom,
@@ -1886,10 +1895,49 @@ impl Shell {
         } else {
             0.0
         };
+        let cross = (target - frame_inset).max(1.0);
+        let slot_padding = edge_padding(edge, target - cross);
+        let default_highlight = p.highlight_radius == dock::Preferences::default().highlight_radius;
+        let radius = if default_highlight && matches!(origin, Origin::Bar) {
+            self.metrics.bar_item_radius(7.0).min(cross / 2.0)
+        } else {
+            f32::from(p.highlight_radius).min(cross / 2.0)
+        };
         use enzui_widgets::pressable::{
             PressableStyle, PressableTokens, SurfaceColors, enz_pressable,
         };
-        let pressable = PressableTokens::from_palette(&palette);
+        let plane = if translucent {
+            palette.background
+        } else {
+            palette.surface
+        };
+        let contrast = self
+            .desired_settings
+            .theme_scheme
+            .as_deref()
+            .and_then(enzui_shell::theme_palette::Scheme::from_id_str)
+            .is_some_and(|scheme| scheme.style == enzui_shell::theme_palette::Style::Contrast);
+        let visible_ink = |ink| enzui_theme::Palette::with_contrast_on(plane, ink, 3.0);
+        let muted_ink = visible_ink(palette.text_muted);
+        let mut pressable = PressableTokens::from_palette(&palette);
+        pressable.focus_ring = visible_ink(palette.focus_ring);
+        if contrast {
+            pressable.focus_ring_width = pressable.focus_ring_width.max(3.0);
+        }
+        let (selected, hovered) = if translucent {
+            (
+                palette.text.scale_alpha(0.16),
+                palette.text.scale_alpha(0.11),
+            )
+        } else {
+            (palette.surface_selected, palette.surface_hover)
+        };
+        let active_plane = enzui_widgets::surface_interaction::composite(
+            iced::Color { a: 1.0, ..plane },
+            selected,
+        );
+        let actionable_accent =
+            enzui_theme::Palette::with_contrast_on(active_plane, palette.accent, 3.4);
         let badge_size = enzui_widgets::badge::BadgeSizeTokens {
             height: spacing.lg(),
             text_size: enzui_theme::TypographyScale::ambient().label_size,
@@ -1966,6 +2014,11 @@ impl Shell {
                 buttons.push((id, icon.into()));
                 continue;
             };
+            let slot = if vertical {
+                iced::Size::new(cross, target)
+            } else {
+                iced::Size::new(width, cross)
+            };
             let active = group.windows.iter().any(|w| w.active);
             let running = !group.windows.is_empty();
             let desktop_id = enzui_shell::launcher_badges::group_id(group);
@@ -1983,50 +2036,66 @@ impl Shell {
             } else {
                 0.0
             };
-            let glyph_inset = frame_inset + frame_inset.min(spacing.sm());
-            let mut glyph_pad = edge_padding(edge, glyph_inset);
-            if edge == Position::Top {
-                glyph_pad.top += count_inset;
+            let glyph_pad = if edge == Position::Top {
+                iced::Padding::ZERO.top(count_inset)
             } else {
-                glyph_pad.bottom += count_inset;
-            }
-            let inset = glyph_pad.x().max(glyph_pad.y());
+                iced::Padding::ZERO.bottom(count_inset)
+            };
             let icon = container(group_icon(
                 group,
-                size.min((target - inset).max(spacing.space1)),
+                size.min(
+                    (slot.width.min(slot.height - count_inset) - spacing.space1 * 2.0)
+                        .max(spacing.space1),
+                ),
                 &palette,
                 icons_only,
             ))
             .center_x(if compact_count.is_some() {
                 icon_column
             } else {
-                width
+                slot.width
             })
-            .center_y(target)
+            .center_y(slot.height)
             .padding(glyph_pad);
             let mut layers: Vec<Element<'_, Message>> = vec![
                 container(icon)
-                    .align_left(width)
-                    .center_y(target)
-                    .style(move |_| container::Style {
-                        border: iced::Border {
-                            width: if urgent { 2.0 } else { 0.0 },
-                            color: palette.warning,
-                            radius: radius.into(),
-                        },
-                        ..Default::default()
-                    })
+                    .align_left(slot.width)
+                    .center_y(slot.height)
                     .into(),
             ];
+            if urgent {
+                let inset = pressable.focus_ring_width + 1.0;
+                let contour = visible_ink(palette.warning);
+                layers.push(
+                    container(
+                        container(space())
+                            .width((slot.width - 2.0 * inset).max(0.0))
+                            .height((slot.height - 2.0 * inset).max(0.0))
+                            .style(move |_| container::Style {
+                                border: iced::Border {
+                                    width: 2.0,
+                                    color: contour,
+                                    radius: (radius - inset).max(0.0).into(),
+                                },
+                                ..Default::default()
+                            }),
+                    )
+                    .center_x(slot.width)
+                    .center_y(slot.height)
+                    .into(),
+                );
+            } else {
+                layers.push(space().into());
+            }
             if let Some(serial) = self.dock.launches.get(&id) {
                 let flash = container(space())
-                    .width(width)
-                    .height(target)
+                    .width(slot.width)
+                    .height(slot.height)
                     .style(move |_| container::Style {
-                        background: Some(palette.accent.scale_alpha(0.24).into()),
+                        background: Some(actionable_accent.scale_alpha(0.24).into()),
                         border: iced::Border {
                             width: 1.0,
-                            color: palette.accent,
+                            color: actionable_accent,
                             radius: radius.into(),
                         },
                         ..Default::default()
@@ -2042,32 +2111,28 @@ impl Shell {
                 layers.push(space().into());
             }
             if group.builtin.is_none() && p.indicator != Indicator::None {
-                let color = if active {
-                    palette.accent
-                } else {
-                    palette.text_muted
-                };
+                let color = if active { actionable_accent } else { muted_ink };
                 let marker = if numbered {
-                    let pill =
-                        window_count_badge(&count_label(count), active, badge_size, &palette);
+                    let pill = window_count_badge(
+                        &count_label(count),
+                        badge_size,
+                        &palette,
+                        if active {
+                            actionable_accent
+                        } else {
+                            palette.text
+                        },
+                    );
                     if let Some(pill_width) = compact_count {
-                        container(container(pill).center_x(pill_width).center_y(target))
+                        container(container(pill).center_x(pill_width).center_y(slot.height))
                             .padding(iced::Padding::ZERO.right(spacing.space1))
-                            .align_right(width)
+                            .align_right(slot.width)
                             .into()
                     } else {
-                        count_corner(pill, edge, target, frame_inset, spacing)
+                        count_corner(pill, edge, slot, spacing)
                     }
                 } else {
-                    window_indicator(
-                        p.indicator,
-                        count,
-                        color,
-                        edge,
-                        target,
-                        frame_inset,
-                        spacing,
-                    )
+                    window_indicator(p.indicator, count, color, edge, slot, spacing)
                 };
                 layers.push(
                     enzui_widgets::motion::motion(
@@ -2082,29 +2147,50 @@ impl Shell {
             if let Some(label) = badge.label() {
                 use enzui_widgets::badge::{BadgeSizeTokens, BadgeTone, enz_badge};
                 let compact = size < 20.0;
-                let indicator = enz_badge(&label)
-                    .tone(BadgeTone::AccentStrong)
-                    .size_tokens(BadgeSizeTokens {
-                        height: if compact { 11.0 } else { 14.0 },
-                        text_size: if compact { 8.0 } else { 9.0 },
-                        radius: 7.0,
-                        padding_x: 2.0,
-                        min_width: 11.0,
-                        icon_size: 0.0,
-                        icon_gap: 0.0,
-                    })
-                    .into_element();
+                let badge_height = if compact { 11.0 } else { 14.0 };
+                let needs_compact_badge = numbered
+                    && compact_count.is_none()
+                    && slot.height < count_inset + badge_height + size.min(16.0) + spacing.space1;
+                let indicator = if needs_compact_badge {
+                    let diameter = spacing.space3;
+                    container(space())
+                        .width(diameter)
+                        .height(diameter)
+                        .style(move |_| container::Style {
+                            background: Some(actionable_accent.into()),
+                            border: iced::Border::default().rounded(diameter / 2.0),
+                            ..Default::default()
+                        })
+                        .into()
+                } else {
+                    enz_badge(&label)
+                        .tone(BadgeTone::AccentStrong)
+                        .size_tokens(BadgeSizeTokens {
+                            height: badge_height,
+                            text_size: if compact { 8.0 } else { 9.0 },
+                            radius: 7.0,
+                            padding_x: 2.0,
+                            min_width: 11.0,
+                            icon_size: 0.0,
+                            icon_gap: 0.0,
+                        })
+                        .into_element()
+                };
                 let notification = container(indicator)
-                    .padding(spacing.space1)
-                    .align_top(target);
+                    .padding(if needs_compact_badge {
+                        pressable.focus_ring_width + 4.0
+                    } else {
+                        spacing.space1
+                    })
+                    .align_top(slot.height);
                 let notification: Element<'_, Message> = if compact_count.is_some() {
                     container(notification.align_right(icon_column))
-                        .align_left(width)
+                        .align_left(slot.width)
                         .into()
                 } else if edge == Position::Top && numbered {
-                    notification.align_left(width).into()
+                    notification.align_left(slot.width).into()
                 } else {
-                    notification.align_right(width).into()
+                    notification.align_right(slot.width).into()
                 };
                 layers.push(notification);
             }
@@ -2113,54 +2199,73 @@ impl Shell {
                 .filter(|id| desktop_ids.get(*id) == Some(&1))
                 .and_then(|id| self.dock_progress(id, badge.progress));
             if let Some(percent) = progress {
-                layers.push(progress_mark(percent, edge, target, width, &palette));
+                layers.push(progress_mark(
+                    percent,
+                    edge,
+                    slot,
+                    palette.meter_track(),
+                    actionable_accent,
+                ));
             }
-            let label = if group.builtin.is_some() {
+            let mut label = if group.builtin.is_some() {
                 group.title.clone()
             } else {
-                let mut label = tr!("shell-dock-window-count", "title" => group.title.clone(), "count" => count);
-                if group.pinned {
-                    label.push_str(tr("shell-kept-in-dock"));
-                }
-                if badge.count_visible && badge.count > 0 {
-                    label.push_str(&tr!("shell-dock-unread-count", "count" => badge.count));
-                }
-                if urgent {
-                    label.push_str(tr("shell-needs-attention"));
-                }
-                if let Some(percent) = progress {
-                    label.push_str(&tr!("shell-dock-progress", "percent" => percent));
-                }
-                label
+                tr!("shell-dock-window-count", "title" => group.title.clone(), "count" => count)
             };
+            if group.pinned {
+                label.push_str(tr("shell-kept-in-dock"));
+            }
+            if badge.count_visible && badge.count > 0 {
+                label.push_str(&tr!("shell-dock-unread-count", "count" => badge.count));
+            }
+            if urgent {
+                label.push_str(tr("shell-needs-attention"));
+            }
+            if let Some(percent) = progress {
+                label.push_str(&tr!("shell-dock-progress", "percent" => percent));
+            }
+            let mut semantics = Semantics::new(Role::Button).label(label);
+            if running {
+                semantics = semantics.selected(active);
+            }
+            if count > 1 {
+                let expanded = self.dock.menu.as_ref().is_some_and(|menu| menu.id == id);
+                semantics = semantics
+                    .expanded_state_only(expanded)
+                    .description(tr(if expanded {
+                        "shell-dock-window-menu-open"
+                    } else {
+                        "shell-dock-opens-window-menu"
+                    }));
+            }
             let button = enz_pressable(
-                iced::widget::stack(layers)
-                    .width(width)
-                    .height(target)
-                    .into(),
+                enzui_widgets::decorative::decorative(
+                    iced::widget::stack(layers)
+                        .width(slot.width)
+                        .height(slot.height),
+                )
+                .into(),
                 message(Event::Click(id.clone())),
             )
             .style(PressableStyle::Plain)
             .tokens(pressable)
-            .width(width)
+            .width(slot.width)
             .padding(0)
             .radius(radius)
             .surface_colors_resolved({
-                let rest = active.then_some(palette.surface_selected);
-                let hover = palette.surface_hover;
                 move |_| SurfaceColors {
-                    background: rest,
-                    hover_background: Some(hover),
+                    background: active.then_some(selected),
+                    hover_background: Some(hovered),
                     border: None,
                 }
             })
-            .aria_label(label)
+            .semantics(semantics)
             .id(format!("dock-app-{id}").into())
             .enabled(group.builtin.is_some() || group.app.is_some() || running)
             .into_element();
             let hover_id = id.clone();
             let leave_id = id.clone();
-            let button = mouse_area(button)
+            let button = mouse_area(container(button).padding(slot_padding))
                 .on_enter(message(Event::Preview(crate::dock_hover::Event::Enter(
                     hover_id, origin,
                 ))))
@@ -2254,8 +2359,12 @@ impl Shell {
             };
             let add = enz_pressable(
                 container(content)
-                    .center_x(if vertical { target } else { FIND_APPS_WIDTH })
-                    .center_y(target)
+                    .center_x(if vertical {
+                        cross
+                    } else {
+                        find_apps_width(self.metrics)
+                    })
+                    .center_y(if vertical { target } else { cross })
                     .into(),
                 Message::ShowLauncher,
             )
@@ -2266,8 +2375,11 @@ impl Shell {
             .aria_label(tr("shell-search-for-an-application-to-keep-in-the-dock"))
             .id("dock-add-app".into())
             .into_element();
-            let add =
-                enzui_widgets::tooltip::enz_tooltip(add, tr("shell-dock-find-apps-hint"), tooltip);
+            let add = enzui_widgets::tooltip::enz_tooltip(
+                container(add).padding(slot_padding).into(),
+                tr("shell-dock-find-apps-hint"),
+                tooltip,
+            );
             return if matches!(origin, Origin::Bar) {
                 self.dock_folder_target(add)
             } else {
@@ -2457,7 +2569,9 @@ impl Shell {
                     iced::Shadow::default()
                 };
                 let framed = g.framed;
-                let contour = if self.chrome_light() {
+                let contour = if glass.is_some() && !palette.is_dark() {
+                    palette.text.scale_alpha(0.24)
+                } else if self.chrome_light() {
                     palette.border_strong
                 } else {
                     palette.border
@@ -2521,11 +2635,16 @@ impl Shell {
         let canvas = iced::widget::stack(layers)
             .width(Length::Fill)
             .height(Length::Fill);
+        let menu = self.dock.menu.as_ref();
         let view = enz_optional_point_context_menu_host(
             canvas,
-            self.dock.menu.as_ref().map(|m| (&m.model, &m.state)),
+            menu.map(|m| (&m.model, &m.state)),
             |event| message(Event::Menu(event)),
-        )
+        );
+        let view = match menu {
+            Some(menu) => view.label(tr!("shell-dock-menu-for-app", "title" => menu.title.clone())),
+            None => view,
+        }
         .into();
         let Some(id) = self.dock.window else {
             return view;

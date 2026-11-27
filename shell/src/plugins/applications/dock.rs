@@ -668,6 +668,13 @@ impl Slots {
         } else {
             (requested, (requested + 14.0).max(36.0))
         };
+        let text_scale = metrics.text_scale();
+        let target =
+            if p.position != Position::Bar && p.indicator == Indicator::Count && text_scale > 1.0 {
+                target.max(icon + 20.0 * text_scale)
+            } else {
+                target
+            };
         Self {
             icon,
             target,

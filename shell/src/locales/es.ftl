@@ -5645,6 +5645,9 @@ shell-assistant-local-context-limit = La solicitud es demasiado extensa para el 
 shell-assistant-stale-revision = La última respuesta ha cambiado. Vuelve a abrir el chat e inténtalo de nuevo.
 shell-agent-tool-screenshot = Hacer una captura de pantalla
 
+shell-dock-menu-for-app = Menú de { $title } en el Dock
+shell-dock-opens-window-menu = Abre el menú de ventanas
+shell-dock-window-menu-open = Menú de ventanas abierto
 shell-dock-window-count = { $title } · { $count ->
     [one] { $count } ventana
    *[other] { $count } ventanas

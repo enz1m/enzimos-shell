@@ -5680,6 +5680,9 @@ shell-assistant-local-context-limit = This request is too large for the local mo
 shell-assistant-stale-revision = The last reply changed. Reopen this chat and try again.
 shell-agent-tool-screenshot = Take a screenshot
 
+shell-dock-menu-for-app = { $title } dock menu
+shell-dock-opens-window-menu = Opens the window menu
+shell-dock-window-menu-open = Window menu open
 shell-dock-window-count = { $title } · { $count ->
     [one] { $count } window
    *[other] { $count } windows

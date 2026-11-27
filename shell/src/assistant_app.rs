@@ -221,7 +221,10 @@ fn turn(
                     } else {
                         return Err(frame["error"].as_str().map_or_else(
                             || tr("shell-the-turn-failed").to_owned(),
-                            |error| tr!("shell-the-turn-failed-2", "arg0" => error.to_owned()),
+                            |error| agent_harness::turn_error(error).map_or_else(
+                                || tr!("shell-the-turn-failed-2", "arg0" => error.to_owned()),
+                                str::to_owned,
+                            ),
                         ));
                     }
                 }

@@ -1,12 +1,15 @@
 //! The chat transcript as virtual-list rows: what the service sent, split
 //! into rows the panel draws and the list can measure.
 
-use enzui_core::virtual_sequence::{ItemProvider, KeyedProvider, SequenceKey};
+use enzui_core::virtual_sequence::{ItemProvider, KeyedProvider, SequenceKey, VariableHeightModel};
 use enzui_shell::agent_mock::Item;
 use enzui_shell::i18n::tr;
 use enzui_shell::tr;
+use enzui_widgets::{markdown::EnzMarkdownBlock, row_measure::RowMeasurement};
 use serde_json::Value;
+use std::cell::OnceCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,7 +36,8 @@ pub(crate) enum Body {
         steering: bool,
     },
     Markdown {
-        text: String,
+        text: Rc<str>,
+        blocks: Rc<OnceCell<Vec<EnzMarkdownBlock>>>,
         streaming: bool,
     },
     Image {
@@ -161,12 +165,34 @@ fn settled(text: &str) -> &str {
 
 fn decode(path: &str) -> Option<(iced::widget::image::Handle, u32, u32)> {
     let path = std::path::Path::new(path.strip_prefix("file://").unwrap_or(path));
-    if !path.is_absolute() || std::fs::metadata(path).ok()?.len() > 16 << 20 {
+    use std::{io::BufReader, os::unix::fs::OpenOptionsExt};
+
+    if !path.is_absolute() {
         return None;
     }
-    let image = raster::open(path).ok()?.into_rgba8();
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > 16 << 20 {
+        return None;
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32)
+        .open(path)
+        .ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() || metadata.len() > 16 << 20 {
+        return None;
+    }
+    let mut reader = raster::ImageReader::new(BufReader::new(file))
+        .with_guessed_format()
+        .ok()?;
+    let mut limits = raster::Limits::default();
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    reader.limits(limits);
+    let image = reader.decode().ok()?.into_rgba8();
     let (width, height) = image.dimensions();
-    (width > 0 && height > 0 && width <= 8192 && height <= 8192).then(|| {
+    (width > 0 && height > 0).then(|| {
         (
             iced::widget::image::Handle::from_rgba(width, height, image.into_raw()),
             width,
@@ -237,7 +263,8 @@ struct Live {
 #[derive(Default)]
 pub(crate) struct Transcript {
     pub rows: Vec<Row>,
-    pub heights: Vec<f32>,
+    heights: Vec<f32>,
+    geometry: OnceCell<VariableHeightModel>,
     next: u64,
     live: Option<Live>,
     // The whole reply text of the current turn, for its Copy button.
@@ -258,12 +285,12 @@ impl Transcript {
             open: false,
         };
         self.heights.push(estimate(&row));
+        self.geometry.take();
         self.rows.push(row);
     }
     pub(crate) fn clear(&mut self) {
-        let images = std::mem::take(&mut self.images);
         *self = Self {
-            images,
+            next: self.next,
             ..Self::default()
         };
     }
@@ -276,44 +303,94 @@ impl Transcript {
             .or_insert_with(|| decode(path))
             .clone()
     }
+    pub(crate) fn geometry(&self) -> &VariableHeightModel {
+        self.geometry
+            .get_or_init(|| VariableHeightModel::new(self.heights.iter().copied()))
+    }
+
+    pub(crate) fn measure(&mut self, measurement: RowMeasurement, scroll: f32) -> f32 {
+        let Some(height) = self.heights.get_mut(measurement.index) else {
+            return scroll;
+        };
+        *height = measurement.height;
+        if let Some(model) = self.geometry.get_mut() {
+            enzui_widgets::virtual_list::reconcile_measurements(model, scroll, [measurement.into()])
+        } else {
+            scroll
+        }
+    }
+
     fn reply(&mut self, start: usize, message: u64, text: &str, streaming: bool) {
-        let mut rows = Vec::new();
         let pieces = segments(if streaming { settled(text) } else { text });
-        let last = pieces.len().saturating_sub(1);
+        let end = start + pieces.len();
         for (index, piece) in pieces.into_iter().enumerate() {
+            let slot = start + index;
+            let live = streaming && slot + 1 == end;
             let body = match piece {
-                Segment::Text(text) => Body::Markdown {
-                    text,
-                    streaming: streaming && index == last,
-                },
-                Segment::Image { alt, path } => Body::Image {
-                    image: self.image(&path),
-                    alt,
-                    path,
-                },
+                Segment::Text(text) => {
+                    if let Some(Row {
+                        body:
+                            Body::Markdown {
+                                text: previous,
+                                streaming,
+                                ..
+                            },
+                        ..
+                    }) = self.rows.get_mut(slot)
+                        && previous.as_ref() == text
+                    {
+                        *streaming = live;
+                        continue;
+                    }
+                    Body::Markdown {
+                        blocks: Rc::default(),
+                        text: text.into(),
+                        streaming: live,
+                    }
+                }
+                Segment::Image { alt, path } => {
+                    if let Some(Row {
+                        body:
+                            Body::Image {
+                                alt: previous_alt,
+                                path: previous_path,
+                                ..
+                            },
+                        ..
+                    }) = self.rows.get(slot)
+                        && *previous_alt == alt
+                        && *previous_path == path
+                    {
+                        continue;
+                    }
+                    Body::Image {
+                        image: self.image(&path),
+                        alt,
+                        path,
+                    }
+                }
             };
-            rows.push(Row {
+            let row = Row {
                 key: format!("reply-{message}-{index}"),
                 body,
                 open: false,
-            });
+            };
+            if let Some(previous) = self.rows.get_mut(slot) {
+                if std::mem::discriminant(&previous.body) != std::mem::discriminant(&row.body) {
+                    self.heights[slot] = estimate(&row);
+                    self.geometry.take();
+                }
+                *previous = row;
+            } else {
+                self.heights.push(estimate(&row));
+                self.rows.push(row);
+                self.geometry.take();
+            }
         }
-        let old: HashMap<String, f32> = self.rows[start..]
-            .iter()
-            .zip(&self.heights[start..])
-            .map(|(row, height)| (row.key.clone(), *height))
-            .collect();
-        self.rows.truncate(start);
-        self.heights.truncate(start);
-        for row in rows {
-            // A growing piece keeps its measured height until measured again.
-            let height = old
-                .get(&row.key)
-                .copied()
-                .unwrap_or_else(|| estimate(&row))
-                .max(estimate(&row).min(60.0));
-            self.heights.push(height);
-            self.rows.push(row);
+        if end < self.rows.len() {
+            self.rows.truncate(end);
+            self.heights.truncate(end);
+            self.geometry.take();
         }
     }
     // A saved chat, as `session.export` lists it.
@@ -333,6 +410,15 @@ impl Transcript {
                     let message = self.next;
                     let start = self.rows.len();
                     self.reply(start, message, &text, false);
+                    if !text.trim().is_empty() {
+                        self.push(
+                            "meta",
+                            Body::Meta {
+                                text: String::new(),
+                                reply: text,
+                            },
+                        );
+                    }
                 }
                 Item::Reasoning { text, millis } => self.push(
                     "thought",
@@ -491,9 +577,13 @@ impl Transcript {
                 let Some(live) = self.live.as_mut() else {
                     return;
                 };
-                live.reply.push_str(&text("text"));
-                let (start, message, reply) = (live.start, live.message, live.reply.clone());
+                let mut reply = std::mem::take(&mut live.reply);
+                reply.push_str(event["text"].as_str().unwrap_or_default());
+                let (start, message) = (live.start, live.message);
                 self.reply(start, message, &reply, true);
+                if let Some(live) = self.live.as_mut() {
+                    live.reply = reply;
+                }
             }
             "message.completed" => {
                 if let Some(live) = self.live.as_mut()
@@ -606,9 +696,16 @@ impl Transcript {
             }
             "turn.vision_fallback" => {
                 self.restart_reply();
-                self.push("notice", Body::Note { text: tr("shell-assistant-vision-fallback").into(), error: false });
+                self.push(
+                    "notice",
+                    Body::Note {
+                        text: tr("shell-assistant-vision-fallback").into(),
+                        error: false,
+                    },
+                );
             }
             "turn.local_limit" => {
+                self.restart_reply();
                 self.push(
                     "note",
                     Body::Note {
@@ -617,12 +714,11 @@ impl Transcript {
                     },
                 );
             }
-            "turn.completed" => {
+            "turn.completed" if event["status"] != "failed" => {
                 let seconds = event["duration_ms"].as_u64().unwrap_or(0) as f32 / 1000.0;
                 let tokens = event["usage"]["output_tokens"].as_u64().unwrap_or(0);
                 self.finish(Some(match event["status"].as_str() {
                     Some("cancelled") => tr!("shell-stopped-after-s", "arg0" => enzui_shell::i18n::number(format!("{seconds:.1}"))),
-                    Some("failed") => String::new(),
                     _ if tokens > 0 => tr!("shell-s-tokens", "arg0" => enzui_shell::i18n::number(format!("{seconds:.1}")), "arg1" => compact(tokens)),
                     _ => format!("{seconds:.1} s"),
                 }));
@@ -668,13 +764,21 @@ impl Transcript {
     pub(crate) fn fail(&mut self, error: &str) {
         if self.live.is_some() {
             self.restart_reply();
-            self.push(
-                "note",
-                Body::Note {
-                    text: error.to_owned(),
-                    error: true,
-                },
-            );
+            if !matches!(
+                self.rows.last(),
+                Some(Row {
+                    body: Body::Note { error: true, .. },
+                    ..
+                })
+            ) {
+                self.push(
+                    "note",
+                    Body::Note {
+                        text: error.to_owned(),
+                        error: true,
+                    },
+                );
+            }
             self.finish(None);
         }
     }
@@ -682,6 +786,9 @@ impl Transcript {
         if let Some(index) = self.rows.iter().position(|row| row.key == key) {
             self.rows[index].open = !self.rows[index].open;
             self.heights[index] = estimate(&self.rows[index]);
+            if let Some(model) = self.geometry.get_mut() {
+                model.set_height(index, self.heights[index]);
+            }
         }
     }
     pub(crate) fn decide(&mut self, key: &str, allow: bool) -> Option<(String, String)> {
@@ -756,5 +863,30 @@ impl KeyedProvider<Row> for Transcript {
         self.rows
             .get(usize::try_from(index).ok()?)
             .map(|row| SequenceKey::new(row.key.clone()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn failed_completion_keeps_partial_reply_and_recovery_message() {
+        let mut transcript = Transcript::default();
+        transcript.begin("Explain enums");
+        transcript.apply(&json!({"type": "message.delta", "text": "An enum can represent"}));
+        transcript.apply(&json!({"type": "turn.completed", "status": "failed"}));
+        transcript.fail("The AI gateway is offline");
+
+        assert!(transcript.rows.iter().any(|row| matches!(
+            &row.body,
+            Body::Markdown { text, streaming: false, .. } if text.as_ref() == "An enum can represent"
+        )));
+        assert!(matches!(
+            transcript.rows.last().map(|row| &row.body),
+            Some(Body::Note { text, error: true }) if text == "The AI gateway is offline"
+        ));
+        assert_eq!(transcript.last_prompt().as_deref(), Some("Explain enums"));
     }
 }

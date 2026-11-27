@@ -12,14 +12,14 @@ use enzui_widgets::{
     composer::enz_composer,
     frame_clock::{enz_frame_clock, frame_clock_phase},
     icon::enz_icon,
-    markdown::enz_markdown,
+    markdown::{self, enz_markdown_blocks},
     motion::{MotionEffect, SlideDirection, motion},
     pressable::{PressableStyle, enz_pressable},
     spinner::enz_spinner,
     tail_follow::enz_tail_follow,
     text::enz_text,
     toolbar_icon::enz_toolbar_icon,
-    virtual_list::enz_virtual_list_variable,
+    virtual_list::enz_virtual_list_with_geometry,
 };
 use iced::{
     Alignment, Color, Element, Length, Padding,
@@ -355,10 +355,23 @@ impl Shell {
                     }),
                 );
             }
-            if state.choosing_approval {
-                content = content.push(self.assistant_approvals(&palette));
+            if state.export_failed {
+                if let Some(id) = &state.session {
+                    content = content.push(
+                        enz_button(tr("shell-try-again"), message(Message::Open(id.clone())))
+                            .id("assistant-reload-chat".into())
+                            .kind(ButtonKind::Secondary)
+                            .size(ButtonSize::Sm)
+                            .enabled(!state.approval_busy)
+                            .into_element(),
+                    );
+                }
+            } else {
+                if state.choosing_approval {
+                    content = content.push(self.assistant_approvals(&palette));
+                }
+                content = content.push(self.assistant_composer(&palette));
             }
-            content = content.push(self.assistant_composer(&palette));
         }
         // The body leaves room for the fillets beside a join and a radius
         // on the side away from it.
@@ -604,18 +617,29 @@ impl Shell {
         let elevated = palette.surface_elevated;
         let running = state.running.is_some();
         let last = state.transcript.rows.len() as u64;
-        let list = enz_virtual_list_variable(
-            &state.transcript,
-            state.transcript.heights.iter().copied(),
-            move |index, row: &Row| assistant_row(row, &palette, running, index + 1 == last),
-        )
-        .scroll_offset(state.scroll)
-        .viewport_height(state.viewport.max(200.0))
-        .on_scroll(|viewport| message(Message::Scrolled(viewport)))
-        .on_measure(|measurement| message(Message::Measured(measurement)))
-        .id(TRANSCRIPT.into())
-        .overscan(4)
-        .into_element();
+        let geometry = state.transcript.geometry();
+        let viewport = state.viewport.max(200.0);
+        let offset = if state.away {
+            state.scroll
+        } else {
+            (geometry.total_height() - viewport).max(0.0)
+        };
+        let list =
+            enz_virtual_list_with_geometry(&state.transcript, geometry, move |index, row: &Row| {
+                assistant_row(row, &palette, running, index + 1 == last)
+            })
+            .scroll_offset(offset)
+            .viewport_height(viewport)
+            .on_scroll(|viewport| message(Message::Scrolled(viewport)))
+            .on_measure(move |measurement| {
+                message(Message::Measured(
+                    state.transcript.rows[measurement.index].key.clone(),
+                    measurement,
+                ))
+            })
+            .id(TRANSCRIPT.into())
+            .overscan(4)
+            .into_element();
         let list = enz_tail_follow(list);
         let mut layers = stack![list];
         if state.away {
@@ -731,12 +755,15 @@ impl Shell {
         let mut permissions = column![options, screenshots].spacing(8);
         if state.session.is_some() && enzui_shell::desktop_session::mode().managed() {
             permissions = permissions.push(
-                enz_button(tr("shell-assistant-control-allow"), message(Message::AllowDesktopControl))
-                    .id("assistant-desktop-control".into())
-                    .kind(ButtonKind::Secondary)
-                    .size(ButtonSize::Sm)
-                    .enabled(!state.desktop_control_pending)
-                    .into_element(),
+                enz_button(
+                    tr("shell-assistant-control-allow"),
+                    message(Message::AllowDesktopControl),
+                )
+                .id("assistant-desktop-control".into())
+                .kind(ButtonKind::Secondary)
+                .size(ButtonSize::Sm)
+                .enabled(!state.desktop_control_pending)
+                .into_element(),
             );
         }
         permissions.into()
@@ -912,30 +939,23 @@ fn assistant_row<'a>(
                 })
                 .into()
         }
-        Body::Markdown { text, streaming } => {
-            let source = if *streaming {
-                format!("{text} ▍")
-            } else {
-                text.clone()
-            };
-            container(
-                enz_markdown(&source)
-                    .body_size(BODY)
-                    .heading_scale(1.0)
-                    .line_height_multiple(1.45)
-                    .block_spacing(7.0)
-                    .on_link_clicked(|url| message(Message::Link(url)))
-                    .into_element(),
-            )
-            .padding(Padding {
-                top: 2.0,
-                bottom: 6.0,
-                right: 2.0,
-                ..Padding::ZERO
-            })
-            .width(Length::Fill)
-            .into()
-        }
+        Body::Markdown { text, blocks, .. } => container(
+            enz_markdown_blocks(blocks.get_or_init(|| markdown::parse(text)).clone())
+                .body_size(BODY)
+                .heading_scale(1.0)
+                .line_height_multiple(1.45)
+                .block_spacing(7.0)
+                .on_link_clicked(|url| message(Message::Link(url)))
+                .into_element(),
+        )
+        .padding(Padding {
+            top: 2.0,
+            bottom: 6.0,
+            right: 2.0,
+            ..Padding::ZERO
+        })
+        .width(Length::Fill)
+        .into(),
         Body::Image { alt, image, path } => {
             let picture: Element<'a, ShellMessage> = match image {
                 Some((handle, width, height)) => {
@@ -1334,14 +1354,15 @@ fn assistant_row<'a>(
                 .into()
         }
         Body::Meta { text, reply } => {
-            let mut line = row![
-                enz_text(text.clone())
-                    .size_px(TINY)
-                    .color(muted)
-                    .into_element()
-            ]
-            .spacing(4)
-            .align_y(Alignment::Center);
+            let mut line = row![].spacing(4).align_y(Alignment::Center);
+            if !text.is_empty() {
+                line = line.push(
+                    enz_text(text.clone())
+                        .size_px(TINY)
+                        .color(muted)
+                        .into_element(),
+                );
+            }
             if !reply.is_empty() {
                 line = line.push(
                     enz_toolbar_icon("copy", message(Message::Copy(reply.clone())))
@@ -1370,9 +1391,11 @@ mod tests {
 
     #[test]
     fn same_title_sessions_expose_distinct_click_targets() {
-        let compositor =
-            enzui_shell::compositor::Compositor::new("/usr/bin/true".into(), "assistant-fixture".into())
-                .unwrap();
+        let compositor = enzui_shell::compositor::Compositor::new(
+            "/usr/bin/true".into(),
+            "assistant-fixture".into(),
+        )
+        .unwrap();
         let mut shell = Shell::new(compositor, "/".into()).0;
         shell.assistant.sessions = ["session-a", "session-b"]
             .map(|id| super::super::SessionRow {

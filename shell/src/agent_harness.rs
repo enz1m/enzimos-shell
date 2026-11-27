@@ -640,6 +640,18 @@ pub fn connect() -> Result<UnixStream, String> {
     private_socket(&socket_path().ok_or_else(|| tr("shell-no-runtime-folder"))?)
 }
 
+/// Localized recovery guidance for actionable turn failures.
+pub fn turn_error(code: &str) -> Option<&'static str> {
+    let key = match code {
+        "gateway-unavailable" => "shell-assistant-gateway-unavailable",
+        "local-models-unavailable" => "shell-assistant-local-models-unavailable",
+        "provider-timeout" => "shell-assistant-provider-timeout",
+        "request-unavailable" => "shell-assistant-request-unavailable",
+        _ => return None,
+    };
+    Some(tr(key))
+}
+
 /// The `turn.start` request line, with the skills chosen for this turn as
 /// `(name, sha256)`; the harness refuses one that changed since it was listed.
 #[must_use]

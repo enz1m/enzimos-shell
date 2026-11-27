@@ -13,6 +13,7 @@ use enzui_shell::compositor::{ControlGeometry, TriggerLayout};
 use enzui_shell::settings::{AssistantCorner, BarEdge, Metrics};
 use iced::{Task, widget::text_editor, window};
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 pub(crate) use transcript::Transcript;
 
@@ -42,7 +43,7 @@ pub(crate) enum Message {
     Created(String, Result<String, String>),
     Turn(u64, client::TurnEvent),
     Answered(String, Result<Value, String>),
-    Requested(Result<Value, String>),
+    Steered(String, Result<Value, String>),
     Edit(text_editor::Action),
     Send,
     Stop,
@@ -63,7 +64,7 @@ pub(crate) enum Message {
     Link(String),
     Copy(String),
     Retry,
-    Measured(enzui_widgets::row_measure::RowMeasurement),
+    Measured(String, enzui_widgets::row_measure::RowMeasurement),
     Scrolled(iced::widget::scrollable::Viewport),
     Latest,
     Tick,
@@ -132,6 +133,9 @@ pub(crate) struct State {
     pub title: String,
     pub transcript: Transcript,
     pub composer: text_editor::Content,
+    drafts: HashMap<Option<String>, text_editor::Content>,
+    steering: bool,
+    pub export_failed: bool,
     pub running: Option<Running>,
     turn_serial: u64,
     pub history: bool,
@@ -153,6 +157,21 @@ impl State {
         } else {
             preferred
         };
+    }
+
+    fn switch_draft(&mut self, next: Option<String>) {
+        let restored = self.drafts.remove(&next).unwrap_or_default();
+        let previous = std::mem::replace(&mut self.composer, restored);
+        if !previous.text().trim().is_empty() {
+            self.drafts.insert(self.session.clone(), previous);
+        }
+        self.session = next;
+    }
+
+    fn clear_sent_draft(&mut self, prompt: &str) {
+        if self.composer.text().trim() == prompt {
+            self.composer = text_editor::Content::new();
+        }
     }
 
     pub(crate) fn owns(&self, id: window::Id) -> bool {
@@ -302,7 +321,9 @@ impl Shell {
                 let ready = matches!(state, client::Service::Ready(_));
                 self.assistant.service = Some(match state {
                     client::Service::Ready(model) => {
-                        self.assistant.model = model;
+                        if !model.is_empty() {
+                            self.assistant.model = model;
+                        }
                         Ok(())
                     }
                     client::Service::Failed(error) => Err(error),
@@ -401,6 +422,7 @@ impl Shell {
                             size.width,
                             size.height,
                         ));
+                        self.assistant.viewport = (geometry.height - 125.0).max(200.0);
                         self.assistant.panel = Some(Pane {
                             window: id,
                             geometry,
@@ -439,9 +461,10 @@ impl Shell {
                     // The panel opens on the most recent chat.
                     if let Some(latest) = self.assistant.sessions.first() {
                         self.assistant.approval_busy = true;
-                        self.assistant.session = Some(latest.id.clone());
-                        self.assistant.title = latest.title.clone();
-                        return export(latest.id.clone());
+                        let (id, title) = (latest.id.clone(), latest.title.clone());
+                        self.assistant.switch_draft(Some(id.clone()));
+                        self.assistant.title = title;
+                        return export(id);
                     }
                     self.assistant_new_approval();
                 }
@@ -459,6 +482,7 @@ impl Shell {
                     return Task::none();
                 }
                 self.assistant.approval_busy = false;
+                self.assistant.export_failed = result.is_err();
                 match result {
                     Ok(value) => {
                         self.assistant.approval_mode = ApprovalMode::read(&value["approval_mode"]);
@@ -490,11 +514,12 @@ impl Shell {
                 match result {
                     Ok(id) => {
                         self.assistant.session = Some(id.clone());
+                        self.assistant.clear_sent_draft(&prompt);
                         self.assistant_start(id, prompt)
                     }
                     Err(error) => {
                         self.assistant.error = Some(error);
-                        Task::none()
+                        iced::widget::operation::focus(COMPOSER)
                     }
                 }
             }
@@ -524,6 +549,10 @@ impl Shell {
                                     .transcript
                                     .finish(Some(tr("shell-cancelled").into()));
                             }
+                            Ok(status) if status == "failed" => self
+                                .assistant
+                                .transcript
+                                .fail(tr("shell-assistant-request-unavailable")),
                             Ok(_) => self.assistant.transcript.finish(None),
                             Err(error) => self.assistant.transcript.fail(&error),
                         }
@@ -539,9 +568,11 @@ impl Shell {
                 }
                 Task::none()
             }
-            Message::Requested(result) => {
-                if let Err(error) = result {
-                    self.assistant.error = Some(error);
+            Message::Steered(prompt, result) => {
+                self.assistant.steering = false;
+                match result {
+                    Ok(_) => self.assistant.clear_sent_draft(&prompt),
+                    Err(error) => self.assistant.error = Some(error),
                 }
                 Task::none()
             }
@@ -550,14 +581,10 @@ impl Shell {
                 Task::none()
             }
             Message::Send => {
-                if self.assistant.approval_busy || self.assistant.confirming_full_send {
-                    return Task::none();
-                }
                 let text = self.assistant.composer.text().trim().to_owned();
                 if text.is_empty() {
                     return Task::none();
                 }
-                self.assistant.composer = text_editor::Content::new();
                 self.assistant_send(text)
             }
             Message::Suggest(prompt) => self.assistant_send(prompt.to_owned()),
@@ -577,10 +604,18 @@ impl Shell {
                 Task::none()
             }
             Message::NewChat => {
-                if self.assistant.running.is_some() || self.assistant.approval_busy {
+                if self.assistant.running.is_some()
+                    || self.assistant.approval_busy
+                    || self.assistant.steering
+                {
                     return Task::none();
                 }
-                let revoke = revoke_desktop_control(self.assistant.session.take());
+                let revoke = revoke_desktop_control(self.assistant.session.clone());
+                if self.assistant.session.is_some() {
+                    self.assistant.switch_draft(None);
+                }
+                self.assistant.loaded = true;
+                self.assistant.export_failed = false;
                 self.assistant_new_approval();
                 self.assistant.title = String::new();
                 self.assistant.transcript.clear();
@@ -600,11 +635,19 @@ impl Shell {
                 self.assistant.history = false;
                 if self.assistant.running.is_some()
                     || self.assistant.approval_busy
-                    || self.assistant.session.as_deref() == Some(&id)
+                    || self.assistant.steering
                 {
                     return Task::none();
                 }
-                let revoke = revoke_desktop_control(self.assistant.session.replace(id.clone()));
+                if self.assistant.session.as_deref() == Some(&id) {
+                    if self.assistant.export_failed {
+                        self.assistant.approval_busy = true;
+                        return export(id);
+                    }
+                    return iced::widget::operation::focus(COMPOSER);
+                }
+                let revoke = revoke_desktop_control(self.assistant.session.clone());
+                self.assistant.switch_draft(Some(id.clone()));
                 self.assistant.approval_busy = true;
                 self.assistant.approval_mode = ApprovalMode::Ask;
                 self.assistant.screenshots = Screenshots::Off;
@@ -740,18 +783,14 @@ impl Shell {
             Message::Copy(text) => {
                 iced::clipboard::write(text).map(|_| ShellMessage::RegionInterior)
             }
-            Message::Measured(measurement) => {
+            Message::Measured(key, measurement) => {
                 let transcript = &mut self.assistant.transcript;
-                if measurement.index < transcript.heights.len() {
-                    let mut model = enzui_core::virtual_sequence::VariableHeightModel::new(
-                        transcript.heights.iter().copied(),
-                    );
-                    self.assistant.scroll = enzui_widgets::virtual_list::reconcile_measurements(
-                        &mut model,
-                        self.assistant.scroll,
-                        [measurement.into()],
-                    );
-                    transcript.heights[measurement.index] = measurement.height;
+                if transcript
+                    .rows
+                    .get(measurement.index)
+                    .is_some_and(|row| row.key == key)
+                {
+                    self.assistant.scroll = transcript.measure(measurement, self.assistant.scroll);
                 }
                 Task::none()
             }
@@ -763,7 +802,7 @@ impl Shell {
                     viewport.bounds().height,
                     viewport.content_bounds().height,
                 );
-                self.assistant.away = distance > 120.0;
+                self.assistant.away = !enzui_widgets::tail_follow::is_at_end(distance);
                 Task::none()
             }
             Message::Latest => {
@@ -843,29 +882,37 @@ impl Shell {
     }
 
     fn assistant_send(&mut self, text: String) -> Task<ShellMessage> {
-        if self.assistant.approval_busy || self.assistant.confirming_full_send {
+        if self.assistant.approval_busy
+            || self.assistant.confirming_full_send
+            || self.assistant.steering
+            || self.assistant.export_failed
+        {
             return Task::none();
         }
+        self.assistant.loaded = true;
         self.assistant.history = false;
         self.assistant.choosing_approval = false;
-        self.assistant.away = false;
         if self.assistant.running.is_some() {
             // Mid-turn: the message steers the running turn.
             let Some(session) = self.assistant.session.clone() else {
                 return Task::none();
             };
+            self.assistant.steering = true;
             return Task::batch([
                 perform(async move {
-                    Message::Requested(
+                    let result =
                         client::request("turn.steer", json!({"session_id": session, "text": text}))
-                            .await,
-                    )
+                            .await;
+                    Message::Steered(text, result)
                 }),
                 iced::widget::operation::focus(COMPOSER),
             ]);
         }
         match self.assistant.session.clone() {
-            Some(session) => self.assistant_start(session, text),
+            Some(session) => {
+                self.assistant.clear_sent_draft(&text);
+                self.assistant_start(session, text)
+            }
             None => {
                 self.assistant.transcript.clear();
                 self.assistant.approval_busy = true;
@@ -879,6 +926,7 @@ impl Shell {
     }
 
     fn assistant_start(&mut self, session: String, prompt: String) -> Task<ShellMessage> {
+        self.assistant.away = false;
         self.assistant.turn_serial += 1;
         let serial = self.assistant.turn_serial;
         self.assistant.transcript.begin(&prompt);
@@ -1070,7 +1118,7 @@ impl Shell {
         if self.assistant.owns_panel(id) {
             if self.assistant.history {
                 self.assistant.history = false;
-                return Task::none();
+                return iced::widget::operation::focus(COMPOSER);
             }
             return self.close_assistant();
         }

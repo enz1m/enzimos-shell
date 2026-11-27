@@ -6,8 +6,9 @@ use enzui_shell::i18n::tr;
 use enzui_shell::tr;
 use iced::futures::SinkExt;
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
+use tokio::time::Instant;
 
 use super::Screenshots;
 
@@ -46,9 +47,8 @@ pub(super) async fn open(mode: ApprovalMode, screenshots: Screenshots) -> Result
         tokio::task::spawn_blocking(|| {
             let config = agent_harness::load()?.unwrap_or_else(agent_harness::starter);
             let setup = agent_harness::summary(&config);
-            let unset = || {
-                tr("shell-choose-a-workspace-folder-in-settings-agents-first").to_owned()
-            };
+            let unset =
+                || tr("shell-choose-a-workspace-folder-in-settings-agents-first").to_owned();
             let workspace = setup.roots.first().cloned().ok_or_else(unset)?;
             let model = if setup.model.is_empty() && setup.provider != "local" {
                 agent_harness::models(&setup.gateway)?
@@ -107,8 +107,11 @@ pub(super) async fn set_approval_mode(id: &str, mode: ApprovalMode) -> Result<()
 
 /// The model a session uses, as the composer names it.
 fn model_label() -> String {
-    if socket() != agent_harness::socket_path() {
+    if mock() {
         return tr("shell-mock-agent").into();
+    }
+    if socket() != agent_harness::socket_path() {
+        return String::new();
     }
     agent_harness::load()
         .ok()
@@ -225,25 +228,73 @@ pub(super) fn turn(
                     .await
                     .map_err(|_| tr("shell-the-assistant-did-not-accept-the-message"))?;
                 let mut reader = tokio::io::BufReader::new(stream);
+                let mut frame = tokio::time::timeout(Duration::from_secs(30), line(&mut reader))
+                    .await
+                    .map_err(|_| tr("shell-the-assistant-service-did-not-answer"))??;
+                let mut pending: Option<(Value, Instant)> = None;
                 loop {
-                    let frame = line(&mut reader).await?;
-                    if frame.get("event").is_some() {
-                        let _ = output.send(TurnEvent::Event(frame["event"].clone())).await;
-                    } else if frame["ok"] == Value::Bool(true) {
-                        return Ok(frame["status"].as_str().unwrap_or("completed").to_owned());
+                    if let Some(event) = frame.get_mut("event").map(Value::take) {
+                        if event["type"] == "message.delta" {
+                            match pending.as_mut() {
+                                Some((batch, _)) => {
+                                    if let Some(Value::String(text)) = batch.get_mut("text") {
+                                        text.push_str(event["text"].as_str().unwrap_or_default());
+                                    }
+                                }
+                                None => {
+                                    pending =
+                                        Some((event, Instant::now() + Duration::from_millis(16)));
+                                }
+                            }
+                        } else {
+                            if let Some((batch, _)) = pending.take() {
+                                let _ = output.send(TurnEvent::Event(batch)).await;
+                            }
+                            let _ = output.send(TurnEvent::Event(event)).await;
+                        }
                     } else {
-                        return Err(frame["error"]
-                            .as_str()
-                            .filter(|error| !error.is_empty())
-                            .unwrap_or_else(|| tr("shell-the-turn-failed"))
-                            .to_owned());
+                        if let Some((batch, _)) = pending.take() {
+                            let _ = output.send(TurnEvent::Event(batch)).await;
+                        }
+                        if frame["ok"] == Value::Bool(true) {
+                            return Ok(frame["status"].as_str().unwrap_or("completed").to_owned());
+                        }
+                        let code = frame["error"].as_str().filter(|error| !error.is_empty());
+                        return Err(code.map_or_else(
+                            || tr("shell-the-turn-failed").to_owned(),
+                            |code| agent_harness::turn_error(code).unwrap_or(code).to_owned(),
+                        ));
                     }
+                    let read = line(&mut reader);
+                    tokio::pin!(read);
+                    let next = if let Some((_, deadline)) = &pending {
+                        tokio::select! {
+                            biased;
+                            () = tokio::time::sleep_until(*deadline) => {
+                                if let Some((batch, _)) = pending.take() {
+                                    let _ = output.send(TurnEvent::Event(batch)).await;
+                                }
+                                read.await
+                            }
+                            result = &mut read => result,
+                        }
+                    } else {
+                        read.await
+                    };
+                    if next.is_err()
+                        && let Some((batch, _)) = pending.take()
+                    {
+                        let _ = output.send(TurnEvent::Event(batch)).await;
+                    }
+                    frame = next?;
                 }
             };
             let result = tokio::select! {
                 biased;
                 _ = cancelled => Ok("cancelled".to_owned()),
-                result = exchange => result,
+                result = tokio::time::timeout(Duration::from_secs(610), exchange) => {
+                    result.unwrap_or_else(|_| Err(tr("shell-assistant-provider-timeout").into()))
+                },
             };
             let _ = output.send(TurnEvent::Finished(result)).await;
         },
@@ -334,6 +385,12 @@ pub(super) fn service() -> iced::Subscription<Service> {
                             .await
                             .unwrap_or_default();
                         let _ = output.send(Service::Ready(label)).await;
+                    } else {
+                        let _ = output
+                            .send(Service::Failed(
+                                tr("shell-the-assistant-service-is-not-running").into(),
+                            ))
+                            .await;
                     }
                     match child.as_mut() {
                         Some(child) => {

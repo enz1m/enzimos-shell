@@ -52,7 +52,11 @@ impl Shell {
     }
     pub(crate) fn dock_plugin_settings(&self) -> Task<Message> {
         self.dock_owner().map_or_else(Task::none, |claim| {
-            Task::done(Message::SettingsPlugin(claim.owner.id.clone()))
+            Task::done(if claim.owner.id == applications::DOCK_PLUGIN {
+                Message::SettingsPage("section/dock/enabled")
+            } else {
+                Message::SettingsPlugin(claim.owner.id.clone())
+            })
         })
     }
     pub(crate) fn application_surface_request(

@@ -288,6 +288,11 @@ fn all_entries() -> impl Iterator<Item = Entry> {
 }
 
 pub fn find(route: &str) -> Option<Entry> {
+    let route = if route == "dock/visible" {
+        "dock/enabled"
+    } else {
+        route
+    };
     all_entries().find(|entry| entry.route == route)
 }
 pub fn valid_route(route: &str) -> bool {

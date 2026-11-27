@@ -196,6 +196,21 @@ impl Store {
         })
     }
     pub fn enabled(&self, id: &str, hash: [u8; 32], enabled: bool) -> Result<Record, String> {
+        self.set_enabled(id, hash, enabled, false)
+    }
+
+    /// Changes dock activation, clearing a saved hidden state when switched on.
+    pub fn enable_dock(&self, hash: [u8; 32], enabled: bool) -> Result<Record, String> {
+        self.set_enabled(super::super::applications::DOCK_PLUGIN, hash, enabled, true)
+    }
+
+    fn set_enabled(
+        &self,
+        id: &str,
+        hash: [u8; 32],
+        enabled: bool,
+        show_dock: bool,
+    ) -> Result<Record, String> {
         self.transaction(|state| {
             if enabled
                 && state
@@ -214,7 +229,12 @@ impl Store {
                 .find(|r| r.id == id && r.digest == hash)
                 .ok_or_else(|| tr("shell-plugin-changed-reload-settings"))?;
             if enabled {
-                self.package(record)?;
+                let package = self.package(record)?;
+                if show_dock && record.config.get("visible") == Some(&Value::Bool(false)) {
+                    record.config["visible"] = true.into();
+                    package.manifest().validate_config(&record.config)?;
+                    record.config_revision = serial;
+                }
             }
             record.enabled = enabled;
             record.activation = serial;

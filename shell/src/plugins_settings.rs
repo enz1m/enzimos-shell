@@ -142,7 +142,11 @@ impl Operation {
                 digest,
                 enabled,
             } => {
-                store.enabled(&id, digest, enabled)?;
+                if id == enzui_shell::plugins::applications::DOCK_PLUGIN {
+                    store.enable_dock(digest, enabled)?;
+                } else {
+                    store.enabled(&id, digest, enabled)?;
+                }
             }
             Self::Config {
                 id,
@@ -256,6 +260,17 @@ impl State {
     fn config(&self, record: &Record, key: &str) -> Value {
         self.operations()
             .fold(record.config()[key].clone(), |old, op| match op {
+                Operation::Enable {
+                    id,
+                    digest,
+                    enabled: true,
+                } if id == enzui_shell::plugins::applications::DOCK_PLUGIN
+                    && id == record.id()
+                    && *digest == record.digest()
+                    && key == "visible" =>
+                {
+                    true.into()
+                }
                 Operation::Config {
                     id,
                     digest,
@@ -264,6 +279,9 @@ impl State {
                 } if id == record.id() && *digest == record.digest() && k == key => value.clone(),
                 _ => old,
             })
+    }
+    fn dock_enabled(&self, record: &Record) -> bool {
+        self.enabled(record) && self.config(record, "visible").as_bool().unwrap_or(true)
     }
 }
 #[derive(Clone)]
@@ -1006,7 +1024,7 @@ impl SettingsApp {
 
     pub(super) fn dock_settings(&self) -> Option<Element<'_, AppMessage>> {
         let (record, package) = self.plugins.dock()?;
-        let enabled = self.plugins.enabled(record);
+        let enabled = self.plugins.dock_enabled(record);
         let id = record.id().to_owned();
         let toggle = self.dependent(enabled || runtime_available(), || {
             self.switch_setting("dock/enabled", enabled, move |value| {
@@ -1025,13 +1043,16 @@ impl SettingsApp {
         inline: bool,
     ) -> iced::widget::Column<'a, AppMessage> {
         let id = record.id();
+        let dock = id == enzui_shell::plugins::applications::DOCK_PLUGIN;
         let palette = self.tokens().palette;
         let mut rows = column![].spacing(4);
         for spec in &package.manifest().settings {
+            if dock && spec.key == "visible" {
+                continue;
+            }
             let current = self.plugins.config(record, &spec.key);
             let plugin = id.to_owned();
             let key = spec.key.clone();
-            let dock = id == enzui_shell::plugins::applications::DOCK_PLUGIN;
             let route = dock.then(|| format!("dock/{key}"));
             let label = match route
                 .as_deref()
@@ -1300,7 +1321,7 @@ mod tests {
         use enzui_shell::{i18n, settings_catalog};
 
         let (_root, mut app, _) = fixture();
-        let store = app.plugins.store.as_ref().unwrap();
+        let store = app.plugins.store.as_ref().unwrap().clone();
         let mut manifest: Value = serde_json::from_str(include_str!(
             "../../examples/plugins/app-dock/manifest.json"
         ))
@@ -1323,21 +1344,47 @@ mod tests {
         store
             .configure("app-dock", previous.digest(), "position", json!("left"))
             .unwrap();
+        store
+            .configure("app-dock", previous.digest(), "visible", json!(false))
+            .unwrap();
         store.initialize_defaults().unwrap();
-        app.plugins.data = Some(read(store).unwrap());
+        app.plugins.data = Some(read(&store).unwrap());
+        let (hidden, _) = app.plugins.dock().unwrap();
+        assert!(hidden.enabled());
+        assert!(!app.plugins.dock_enabled(hidden));
+
+        let digest = hidden.digest();
+        let set_dock = |enabled| {
+            Operation::Enable {
+                id: "app-dock".into(),
+                digest,
+                enabled,
+            }
+            .apply(&store)
+            .unwrap();
+            read(&store).unwrap()
+        };
+        app.plugins.data = Some(set_dock(false));
+        assert!(!app.plugins.dock_enabled(app.plugins.dock().unwrap().0));
+        app.plugins.data = Some(set_dock(true));
         i18n::canonical(|| {
             let (record, package) = app.plugins.dock().unwrap();
-            assert!(app.plugins.enabled(record));
+            assert!(app.plugins.dock_enabled(record));
             assert_eq!(app.plugins.config(record, "position"), json!("left"));
             assert_eq!(app.plugins.config(record, "material"), json!("panels"));
             assert_eq!(app.plugins.config(record, "indicator"), json!("dashes"));
-                        let groups = settings_catalog::search_groups("Dock", |_, _| true);
+            let groups = settings_catalog::search_groups("Dock", |_, _| true);
             let dock = &groups[0];
             assert_eq!(
                 dock.destination,
                 settings_catalog::SearchDestination::Section("dock/enabled")
             );
-            for spec in &package.manifest().settings {
+            for spec in package
+                .manifest()
+                .settings
+                .iter()
+                .filter(|spec| spec.key != "visible")
+            {
                 let route = format!("dock/{}", spec.key);
                 assert!(dock.controls.iter().any(|entry| entry.route == route));
             }
@@ -1365,6 +1412,9 @@ mod tests {
 
             let _ = app.update(AppMessage::Reveal("dock/visibility"));
             assert_eq!(app.highlighted, Some("dock/visibility"));
+
+            let _ = app.update(AppMessage::Reveal("dock/visible"));
+            assert_eq!(app.highlighted, Some("dock/enabled"));
         });
     }
 

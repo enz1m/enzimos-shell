@@ -523,6 +523,7 @@ impl SettingsApp {
             body.push(
                 self.section_card_for("dock/enabled", dock)
                     .title(tr("shell-dock"))
+                    .description(tr("shell-dock-visibility-description"))
                     .into_element(),
             )
         } else {

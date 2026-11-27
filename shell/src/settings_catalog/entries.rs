@@ -963,13 +963,6 @@ pub static ENTRIES: &[Entry] = &[
     ),
     entry!(
         Shell,
-        "dock/visible",
-        "shell-dock-show",
-        "shell-dock",
-        "shell-dock-search-visible"
-    ),
-    entry!(
-        Shell,
         "dock/position",
         "shell-position",
         "shell-dock",

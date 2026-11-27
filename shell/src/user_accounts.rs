@@ -108,6 +108,21 @@ async fn user(c: &Connection, uid: u32) -> Result<Proxy<'_>, String> {
         .map_err(failure)?;
     Proxy::new(c, SERVICE, path, USER).await.map_err(failure)
 }
+pub(crate) async fn current_profile() -> Option<(String, String, Option<String>)> {
+    let connection = connection().await.ok()?;
+    let profile = user(&connection, rustix::process::getuid().as_raw())
+        .await
+        .ok()?;
+    let user = clean(profile.get_property("UserName").await.ok()?);
+    let name = clean(profile.get_property("RealName").await.unwrap_or_default());
+    let name = if name.trim().is_empty() {
+        user.clone()
+    } else {
+        name
+    };
+    let icon: String = profile.get_property("IconFile").await.unwrap_or_default();
+    Some((user, name, (!icon.is_empty()).then_some(icon)))
+}
 async fn read(c: &Connection, current: u32) -> Result<Accounts, String> {
     let manager = manager(c).await?;
     let paths: Vec<OwnedObjectPath> = manager

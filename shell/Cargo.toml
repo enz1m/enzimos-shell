@@ -8,7 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-x11 = ["iced/x11", "enzui-widgets/x11"]
+x11 = ["iced/x11", "enzui-widgets/x11", "dep:x11rb"]
 # Dev-only NDJSON frame timing: ENZUI_FRAME_REPORT or the runtime default, refreshed each second.
 frame-report = ["iced/performance-observer"]
 
@@ -145,6 +145,7 @@ serde = { version = "1", features = ["derive"] }
 base64 = "=0.22.1"
 sha2 = "=0.10.9"
 libc = "0.2"
+libloading = "0.8.9"
 rustix = { version = "=1.1.4", features = ["event", "fs", "net", "pipe", "process", "stdio"] }
 wayland-protocols = { version = "=0.32.13", features = ["client", "staging", "unstable"] }
 zbus = { version = "=5.19.0", default-features = false, features = ["tokio"] }
@@ -155,9 +156,11 @@ wayland-client = "=0.31.15"
 wayland-protocols-wlr = { version = "=0.3.12", features = ["client"] }
 wayland-protocols-misc = { version = "=0.3.12", features = ["client"] }
 wayland-scanner = "=0.31.11"
+x11rb = { version = "0.13.2", optional = true }
 xkbcommon = { version = "=0.8.0", default-features = false }
 wayland-backend = "=0.3.15"
 raster = { package = "image", version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+resvg = { version = "=0.48.1", default-features = false }
 
 tempfile = "3"
 

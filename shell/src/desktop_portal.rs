@@ -1,8 +1,4 @@
-//! XDG Desktop Portal backend for file selection, access consent, background apps and
-//! appearance.
-//!
-//! The frontend grants document access. This backend writes sandbox autostart entries
-//! and publishes color scheme, text scale and clock preferences from desktop settings.
+//! enzimOS desktop portal backend.
 
 use enzui_shell::i18n::tr;
 use enzui_shell::tr;
@@ -193,8 +189,16 @@ impl From<bool> for AccessAnswer {
 pub enum Event {
     Begin(Request, oneshot::Sender<Outcome>),
     Access(AccessRequest, oneshot::Sender<AccessAnswer>),
+    Print(
+        print_portal::DialogRequest,
+        oneshot::Sender<print_portal::DialogAnswer>,
+    ),
+    Dialog(PortalDialog, oneshot::Sender<PortalDialogAnswer>),
+    AppChoicesChanged(u64, Vec<ApplicationChoice>),
     Close(u64),
-    Appearance { light: bool },
+    Appearance {
+        light: bool,
+    },
 }
 
 fn text(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
@@ -842,6 +846,44 @@ impl Background {
     ) -> zbus::Result<()>;
 }
 
+#[path = "portal_print.rs"]
+pub mod print_portal;
+
+mod dialogs;
+pub use dialogs::{ApplicationChoice, PortalDialog, PortalDialogAnswer, PortalDialogKind};
+#[path = "portal_inhibit.rs"]
+pub(crate) mod portal_inhibit;
+#[path = "portal_lockdown.rs"]
+mod portal_lockdown;
+#[path = "portal_notification.rs"]
+pub(crate) mod portal_notification;
+
+const FRONTEND: &str = "org.freedesktop.portal.Desktop";
+
+async fn require_frontend(
+    connection: &zbus::Connection,
+    header: &zbus::message::Header<'_>,
+) -> zbus::fdo::Result<String> {
+    require_owner(connection, header, FRONTEND).await
+}
+
+async fn require_owner(
+    connection: &zbus::Connection,
+    header: &zbus::message::Header<'_>,
+    name: &str,
+) -> zbus::fdo::Result<String> {
+    let bus = zbus::fdo::DBusProxy::new(connection).await?;
+    let owner = bus
+        .get_name_owner(name.try_into().map_err(zbus::Error::from)?)
+        .await?;
+    if header.sender() != Some(&owner) {
+        return Err(zbus::fdo::Error::AccessDenied(format!(
+            "Only {name} may call this interface"
+        )));
+    }
+    Ok(owner.to_string())
+}
+
 #[path = "desktop_portal_settings.rs"]
 mod settings_portal;
 use settings_portal::{Appearance, Preferences};
@@ -856,7 +898,8 @@ async fn serve_on(
         next: Mutex::new(0),
     });
     let (windows_tx, windows_rx) = tokio::sync::watch::channel(0u64);
-    let connection = builder
+    let inhibit = portal_inhibit::Inhibit::default();
+    let connection = dialogs::register(builder, std::sync::Arc::clone(&chooser))?
         .serve_at(PATH, Files(std::sync::Arc::clone(&chooser)))
         .map_err(|_| tr("shell-could-not-publish-the-file-chooser"))?
         .serve_at(
@@ -866,6 +909,11 @@ async fn serve_on(
             },
         )
         .map_err(|_| tr("shell-could-not-publish-the-access-dialog"))?
+        .serve_at(
+            PATH,
+            print_portal::Print::new(std::sync::Arc::clone(&chooser)),
+        )
+        .map_err(|error| format!("Could not publish Print portal: {error}"))?
         .serve_at(
             PATH,
             Background {
@@ -881,11 +929,21 @@ async fn serve_on(
             },
         )
         .map_err(|_| tr("shell-could-not-publish-the-appearance-settings"))?
+        .serve_at(PATH, inhibit.clone())
+        .and_then(|builder| builder.serve_at(PATH, portal_notification::Notification))
+        .and_then(|builder| builder.serve_at(PATH, portal_lockdown::Lockdown::new()))
+        .map_err(|error| error.to_string())?
         .name(BUS_NAME)
         .map_err(|_| tr("shell-invalid-portal-name"))?
         .build()
         .await
         .map_err(|_| tr("shell-another-file-chooser-backend-already-runs"))?;
+    let inhibit_connection = connection.clone();
+    tokio::spawn(async move {
+        if let Err(error) = inhibit.watch(&inhibit_connection).await {
+            eprintln!("enzui-portal: inhibitor monitor: {error}");
+        }
+    });
     // Install the window-feed subscription before returning so no change signal is lost.
     if let Ok(background) = connection
         .object_server()

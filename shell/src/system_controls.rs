@@ -781,7 +781,11 @@ impl SystemControls {
                     .ok_or_else(|| tr("shell-this-desktop-is-not-running-in-a-login-session"))?;
                 // Let the session command return to its display manager. Killing
                 // the login scope also kills SDDM's PAM helper before it can close.
-                compositor.request(&["dispatch", "hl.dsp.exit()"]).await?;
+                crate::desktop_portal::portal_inhibit::logout(true).await;
+                if let Err(error) = compositor.request(&["dispatch", "hl.dsp.exit()"]).await {
+                    crate::desktop_portal::portal_inhibit::logout(false).await;
+                    return Err(error);
+                }
             }
             Action::LogOut => {
                 return Err(

@@ -200,6 +200,63 @@ impl Origin {
         })
     }
 
+    pub(crate) async fn enzui_portal(
+        connection: &zbus::Connection,
+        sender: &str,
+        name: &str,
+        app_id: &str,
+    ) -> Result<Self, String> {
+        let bus = zbus::fdo::DBusProxy::new(connection).await.map_err(error)?;
+        let owner = bus
+            .get_name_owner(name.try_into().map_err(error)?)
+            .await
+            .map_err(error)?;
+        if owner.as_str() != sender {
+            return Err(error("portal owner"));
+        }
+        let (pid, uid) = credentials(connection, sender).await?;
+        let sender = sender.to_owned();
+        let app_id = app_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let proc = format!("/proc/{pid}/exe");
+            let start = session::start(pid).map_err(error)?;
+            let meta = fs::metadata(&proc).map_err(error)?;
+            let shell = fs::read_link("/proc/self/exe").map_err(error)?;
+            let backend = fs::metadata(shell.with_file_name("enzui-portal")).map_err(error)?;
+            if (meta.dev(), meta.ino()) != (backend.dev(), backend.ino())
+                || uid != fs::metadata("/proc/self").map_err(error)?.uid()
+                || session::start(pid).map_err(error)? != start
+            {
+                return Err(error("portal identity"));
+            }
+            let label = crate::default_apps::name(&app_id)
+                .map(|name| safe_label(&name))
+                .filter(|label| !label.is_empty())
+                .unwrap_or_else(|| {
+                    if app_id.is_empty() {
+                        tr("shell-application").into()
+                    } else {
+                        safe_label(&app_id)
+                    }
+                });
+            Ok(Self {
+                sender,
+                principal: executable_principal(Path::new(&format!("portal:{app_id}"))),
+                label,
+                icon: "package".into(),
+                app_icon: crate::icon_theme::lookup(&app_id, 48),
+                desktop: None,
+                pid,
+                start,
+                device: meta.dev(),
+                inode: meta.ino(),
+                portal: true,
+            })
+        })
+        .await
+        .map_err(error)?
+    }
+
     pub fn is_internal(&self) -> bool {
         self.sender.is_empty()
     }

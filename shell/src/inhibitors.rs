@@ -38,9 +38,23 @@ pub fn relevant(all: &[Inhibitor], logout: bool) -> Vec<Inhibitor> {
 }
 
 pub async fn list() -> Result<Vec<Inhibitor>, String> {
-    crate::bus::bounded(list_now())
-        .await
-        .unwrap_or_else(|| Err(tr("shell-logind-did-not-list-inhibitors").to_owned()))
+    let (logind, portal) = tokio::join!(
+        crate::bus::bounded(list_now()),
+        crate::desktop_portal::portal_inhibit::session_inhibitors(false),
+    );
+    let mut locks = match logind {
+        Some(Ok(locks)) => locks,
+        _ if !portal.is_empty() => Vec::new(),
+        _ => return Err(tr("shell-logind-did-not-list-inhibitors").into()),
+    };
+    locks.extend(portal.into_iter().map(|(who, why)| Inhibitor {
+        who: who.chars().filter(|c| !c.is_control()).take(80).collect(),
+        why: why.chars().filter(|c| !c.is_control()).take(80).collect(),
+        what: "logout".into(),
+        mode: "block".into(),
+        uid: rustix::process::getuid().as_raw(),
+    }));
+    Ok(locks)
 }
 
 async fn list_now() -> Result<Vec<Inhibitor>, String> {

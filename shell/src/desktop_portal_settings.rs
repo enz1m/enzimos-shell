@@ -7,6 +7,9 @@ use std::{
 };
 use zbus::zvariant::{OwnedValue, Value};
 
+use enzui_core::theme_file::{ThemePaths, registry::TokenValue};
+use enzui_theme::{EnzThemeMode, WindowButtons};
+
 const APPEARANCE: &str = "org.freedesktop.appearance";
 
 #[derive(Debug, zbus::DBusError)]
@@ -30,6 +33,14 @@ pub(super) struct Preferences {
     text_scale: f64,
     clock_24h: bool,
     fonts: crate::font_settings::Fonts,
+    accent: (f64, f64, f64),
+    contrast: bool,
+    reduced_motion: bool,
+    cursor_theme: String,
+    cursor_size: i32,
+    icon_theme: String,
+    buttons: WindowButtons,
+    screen_keyboard: bool,
 }
 
 impl Preferences {
@@ -45,61 +56,244 @@ impl Preferences {
                 store.load().ok()
             })
             .unwrap_or_default();
-        Self::from_settings(&settings)
+        Self::from_settings(
+            &settings,
+            &crate::theme_store::Store::read(&ThemePaths::from_env()),
+        )
     }
 
-    fn from_settings(settings: &crate::settings::Settings) -> Self {
+    fn from_settings(
+        settings: &crate::settings::Settings,
+        theme: &crate::theme_store::Store,
+    ) -> Self {
+        let scheme = settings
+            .theme_scheme
+            .as_deref()
+            .and_then(crate::theme_palette::Scheme::from_id_str)
+            .unwrap_or_else(|| theme.choices().scheme);
+        let mode = if settings.light {
+            EnzThemeMode::Light
+        } else {
+            EnzThemeMode::Dark
+        };
+        let accent = match theme.document().get("palette.accent", mode) {
+            Some(TokenValue::Color(color)) => *color,
+            _ => crate::theme_palette::shown(scheme, mode).get("accent"),
+        };
+        let buttons = match theme.document().get("window.buttons", EnzThemeMode::Dark) {
+            Some(TokenValue::Enum(name)) => WindowButtons::from_name(name).unwrap_or_default(),
+            _ => WindowButtons::Desktop,
+        };
         Self {
             light: settings.light,
             text_scale: f64::from(settings.effective_metrics().text_scale()),
             clock_24h: settings.session.clock_24h,
             fonts: settings.fonts.clone(),
+            accent: (
+                f64::from(accent.r),
+                f64::from(accent.g),
+                f64::from(accent.b),
+            ),
+            contrast: scheme.style == crate::theme_palette::Style::Contrast,
+            reduced_motion: theme.reduced_motion(),
+            cursor_theme: std::env::var("XCURSOR_THEME")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "default".into()),
+            cursor_size: i32::from(settings.compositor.cursor_size),
+            icon_theme: settings
+                .icon_theme
+                .clone()
+                .unwrap_or_else(crate::icon_theme::default_theme),
+            buttons,
+            screen_keyboard: settings.osk_button,
         }
     }
 
     fn values(&self) -> BTreeMap<String, BTreeMap<String, OwnedValue>> {
-        BTreeMap::from([
+        let mut buttons = Vec::new();
+        if self.buttons.minimize() == Some(true) {
+            buttons.push("minimize");
+        }
+        if self.buttons.maximize() == Some(true) {
+            buttons.push("maximize");
+        }
+        buttons.push("close");
+        let layout = format!(":{}", buttons.join(","));
+        let str_value = |value: &str| owned(Value::from(value));
+        let groups = [
             (
-                APPEARANCE.to_owned(),
-                BTreeMap::from([(
-                    "color-scheme".to_owned(),
-                    OwnedValue::from(color_scheme(self.light)),
-                )]),
+                APPEARANCE,
+                vec![
+                    ("color-scheme", color_scheme(self.light).into()),
+                    ("accent-color", owned(Value::from(self.accent))),
+                    ("contrast", u32::from(self.contrast).into()),
+                    ("reduced-motion", u32::from(self.reduced_motion).into()),
+                    (
+                        "button-placement",
+                        owned(Value::from((
+                            Vec::<String>::new(),
+                            buttons.into_iter().map(str::to_owned).collect::<Vec<_>>(),
+                        ))),
+                    ),
+                ],
             ),
             (
-                "org.gnome.desktop.interface".to_owned(),
-                BTreeMap::from([
+                "org.gnome.desktop.interface",
+                vec![
                     (
-                        "font-name".to_owned(),
-                        owned(Value::from(
-                            self.fonts
+                        "font-name",
+                        str_value(
+                            &self
+                                .fonts
                                 .description(crate::font_settings::Slot::Interface),
-                        )),
+                        ),
                     ),
                     (
-                        "document-font-name".to_owned(),
-                        owned(Value::from(
-                            self.fonts.description(crate::font_settings::Slot::Document),
-                        )),
+                        "document-font-name",
+                        str_value(&self.fonts.description(crate::font_settings::Slot::Document)),
                     ),
                     (
-                        "monospace-font-name".to_owned(),
-                        owned(Value::from(
-                            self.fonts
+                        "monospace-font-name",
+                        str_value(
+                            &self
+                                .fonts
                                 .description(crate::font_settings::Slot::Monospace),
-                        )),
+                        ),
+                    ),
+                    ("text-scaling-factor", self.text_scale.into()),
+                    ("cursor-theme", str_value(&self.cursor_theme)),
+                    ("cursor-size", self.cursor_size.into()),
+                    ("icon-theme", str_value(&self.icon_theme)),
+                    (
+                        "gtk-theme",
+                        str_value(if self.contrast {
+                            "HighContrast"
+                        } else {
+                            "Adwaita"
+                        }),
+                    ),
+                    ("gtk-enable-primary-paste", true.into()),
+                    ("gtk-enable-animations", (!self.reduced_motion).into()),
+                    ("enable-animations", (!self.reduced_motion).into()),
+                    (
+                        "clock-format",
+                        str_value(if self.clock_24h { "24h" } else { "12h" }),
                     ),
                     (
-                        "text-scaling-factor".to_owned(),
-                        OwnedValue::from(self.text_scale),
+                        "color-scheme",
+                        str_value(if self.light {
+                            "prefer-light"
+                        } else {
+                            "prefer-dark"
+                        }),
                     ),
+                    ("overlay-scrolling", true.into()),
+                    ("enable-hot-corners", false.into()),
+                    ("cursor-blink", true.into()),
+                    ("cursor-blink-time", 1200i32.into()),
+                    ("cursor-blink-timeout", 10i32.into()),
                     (
-                        "clock-format".to_owned(),
-                        owned(Value::from(if self.clock_24h { "24h" } else { "12h" })),
+                        "gtk-im-module",
+                        str_value(&std::env::var("GTK_IM_MODULE").unwrap_or_default()),
                     ),
-                ]),
+                    ("font-rendering", str_value("automatic")),
+                    ("font-antialiasing", str_value("grayscale")),
+                    ("font-hinting", str_value("slight")),
+                    ("font-rgba-order", str_value("rgb")),
+                    ("gtk-key-theme", str_value("Default")),
+                ],
             ),
-        ])
+            (
+                "org.gnome.desktop.wm.preferences",
+                vec![
+                    ("button-layout", str_value(&layout)),
+                    (
+                        "titlebar-font",
+                        str_value(
+                            &self
+                                .fonts
+                                .description(crate::font_settings::Slot::Interface),
+                        ),
+                    ),
+                    ("action-double-click-titlebar", str_value("toggle-maximize")),
+                    ("action-middle-click-titlebar", str_value("none")),
+                    ("action-right-click-titlebar", str_value("menu")),
+                ],
+            ),
+            (
+                "org.gnome.desktop.privacy",
+                vec![
+                    ("recent-files-max-age", 30i32.into()),
+                    ("remember-recent-files", true.into()),
+                    ("disable-camera", false.into()),
+                    ("disable-microphone", false.into()),
+                    ("disable-sound-output", false.into()),
+                ],
+            ),
+            (
+                "org.gnome.desktop.a11y",
+                vec![("always-show-text-caret", false.into())],
+            ),
+            (
+                "org.gnome.desktop.a11y.interface",
+                vec![
+                    ("high-contrast", self.contrast.into()),
+                    ("show-status-shapes", false.into()),
+                    ("keyboard-focus-visible-timeout", (-1i32).into()),
+                ],
+            ),
+            (
+                "org.gnome.desktop.a11y.applications",
+                vec![
+                    ("screen-reader-enabled", false.into()),
+                    ("screen-keyboard-enabled", self.screen_keyboard.into()),
+                    ("screen-magnifier-enabled", false.into()),
+                ],
+            ),
+            (
+                "org.gnome.desktop.peripherals.mouse",
+                vec![
+                    ("double-click", 400i32.into()),
+                    ("drag-threshold", 8i32.into()),
+                ],
+            ),
+            (
+                "org.gnome.settings-daemon.peripherals.mouse",
+                vec![
+                    ("double-click", 400i32.into()),
+                    ("drag-threshold", 8i32.into()),
+                ],
+            ),
+            (
+                "org.kde.kdeglobals.KDE",
+                vec![
+                    ("DoubleClickInterval", 400i32.into()),
+                    ("StartDragDist", 8i32.into()),
+                    ("CursorBlinkRate", 1200i32.into()),
+                ],
+            ),
+            (
+                "org.gnome.desktop.sound",
+                vec![
+                    ("theme-name", str_value("freedesktop")),
+                    ("event-sounds", false.into()),
+                    ("input-feedback-sounds", false.into()),
+                ],
+            ),
+        ];
+        groups
+            .into_iter()
+            .map(|(namespace, entries)| {
+                (
+                    namespace.to_owned(),
+                    entries
+                        .into_iter()
+                        .map(|(key, value)| (key.to_owned(), value))
+                        .collect(),
+                )
+            })
+            .collect()
     }
 }
 
@@ -164,7 +358,7 @@ impl Appearance {
         key: &str,
         value: Value<'_>,
     ) -> zbus::Result<()>;
-    #[zbus(property)]
+    #[zbus(property, name = "version")]
     fn version(&self) -> u32 {
         2
     }
@@ -186,29 +380,50 @@ pub(super) async fn follow(
         .interface::<_, Appearance>(PATH)
         .await
         .map_err(|_| tr("shell-could-not-publish-the-appearance-settings"))?;
-    let path = crate::settings::Store::from_environment().map(|store| store.path().to_owned());
-    let stamp = |path: &Option<std::path::PathBuf>| {
-        path.as_ref().and_then(|path| {
-            std::fs::metadata(path)
-                .and_then(|meta| meta.modified())
+    let mut paths = ThemePaths::from_env().candidates();
+    paths.extend(crate::settings::Store::from_environment().map(|store| store.path().to_owned()));
+    paths.extend(crate::location::path());
+    let stamp = || {
+        paths
+            .iter()
+            .map(|path| {
+                std::fs::metadata(path).ok().and_then(|meta| {
+                    Some((
+                        std::os::unix::fs::MetadataExt::ino(&meta),
+                        meta.modified().ok()?,
+                    ))
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    let changed = Arc::new(tokio::sync::Notify::new());
+    // Atomic saves replace the inode, so subscribe to directories.
+    let parents: std::collections::BTreeSet<_> =
+        paths.iter().filter_map(|path| path.parent()).collect();
+    let watcher = enzui_core::file_tree_watch::native_directory_watch();
+    let watches: Vec<_> = parents
+        .iter()
+        .filter_map(|parent| {
+            watcher
+                .as_ref()?
+                .watch(
+                    parent,
+                    enzui_core::file_tree_watch::WatchToken::standalone(),
+                    Arc::new(PreferenceChanges(Arc::clone(&changed))),
+                )
                 .ok()
         })
-    };
-    // Watch the directory: settings are atomically replaced, so watching the
-    // old file inode would miss later appearance changes. Polling delayed
-    // every framework app independently of the shell's theme transition.
-    let changed = Arc::new(tokio::sync::Notify::new());
-    let watch = path.as_ref().and_then(|path| {
-        let backend = enzui_core::file_tree_watch::native_directory_watch()?;
-        backend
-            .watch(
-                path.parent()?,
-                enzui_core::file_tree_watch::WatchToken::standalone(),
-                Arc::new(PreferenceChanges(Arc::clone(&changed))),
-            )
-            .ok()
+        .collect();
+    let fallback = std::time::Duration::from_millis(if watches.len() == parents.len() {
+        60_000
+    } else {
+        750
     });
-    let fallback = std::time::Duration::from_millis(if watch.is_some() { 60_000 } else { 750 });
+    let lockdown = connection
+        .object_server()
+        .interface::<_, super::portal_lockdown::Lockdown>(PATH)
+        .await
+        .map_err(|error| error.to_string())?;
     let mut seen = None;
     changed.notify_one();
     loop {
@@ -217,11 +432,16 @@ pub(super) async fn follow(
             () = tokio::time::sleep(fallback) => {},
         }
         tokio::time::sleep(std::time::Duration::from_millis(8)).await;
-        let now = stamp(&path);
-        if now == seen {
+        let now = stamp();
+        if Some(&now) == seen.as_ref() {
             continue;
         }
-        seen = now;
+        seen = Some(now);
+        lockdown
+            .get()
+            .await
+            .refresh(lockdown.signal_emitter())
+            .await;
         let Ok(preferences) = tokio::task::spawn_blocking(Preferences::load).await else {
             continue;
         };
@@ -235,10 +455,11 @@ pub(super) async fn follow(
                 preferences.clone(),
             )
         };
-        // The backend's own windows follow the same changes as portal clients.
-        let _ = events.send(super::Event::Appearance {
-            light: preferences.light,
-        });
+        if previous.light != preferences.light {
+            let _ = events.send(super::Event::Appearance {
+                light: preferences.light,
+            });
+        }
         if previous != preferences {
             let old = previous.values();
             for (namespace, values) in preferences.values() {
@@ -262,8 +483,6 @@ pub(super) async fn follow(
 mod tests {
     use super::*;
 
-    // This portal is a shared app boundary: preserve namespace filtering and
-    // the wire types consumed by toolkits, alongside the desktop's choices.
     #[tokio::test]
     async fn desktop_choices_are_exposed_with_portal_types_and_namespace_filtering() {
         let settings = crate::settings::Settings {
@@ -279,20 +498,24 @@ mod tests {
             ..Default::default()
         };
         let portal = Appearance {
-            preferences: Mutex::new(Preferences::from_settings(&settings)),
+            preferences: Mutex::new(Preferences::from_settings(&settings, &Default::default())),
         };
         assert_eq!(
             u32::try_from(portal.read(APPEARANCE, "color-scheme").await.unwrap()).unwrap(),
             2
         );
         let interface = "org.gnome.desktop.interface";
-        let mut values = portal.read_all(vec!["org.gnome.*".into()]).await;
+        let mut values = portal
+            .read_all(vec!["org.gnome.desktop.inter*".into()])
+            .await;
         assert_eq!(
             values.len(),
             1,
             "ReadAll must respect the requested namespace"
         );
         let mut values = values.remove(interface).unwrap();
+        assert_eq!(values.remove("gtk-enable-primary-paste"), Some(true.into()));
+        assert_eq!(values.remove("cursor-size"), Some(24i32.into()));
         assert_eq!(
             String::try_from(values.remove("clock-format").unwrap()).unwrap(),
             "12h"
@@ -323,7 +546,8 @@ mod tests {
             let mut changed = settings.clone();
             changed.fonts.interface = Some(name.into());
             changed.fonts.weight = crate::font_settings::Weight::Heavy;
-            *portal.preferences.lock().unwrap() = Preferences::from_settings(&changed);
+            *portal.preferences.lock().unwrap() =
+                Preferences::from_settings(&changed, &Default::default());
             let description = RawFontDescription::new(
                 String::try_from(portal.read(interface, "font-name").await.unwrap()).unwrap(),
             );

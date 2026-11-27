@@ -1,11 +1,14 @@
-//! XDG Desktop Portal file chooser; closing a request window cancels that request.
+//! XDG Desktop Portal dialogs hosted by enzUI.
+
+mod portal_print;
 
 use enzui_core::file_browser::{FileBrowserModel, FileEntry, SortKey};
 use enzui_icons::file_type::FileTypeTable;
 use enzui_shell::arm_delay::ArmGate;
 use enzui_shell::chooser_places::{self as places, Place};
 use enzui_shell::desktop_portal::{
-    self, AccessAnswer, AccessRequest, Event, Kind, Outcome, Request,
+    self, AccessAnswer, AccessRequest, Event, Kind, Outcome, PortalDialogAnswer, PortalDialogKind,
+    Request,
 };
 use enzui_shell::i18n::{self, tr};
 use enzui_shell::tr;
@@ -26,6 +29,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 
+#[path = "enzui-portal/parent.rs"]
+mod parent;
+#[path = "enzui-portal/prompt.rs"]
+mod prompt;
+
 // An event from the portal, handed over once (its reply channel is not
 // clonable).
 #[derive(Clone, Debug)]
@@ -34,6 +42,10 @@ struct Incoming(Arc<Mutex<Option<Event>>>);
 #[derive(Clone, Debug)]
 enum Message {
     Portal(Incoming),
+    Prompt(window::Id, prompt::Action),
+    PromptParent(window::Id, Option<Arc<parent::ParentLease>>),
+    PromptToken(window::Id, String, Option<String>),
+    PromptEscape(window::Id),
     Go(window::Id, PathBuf),
     Up(window::Id),
     Activate(window::Id, PathBuf),
@@ -48,6 +60,9 @@ enum Message {
     Closed(window::Id),
     Key(window::Id, iced::keyboard::Key, iced::keyboard::Modifiers),
     Grant(window::Id, bool),
+    PrintAccept(window::Id),
+    PrintEdit(window::Id, portal_print::Edit),
+    PrintSurface(window::Id, portal_print::Surface),
     Choice(window::Id, usize, bool),
     Query(window::Id, String),
     PathEdit(window::Id, BreadcrumbEditEvent),
@@ -115,6 +130,9 @@ impl Consent {
 struct App {
     dialogs: HashMap<window::Id, Dialog>,
     consents: HashMap<window::Id, Consent>,
+    prints: HashMap<window::Id, portal_print::Dialog>,
+    print_parent_protocol: Option<portal_print::ParentProtocol>,
+    prompts: HashMap<window::Id, prompt::Prompt>,
     // Requests the portal closed before their window was shown.
     closed: std::collections::HashSet<u64>,
     light: bool,
@@ -414,6 +432,9 @@ impl App {
             Self {
                 dialogs: HashMap::new(),
                 consents: HashMap::new(),
+                prints: HashMap::new(),
+                print_parent_protocol: None,
+                prompts: HashMap::new(),
                 closed: Default::default(),
                 light,
             },
@@ -433,6 +454,14 @@ impl App {
         }
         // Dropping an unanswered consent reply signals dismissal without an explicit decision.
         self.consents.remove(&window);
+        self.prints.remove(&window);
+        self.prompts.remove(&window);
+        window::close(window)
+    }
+    fn finish_prompt(&mut self, window: window::Id, answer: PortalDialogAnswer) -> Task<Message> {
+        if let Some(prompt) = self.prompts.remove(&window) {
+            prompt.send(answer);
+        }
         window::close(window)
     }
     fn armed(&self, window: window::Id) -> bool {
@@ -440,12 +469,19 @@ impl App {
             .get(&window)
             .map(|d| d.gate)
             .or_else(|| self.consents.get(&window).map(|c| c.gate))
+            .or_else(|| self.prints.get(&window).map(|p| p.gate))
+            .or_else(|| self.prompts.get(&window).map(|p| p.gate))
             .is_some_and(|gate| gate.armed())
     }
     fn gate_mut(&mut self, window: window::Id) -> Option<&mut ArmGate> {
         match self.dialogs.get_mut(&window) {
             Some(dialog) => Some(&mut dialog.gate),
-            None => self.consents.get_mut(&window).map(|c| &mut c.gate),
+            None => self
+                .consents
+                .get_mut(&window)
+                .map(|c| &mut c.gate)
+                .or_else(|| self.prints.get_mut(&window).map(|p| &mut p.gate))
+                .or_else(|| self.prompts.get_mut(&window).map(|p| &mut p.gate)),
         }
     }
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -458,7 +494,11 @@ impl App {
             Message::Shown(window) => {
                 if let Some(gate) = self.gate_mut(window) {
                     gate.shown(std::time::Instant::now());
-                    return ArmGate::wake(Message::Armed);
+                    let wake = ArmGate::wake(Message::Armed);
+                    if let Some(dialog) = self.prints.get(&window) {
+                        return Task::batch([wake, dialog.parent_task(window)]);
+                    }
+                    return wake;
                 }
             }
             Message::Focused(window) => {
@@ -516,6 +556,74 @@ impl App {
                         );
                         return open.map(Message::Shown);
                     }
+                    Some(Event::Print(request, reply)) => {
+                        if self.closed.remove(&request.id) {
+                            return Task::none();
+                        }
+                        let size = if request.selection.is_some() {
+                            iced::Size::new(480.0, 476.0)
+                        } else {
+                            iced::Size::new(460.0, 192.0)
+                        };
+                        let (window, open) = window::open(window::Settings {
+                            size,
+                            min_size: Some(iced::Size::new(360.0, 192.0)),
+                            exit_on_close_request: false,
+                            platform_specific: window::settings::PlatformSpecific {
+                                application_id: "dev.enzui.PortalPrint".into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        });
+                        self.prints
+                            .insert(window, portal_print::Dialog::new(request, reply));
+                        return open.map(Message::Shown);
+                    }
+                    Some(Event::Dialog(request, reply)) => {
+                        if self.closed.remove(&request.id) {
+                            return Task::none();
+                        }
+                        let height = match &request.kind {
+                            PortalDialogKind::OpenWith { .. } => 420.0,
+                            PortalDialogKind::Install { .. } => 310.0,
+                            PortalDialogKind::ShareAccount { .. } => 340.0,
+                        };
+                        let parent = request.parent.clone();
+                        let modal = request.modal;
+                        let settings = window::Settings {
+                            size: iced::Size::new(480.0, height),
+                            resizable: false,
+                            minimizable: false,
+                            exit_on_close_request: false,
+                            platform_specific: window::settings::PlatformSpecific {
+                                application_id: "dev.enzui.PortalDialog".into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        };
+                        let (window, open) = match &request.activation_token {
+                            Some(token) => window::open_with_activation(
+                                settings,
+                                window::ActivationToken::from_raw(token.clone()),
+                            ),
+                            None => window::open(settings),
+                        };
+                        self.prompts
+                            .insert(window, prompt::Prompt::new(request, reply));
+                        return open.then(move |window| {
+                            Task::batch([
+                                Task::done(Message::Shown(window)),
+                                parent::connect(window, parent.clone(), modal)
+                                    .map(move |lease| Message::PromptParent(window, lease)),
+                            ])
+                        });
+                    }
+                    Some(Event::AppChoicesChanged(id, choices)) => {
+                        if let Some(prompt) = self.prompts.values_mut().find(|p| p.request.id == id)
+                        {
+                            prompt.replace_choices(choices);
+                        }
+                    }
                     Some(Event::Close(id)) => {
                         let window = self
                             .dialogs
@@ -526,6 +634,18 @@ impl App {
                                 self.consents
                                     .iter()
                                     .find(|(_, c)| c.request.id == id)
+                                    .map(|(w, _)| *w)
+                            })
+                            .or_else(|| {
+                                self.prints
+                                    .iter()
+                                    .find(|(_, p)| p.id() == id)
+                                    .map(|(w, _)| *w)
+                            })
+                            .or_else(|| {
+                                self.prompts
+                                    .iter()
+                                    .find(|(_, p)| p.request.id == id)
                                     .map(|(w, _)| *w)
                             });
                         match window {
@@ -538,6 +658,76 @@ impl App {
                         }
                     }
                     None => {}
+                }
+            }
+            Message::PrintAccept(window) => {
+                if self
+                    .prints
+                    .get(&window)
+                    .is_some_and(portal_print::Dialog::can_finish)
+                    && let Some(dialog) = self.prints.remove(&window)
+                {
+                    dialog.answer();
+                    return window::close(window);
+                }
+            }
+            Message::PrintEdit(window, edit) => {
+                if let Some(dialog) = self.prints.get_mut(&window) {
+                    dialog.edit(edit);
+                }
+            }
+            Message::PrintSurface(window, surface) => {
+                if let Some(dialog) = self.prints.get_mut(&window) {
+                    dialog.attach(&mut self.print_parent_protocol, surface);
+                }
+            }
+            Message::PromptParent(window, lease) => {
+                if let Some(prompt) = self.prompts.get_mut(&window) {
+                    prompt.parent = lease;
+                }
+            }
+            Message::Prompt(window, prompt::Action::Accept) => {
+                let Some(prompt) = self.prompts.get_mut(&window) else {
+                    return Task::none();
+                };
+                if !prompt.awaiting_token
+                    && let Some(answer) = prompt.answer(None)
+                {
+                    if let PortalDialogAnswer::Application { id, .. } = answer {
+                        prompt.awaiting_token = true;
+                        return window::request_activation_token(window).map(move |token| {
+                            Message::PromptToken(
+                                window,
+                                id.clone(),
+                                token.ok().map(window::ActivationToken::into_raw),
+                            )
+                        });
+                    }
+                    return self.finish_prompt(window, answer);
+                }
+            }
+            Message::PromptToken(window, id, token) => {
+                if let Some(prompt) = self.prompts.get_mut(&window) {
+                    prompt.awaiting_token = false;
+                    if matches!(
+                        prompt.answer(None),
+                        Some(PortalDialogAnswer::Application { id: selected, .. }) if selected == id
+                    ) {
+                        return self.finish_prompt(
+                            window,
+                            PortalDialogAnswer::Application {
+                                id,
+                                activation_token: token,
+                            },
+                        );
+                    }
+                }
+            }
+            Message::Prompt(window, action) => {
+                if let Some(prompt) = self.prompts.get_mut(&window)
+                    && !prompt.awaiting_token
+                {
+                    prompt.edit(action);
                 }
             }
             Message::Grant(window, grant) => {
@@ -599,7 +789,12 @@ impl App {
                 iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
                 _,
             ) => return self.finish(window, Outcome::Cancelled),
-            Message::Key(..) => {}
+            Message::PromptEscape(window)
+                if self.prompts.contains_key(&window) || self.prints.contains_key(&window) =>
+            {
+                return self.finish(window, Outcome::Cancelled);
+            }
+            Message::Key(..) | Message::PromptEscape(_) => {}
             Message::Accept(window) => {
                 let Some(dialog) = self.dialogs.get_mut(&window) else {
                     return Task::none();
@@ -1133,8 +1328,14 @@ impl App {
 
     fn view(&self, window: window::Id) -> Element<'_, Message> {
         i18n::localizer().view(|| {
+        if let Some(dialog) = self.prints.get(&window) {
+            return dialog.view(window, &self.tokens());
+        }
         if let Some(consent) = self.consents.get(&window) {
             return self.consent_view(window, consent);
+        }
+        if let Some(prompt) = self.prompts.get(&window) {
+            return prompt.view(window, self.tokens());
         }
         let Some(dialog) = self.dialogs.get(&window) else { return Space::new().into() };
         let palette = self.tokens().palette;
@@ -1293,6 +1494,13 @@ impl App {
                 |event, status, window| match (event, status) {
                     (
                         iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                            key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                            ..
+                        }),
+                        iced::event::Status::Captured,
+                    ) => Some(Message::PromptEscape(window)),
+                    (
+                        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                             key,
                             modifiers,
                             ..
@@ -1312,14 +1520,19 @@ fn acting_window(message: &Message) -> Option<window::Id> {
     use iced::keyboard::{Key, key::Named};
     match message {
         Message::Portal(_)
+        | Message::PromptParent(..)
+        | Message::PromptToken(..)
+        | Message::PromptEscape(_)
         | Message::Shown(_)
         | Message::Focused(_)
         | Message::Armed
         | Message::Cancel(_)
         | Message::Closed(_)
+        | Message::PrintSurface(..)
         | Message::Grant(_, false)
         | Message::Key(_, Key::Named(Named::Escape), _) => None,
-        Message::Go(window, _)
+        Message::Prompt(window, _)
+        | Message::Go(window, _)
         | Message::Up(window)
         | Message::Activate(window, _)
         | Message::Select(window, _)
@@ -1330,6 +1543,8 @@ fn acting_window(message: &Message) -> Option<window::Id> {
         | Message::Accept(window)
         | Message::Replace(window)
         | Message::Key(window, ..)
+        | Message::PrintAccept(window)
+        | Message::PrintEdit(window, _)
         | Message::Grant(window, true)
         | Message::Choice(window, ..)
         | Message::Query(window, _)
@@ -1377,6 +1592,12 @@ fn main() -> iced::Result {
     enzui_widgets::app_setup::run_with_services(
         iced::daemon(App::new, App::update, App::view)
             .title(|app: &App, window| {
+                if let Some(dialog) = app.prints.get(&window) {
+                    return dialog.title().to_owned();
+                }
+                if let Some(prompt) = app.prompts.get(&window) {
+                    return prompt.title().to_owned();
+                }
                 match (app.dialogs.get(&window), app.consents.get(&window)) {
                     (Some(dialog), _) => dialog.title(),
                     (None, Some(consent)) => consent.request.title.clone(),
@@ -1423,6 +1644,9 @@ mod tests {
         let mut app = App {
             dialogs: HashMap::new(),
             consents: HashMap::new(),
+            prints: HashMap::new(),
+            print_parent_protocol: None,
+            prompts: HashMap::new(),
             closed: Default::default(),
             light: false,
         };

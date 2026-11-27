@@ -30,6 +30,12 @@ pub async fn available() -> bool {
 
 /// Locks, then opens a greeter for another user.
 pub async fn switch() -> Result<(), String> {
+    if !crate::desktop_portal::portal_inhibit::session_inhibitors(true)
+        .await
+        .is_empty()
+    {
+        return Err(tr("shell-user-switch-inhibited").into());
+    }
     crate::session_lock::lock_within(std::time::Duration::from_secs(60)).await?;
     let system = zbus::Connection::system()
         .await

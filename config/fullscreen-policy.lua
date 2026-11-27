@@ -14,6 +14,7 @@ local shell_helpers = {
     ["dev.enzui.NotificationCenter"] = true,
     ["dev.enzui.NotificationToasts"] = true,
     ["dev.enzui.PluginPanel"] = true,
+    ["dev.enzui.PortalPrint"] = true,
     ["dev.enzui.PortalAccess"] = true,
     ["dev.enzui.QuickSearch"] = true,
     ["dev.enzui.RemotePlaceholder"] = true,

@@ -6,7 +6,10 @@ use super::{
     prompts::{self, Prompts},
     session::Target,
 };
-use crate::compositor::Compositor;
+use crate::{
+    compositor::Compositor,
+    desktop_portal::{BUS_NAME, portal_notification},
+};
 use enzui_shell::i18n::tr;
 use iced::futures::StreamExt;
 use std::{
@@ -180,6 +183,7 @@ struct Service {
     prompts: Prompts,
     sender_gate: Gate,
     app_gate: Gate,
+    portal_notifications: BTreeMap<u32, portal_notification::Delivery>,
 }
 impl Service {
     async fn post(&mut self, origin: Origin, draft: Draft) -> Result<Posted, String> {
@@ -197,6 +201,109 @@ impl Service {
         };
         self.model
             .post(origin, draft, Instant::now(), wall_ms(), fullscreen)
+    }
+
+    async fn portal_method(
+        &mut self,
+        message: &Message,
+        sender: &str,
+        member: &str,
+    ) -> Result<(), String> {
+        use std::collections::HashMap;
+        use zbus::zvariant::OwnedValue;
+
+        let body = message.body();
+        let arguments = match member {
+            "Add" => body
+                .deserialize::<(String, String, String, HashMap<String, OwnedValue>)>()
+                .map(|(frontend, app, id, options)| (frontend, app, id, Some(options))),
+            "Remove" => body
+                .deserialize::<(String, String, String)>()
+                .map(|(frontend, app, id)| (frontend, app, id, None)),
+            _ => {
+                return failure(
+                    &self.connection,
+                    message,
+                    "UnknownMethod",
+                    "Unknown notification bridge method",
+                )
+                .await;
+            }
+        };
+        let Ok((frontend, app_id, id, options)) = arguments else {
+            return failure(
+                &self.connection,
+                message,
+                "InvalidArgs",
+                "Invalid portal notification arguments",
+            )
+            .await;
+        };
+        let mut origin = match Origin::enzui_portal(&self.identity, sender, BUS_NAME, &app_id).await
+        {
+            Ok(origin) => origin,
+            Err(error) => return failure(&self.connection, message, "AccessDenied", &error).await,
+        };
+        let previous = self
+            .model
+            .active()
+            .find(|entry| {
+                entry.origin.same_sender(&origin)
+                    && self
+                        .portal_notifications
+                        .get(&entry.key.id)
+                        .is_some_and(|delivery| {
+                            delivery.frontend == frontend
+                                && delivery.app_id == app_id
+                                && delivery.id == id
+                        })
+            })
+            .map(|entry| entry.key.id);
+        let closed = if let Some(options) = options {
+            if !self.app_gate.accepts(&origin.principal, Instant::now()) {
+                return failure(
+                    &self.connection,
+                    message,
+                    "LimitsExceeded",
+                    tr("shell-application-notification-rate-exceeded"),
+                )
+                .await;
+            }
+            let (mut draft, delivery, icon) =
+                match portal_notification::parse(frontend, app_id, id, options) {
+                    Ok(parsed) => parsed,
+                    Err(error) => {
+                        return failure(&self.connection, message, "InvalidArgs", &error).await;
+                    }
+                };
+            draft.replaces = previous.unwrap_or_default();
+            if icon.is_some() {
+                origin.app_icon = icon;
+            }
+            let posted = match self.post(origin, draft).await {
+                Ok(posted) => posted,
+                Err(error) => {
+                    return failure(&self.connection, message, "AccessDenied", &error).await;
+                }
+            };
+            if posted.notification.is_some() {
+                self.portal_notifications.insert(posted.id, delivery);
+            }
+            posted.closed
+        } else if let Some(previous) = previous {
+            match self.model.close_from_app(&origin, previous, wall_ms()) {
+                Ok(closed) => closed.into_iter().collect(),
+                Err(error) => {
+                    return failure(&self.connection, message, "AccessDenied", &error).await;
+                }
+            }
+        } else {
+            Vec::new()
+        };
+        if expects_reply(message) {
+            write(self.connection.reply(&message.header(), &())).await?;
+        }
+        close_signals(&self.connection, closed).await
     }
 
     async fn refresh_prompts(&mut self) -> Result<(), String> {
@@ -253,6 +360,9 @@ impl Service {
                 write(self.connection.reply(&header, &XML)).await?;
             }
             return Ok(());
+        }
+        if interface == Some(portal_notification::BRIDGE) {
+            return self.portal_method(&message, sender, member).await;
         }
         if interface != Some(SERVICE) {
             return failure(
@@ -460,6 +570,31 @@ impl Service {
                         }
                         result
                     }
+                    Ok(dispatch) if self.portal_notifications.contains_key(&dispatch.id) => {
+                        let delivery = &self.portal_notifications[&dispatch.id];
+                        let result = match &dispatch.action {
+                            Action::Invoke(action) => tokio::time::timeout(
+                                Duration::from_secs(2),
+                                portal_notification::dispatch(
+                                    &self.connection,
+                                    &dispatch.origin.sender,
+                                    delivery,
+                                    action,
+                                    token.as_deref(),
+                                ),
+                            )
+                            .await
+                            .map_err(|_| "Portal notification action timed out".to_owned())
+                            .and_then(|result| result.map_err(|error| error.to_string())),
+                            Action::Reply(_) => {
+                                Err("Portal notification does not accept inline replies".into())
+                            }
+                        };
+                        if result.is_ok() {
+                            self.model.action_delivered(key, wall_ms());
+                        }
+                        result
+                    }
                     Ok(dispatch) => match dispatch
                         .origin
                         .verify(&self.identity, self.target.unit())
@@ -546,6 +681,8 @@ impl Service {
     fn publish(&mut self, snapshots: &watch::Sender<Arc<Snapshot>>, dropped: u64) {
         if self.model.take_dirty() || snapshots.borrow().dropped_frames != dropped {
             let mut active: Vec<_> = self.model.active().cloned().collect();
+            self.portal_notifications
+                .retain(|id, _| active.iter().any(|entry| entry.key.id == *id));
             active.sort_by_key(|notification| std::cmp::Reverse(notification.key.revision));
             snapshots.send_replace(Arc::new(Snapshot {
                 epoch: self.epoch,
@@ -632,6 +769,7 @@ pub async fn run_initialized(
         prompts: Prompts::default(),
         sender_gate: Gate::default(),
         app_gate: Gate::default(),
+        portal_notifications: BTreeMap::new(),
     };
     events
         .try_send(Event::Ready(epoch))

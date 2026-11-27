@@ -109,6 +109,10 @@ struct Entry {
 
 // Parses the `[Desktop Entry]` group; `None` for hidden or non-app entries.
 fn entry(id: &str, text: &str) -> Option<Entry> {
+    entry_with_visibility(id, text, false)
+}
+
+fn entry_with_visibility(id: &str, text: &str, include_no_display: bool) -> Option<Entry> {
     let mut group = false;
     let (mut name, mut exec, mut types, mut categories, mut wm_class, mut flatpak) =
         (None, None, Vec::new(), String::new(), None, None);
@@ -143,7 +147,8 @@ fn entry(id: &str, text: &str) -> Option<Entry> {
                 flatpak =
                     Some(value.trim().to_owned()).filter(|id| !id.is_empty() && id.len() <= 255);
             }
-            "NoDisplay" | "Hidden" => hidden |= value.trim() == "true",
+            "Hidden" => hidden |= value.trim() == "true",
+            "NoDisplay" if !include_no_display => hidden |= value.trim() == "true",
             _ => {}
         }
     }
@@ -238,6 +243,40 @@ fn entries() -> Vec<Entry> {
         }
     }
     found
+}
+
+pub(crate) fn portal_app_index(
+    mime: &str,
+    choices: &std::collections::HashSet<&str>,
+) -> std::collections::HashMap<String, (String, Option<PathBuf>, bool)> {
+    entries()
+        .into_iter()
+        .filter(|entry| choices.contains(entry.app.id.trim_end_matches(".desktop")))
+        .map(|entry| {
+            let id = entry.app.id.trim_end_matches(".desktop").to_owned();
+            let icon = entry
+                .icon
+                .as_deref()
+                .and_then(|icon| crate::icon_theme::lookup(icon, 32));
+            let recommended = entry.types.iter().any(|kind| kind == mime);
+            (id, (entry.app.name, icon, recommended))
+        })
+        .collect()
+}
+
+pub(crate) fn desktop_file(id: &str) -> Option<(PathBuf, Option<String>)> {
+    if id.contains('/') || id.starts_with('.') || !id.ends_with(".desktop") {
+        return None;
+    }
+    let path = directories()
+        .into_iter()
+        .map(|dir| dir.join(id))
+        .find(|path| path.is_file())?;
+    let entry = std::fs::read_to_string(&path)
+        .ok()
+        .filter(|text| text.len() < 256 * 1024)
+        .and_then(|text| entry_with_visibility(id, &text, true))?;
+    Some((path, entry.flatpak))
 }
 
 /// Maps lowercased StartupWMClass, or desktop ID fallback, to installed-entry metadata.

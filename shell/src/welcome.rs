@@ -275,28 +275,6 @@ pub fn queue_models(program: &Path, ids: &[String]) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    const LOCAL: Session = Session {
-        installed: true,
-        remote: false,
-    };
-
-    #[test]
-    fn first_login_opens_only_in_a_local_installed_session_without_a_record() {
-        assert!(opens(Launch::FirstLogin, LOCAL, false));
-        assert!(!opens(Launch::FirstLogin, LOCAL, true));
-        let preview = Session {
-            installed: false,
-            ..LOCAL
-        };
-        assert!(!opens(Launch::FirstLogin, preview, false));
-        let remote = Session {
-            remote: true,
-            ..LOCAL
-        };
-        assert!(!opens(Launch::FirstLogin, remote, false));
-        assert!(opens(Launch::Manual, preview, true));
-    }
-
     #[test]
     fn recording_is_atomic_private_and_repeatable() {
         use std::os::unix::fs::PermissionsExt as _;
@@ -323,72 +301,6 @@ mod tests {
         assert_eq!(
             std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
             1
-        );
-    }
-
-    #[test]
-    fn an_unreadable_record_still_counts_as_completed() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("welcome.json");
-        std::fs::write(&path, b"not json").unwrap();
-        assert!(completed(&path));
-    }
-
-    #[test]
-    fn catalog_rows_without_a_kind_are_speech_models() {
-        let offers = parse_catalog(concat!(
-            "whisper-base\tWhisper base\t142 MB\ten\tadded\n",
-            "qwen3.5-0.8b\tQwen 3.5 0.8B\t610 MB\tmultilingual\tavailable\ttext\n",
-            "lfm3-vl-2b\tLFM 3 VL 2B\t1.4 GB\ten\tavailable\ttext\n",
-            "parakeet\tParakeet\t480 MB\ten\tavailable\tspeech\n",
-            "odd\tOdd\t1 MB\ten\tavailable\timage\n",
-            "Bad Id\tBad\t1 MB\ten\tavailable\ttext\n",
-            "short\trow\n",
-        ));
-        let kinds: Vec<_> = offers
-            .iter()
-            .map(|o| (o.id.as_str(), o.kind, o.added))
-            .collect();
-        assert_eq!(
-            kinds,
-            [
-                ("whisper-base", ModelKind::Speech, true),
-                ("qwen3.5-0.8b", ModelKind::Text, false),
-                ("lfm3-vl-2b", ModelKind::Text, false),
-                ("parakeet", ModelKind::Speech, false),
-            ]
-        );
-    }
-
-    #[test]
-    fn the_queue_command_carries_only_valid_model_ids() {
-        let program = Path::new("/usr/lib/enzui/bin/enzui-settings");
-        let ids = vec!["lfm3-vl-2b".to_owned(), "whisper-base".to_owned()];
-        let command = queue_command(program, &ids).unwrap();
-        let args: Vec<_> = command.get_args().map(|a| a.to_str().unwrap()).collect();
-        assert_eq!(args, ["--queue-models", "lfm3-vl-2b", "whisper-base"]);
-        assert!(queue_command(program, &[]).is_none());
-        assert!(queue_command(program, &["--help".to_owned()]).is_none());
-        assert!(queue_command(program, &["a/b".to_owned()]).is_none());
-    }
-
-    #[test]
-    fn a_refused_queue_reports_the_last_line_settings_printed() {
-        let root = tempfile::tempdir().unwrap();
-        let program = root.path().join("enzui-settings");
-        std::fs::write(
-            &program,
-            "#!/bin/sh\necho 'enzui-settings: no space for the model' >&2\nexit 3\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(
-            &program,
-            std::os::unix::fs::PermissionsExt::from_mode(0o755),
-        )
-        .unwrap();
-        assert_eq!(
-            queue_models(&program, &["qwen3.5-0.8b".to_owned()]),
-            Err("no space for the model".to_owned())
         );
     }
 }

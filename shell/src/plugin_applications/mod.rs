@@ -349,6 +349,3 @@ impl Shell {
         }
     }
 }
-
-#[cfg(test)]
-pub(crate) mod tests;

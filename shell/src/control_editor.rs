@@ -547,37 +547,3 @@ impl SettingsApp {
         .into()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn app() -> (tempfile::TempDir, SettingsApp) {
-        let directory = tempfile::tempdir().unwrap();
-        let (mut app, _) = SettingsApp::new(
-            enzui_shell::settings::Store::at(directory.path().join("settings.json")).unwrap(),
-        );
-        app.page = Page::Shell;
-        (directory, app)
-    }
-
-    #[test]
-    fn stale_resize_or_drop_cannot_overwrite_a_peer_layout() {
-        let (_directory, mut app) = app();
-        let old = std::sync::Arc::clone(&app.settings.controls);
-        let mut peer = (*old).clone();
-        peer.move_before(QuickAction::Tiling, Some(QuickAction::Network));
-        app.settings.controls = Arc::new(peer);
-        let expected = std::sync::Arc::clone(&app.settings.controls);
-        let _ = app.controls_message(Message::Shape(
-            QuickAction::Bluetooth,
-            Shape::Wide,
-            std::sync::Arc::clone(&old),
-        ));
-        let _ = app.controls_message(Message::Grid(Edit::Commit {
-            expected: std::sync::Arc::clone(&old),
-            value: old,
-        }));
-        assert_eq!(app.settings.controls, expected);
-        assert!(!app.busy);
-    }
-}

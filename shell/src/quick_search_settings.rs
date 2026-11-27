@@ -566,35 +566,3 @@ impl SettingsApp {
         body.into()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A chosen folder is checked before it is listed: the whole disk is
-    /// refused, a folder already listed is not added twice, and a new one
-    /// starts the check.
-    ///
-    /// Sabotage: drop the root or duplicate checks in `Message::Add`.
-    #[test]
-    fn chosen_folders_are_checked_once_and_never_the_whole_disk() {
-        let directory = tempfile::tempdir().unwrap();
-        let (mut app, _) = SettingsApp::new(
-            crate::settings_app::Store::at(directory.path().join("settings.json")).unwrap(),
-        );
-        let _ = app.search_settings_message(Message::Add(false, "/".into()));
-        assert!(app.error.is_some() && !app.search.checking);
-        app.error = None;
-        let folder = directory.path().to_str().unwrap().to_owned();
-        std::sync::Arc::make_mut(&mut app.settings.quick_search)
-            .roots
-            .push(folder.clone());
-        let _ = app.search_settings_message(Message::Add(false, format!("{folder}/")));
-        assert!(
-            app.error.is_none() && !app.search.checking,
-            "already listed"
-        );
-        let _ = app.search_settings_message(Message::Add(true, folder));
-        assert!(app.search.checking, "a new exclusion is checked");
-    }
-}

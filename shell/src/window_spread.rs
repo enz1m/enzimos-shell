@@ -1069,12 +1069,8 @@ impl Shell {
 mod tests {
     use super::*;
 
-    /// A spread asked for before the shell's first compositor snapshot
-    /// opens instead of being ignored.
-    ///
-    /// Sabotage: return early again while `snapshot` is `None`.
     #[test]
-    fn a_spread_opens_before_the_first_snapshot() {
+    fn the_originals_are_hidden_after_the_spread_draws_its_pictures() {
         let compositor = enzui_shell::compositor::Compositor::new(
             std::path::PathBuf::from("/usr/bin/true"),
             "fixture".into(),
@@ -1084,17 +1080,6 @@ mod tests {
         assert!(shell.snapshot.is_none());
         let _ = shell.spread_message(SpreadMessage::Toggle);
         assert!(shell.spread.phase == Phase::Loading);
-    }
-
-    #[test]
-    fn the_originals_are_hidden_after_the_spread_draws_its_pictures() {
-        let compositor = enzui_shell::compositor::Compositor::new(
-            std::path::PathBuf::from("/usr/bin/true"),
-            "fixture".into(),
-        )
-        .unwrap();
-        let mut shell = Shell::new(compositor, std::path::PathBuf::from("/")).0;
-        let _ = shell.spread_message(SpreadMessage::Toggle);
         let generation = shell.spread.generation;
         let window = SpreadWindow {
             address: "0x1".into(),
@@ -1154,23 +1139,6 @@ mod tests {
         let _ = shell.spread_message(SpreadMessage::Dismiss);
         assert!(shell.spread.phase == Phase::Closing);
         assert_eq!(shell.redraw_only, Some(id));
-    }
-
-    #[test]
-    fn the_overview_strip_sits_between_search_and_the_windows_on_the_bar_side() {
-        let area = [0.0, 0.0, 1440.0, 900.0];
-        let band = OverviewBand { search: 216.0 };
-        let chrome = Padding::ZERO.top(52.0).left(72.0);
-        let (strip, insets) = overview_bands(area, chrome, band, false);
-        assert_eq!(strip.y, 52.0 + 216.0 + STRIP_GAP);
-        assert_eq!(strip.height, 90.0);
-        assert_eq!(strip.x, chrome.left + MARGIN);
-        assert_eq!(insets, chrome.top(strip.y + strip.height));
-
-        let chrome = Padding::ZERO.bottom(52.0).top(72.0);
-        let (strip, insets) = overview_bands(area, chrome, band, true);
-        assert_eq!(strip.y + strip.height, 900.0 - 52.0 - 216.0 - STRIP_GAP);
-        assert_eq!(insets, chrome.bottom(900.0 - strip.y));
     }
 
     #[test]

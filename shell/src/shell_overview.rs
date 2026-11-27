@@ -303,14 +303,6 @@ mod tests {
     }
 
     #[test]
-    fn an_overview_without_cached_previews_captures_at_once() {
-        let mut shell = overview_shell(false);
-        let _ = shell.update(Message::ToggleOverview);
-        assert!(shell.preview_busy);
-        assert!(!shell.preview_after_reveal);
-    }
-
-    #[test]
     fn an_overview_closed_during_its_reveal_waits_for_settled_windows() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_time()

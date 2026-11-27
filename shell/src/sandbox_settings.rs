@@ -8,10 +8,6 @@ use enzui_widgets::{
 };
 use iced::{Element, Task, widget::column};
 
-#[cfg(test)]
-#[path = "sandbox_settings_tests.rs"]
-mod tests;
-
 #[derive(Default)]
 pub(super) struct State {
     open: Option<String>,

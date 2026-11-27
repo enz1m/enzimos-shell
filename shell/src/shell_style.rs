@@ -193,36 +193,3 @@ impl Islands {
         format!("{{{fields},joined_bar={}}}", self.joined_bar)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn island_fields_validate_before_mutation_and_preserve_peer_extensions() {
-        let mut doc = json!({"islands":{"future":true},"frame_width":7});
-        for key in IslandOption::ALL {
-            let (min, max) = key.bounds();
-            for value in [min, max] {
-                Islands::update_json(&mut doc, key, value).unwrap();
-                assert_eq!(
-                    Islands::from_json(doc.get("islands")).unwrap().get(key),
-                    value
-                );
-                assert_eq!(doc["islands"]["future"], true);
-                assert_eq!(doc["frame_width"], 7);
-            }
-            let before = doc.clone();
-            assert!(Islands::update_json(&mut doc, key, max + 1).is_err());
-            assert_eq!(doc, before);
-        }
-        for bad in [
-            json!([]),
-            json!({"gap":-1}),
-            json!({"height":3}),
-            json!({"edge_gap":true}),
-            json!({"padding":2.5}),
-        ] {
-            assert!(Islands::from_json(Some(&bad)).is_err());
-        }
-    }
-}

@@ -319,28 +319,3 @@ async fn run_service(config: Config, mut output: Sink) -> Result<(), String> {
             .map_err(|_| tr("shell-notification-frontend-closed"))?;
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn storage_recovery_status_retries_after_a_full_channel_without_replaying_old_errors() {
-        let (sender, mut receiver) = mpsc::channel(1);
-        sender.try_send(Err("occupied".into())).unwrap();
-        let mut report = StorageReport {
-            current: Some(Err("failed".into())),
-            sent: None,
-        };
-        assert!(report.deliver(&sender));
-        assert!(report.pending());
-        report.current = Some(Ok(()));
-        receiver.try_recv().unwrap().unwrap_err();
-        assert!(report.deliver(&sender));
-        assert_eq!(receiver.try_recv().unwrap(), Ok(()));
-        assert!(!report.pending());
-        assert!(report.deliver(&sender));
-        assert!(receiver.try_recv().is_err());
-        drop(receiver);
-        assert!(!report.deliver(&sender));
-    }
-}

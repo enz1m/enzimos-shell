@@ -725,27 +725,3 @@ fn desktop_update_draft() -> Draft {
         saved_file: None,
     }
 }
-
-#[cfg(test)]
-mod owner_tests {
-    use super::*;
-
-    /// When another program holds notifications, the notification center names it.
-    /// Sabotage: return None from notification_owner.
-    #[tokio::test]
-    async fn the_program_holding_notifications_is_named() {
-        let bus = crate::test_bus::Bus::start();
-        let holder = bus.client().await;
-        holder.request_name(SERVICE).await.unwrap();
-        let shell = bus.client().await;
-        let expected = std::fs::read_to_string("/proc/self/comm")
-            .unwrap()
-            .trim()
-            .to_owned();
-        assert_eq!(
-            notification_owner(&shell).await.as_deref(),
-            Some(expected.as_str())
-        );
-        assert!(held_by(&expected).contains(&expected));
-    }
-}

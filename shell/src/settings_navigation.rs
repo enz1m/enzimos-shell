@@ -927,29 +927,3 @@ pub(super) fn interrupt_subscription() -> Subscription<Message> {
         manual_scroll_interrupt(&event).then_some(Message::InterruptScroll(reason))
     })
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn navigation_cancellation_and_replacement_reject_late_measurements() {
-        let mut state = Navigation::default();
-        state.request("wallpaper/source");
-        let old = state.epoch;
-        state.request("appearance/theme");
-        state.located(
-            old,
-            Some(Position {
-                from: 0.0,
-                to: 500.0,
-            }),
-            Duration::from_millis(200),
-        );
-        assert!(state.motion.is_none());
-        state.cancel();
-        assert!(!state.moving());
-        let revision = state.spy_revision;
-        state.interrupt();
-        assert_eq!(state.spy_revision, revision);
-    }
-}

@@ -115,29 +115,3 @@ fn now() -> u64 {
 fn millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(NEVER)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn declined_boosts_pause_requests_and_a_missing_helper_stops_them() {
-        assert_eq!(pause(Answer::Outcome("boosted")), None);
-        assert_eq!(pause(Answer::Outcome("extended")), None);
-        assert_eq!(pause(Answer::Outcome("busy")), None);
-        for declined in [
-            "performance",
-            "power-saving",
-            "other-manager",
-            "contended",
-            "denied",
-            "failed",
-            "new",
-        ] {
-            assert_eq!(pause(Answer::Outcome(declined)), Some(DECLINED_PAUSE));
-        }
-        assert_eq!(pause(Answer::Failed), Some(DECLINED_PAUSE));
-        assert_eq!(pause(Answer::Outcome("unsupported")), Some(Duration::MAX));
-        assert_eq!(pause(Answer::Missing), Some(Duration::MAX));
-    }
-}

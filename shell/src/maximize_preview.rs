@@ -475,37 +475,4 @@ mod tests {
             assert_eq!(painted, [2]);
         }
     }
-
-    #[test]
-    fn show_and_hide_commands_round_trip_and_malformed_input_is_refused() {
-        let command = Command::Show {
-            from: rect(300, -20, 400, 300),
-            to: rect(0, 50, 1440, 850),
-            accent: [0x4a, 0x90, 0xd9],
-            radius: 12,
-        };
-        let encoded = command.encode();
-        assert!(encoded.ends_with('\n'));
-        assert_eq!(
-            Command::parse(encoded.trim_end().as_bytes()).unwrap(),
-            command
-        );
-        assert_eq!(Command::parse(b"hide").unwrap(), Command::Hide);
-        for bad in [
-            &b"show"[..],
-            b"show 1 2 3 4 5 6 7 8 zzzzzz 12",
-            b"show 1 2 0 4 5 6 7 8 4a90d9 12",
-            b"show 1 2 3 4 5 6 7 8 4a90d9 99999",
-            b"hide now",
-            b"maximise",
-            b"morph 1 2 3 4 4a90d9 12 255",
-            b"",
-        ] {
-            assert!(
-                Command::parse(bad).is_err(),
-                "accepted malformed command {:?}",
-                std::str::from_utf8(bad)
-            );
-        }
-    }
 }

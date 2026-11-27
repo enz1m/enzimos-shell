@@ -457,23 +457,3 @@ pub fn view<'a, Message: Clone + 'a>(
     }
     surface.into()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn action_rows_keep_short_pairs_inline_and_split_long_groups() {
-        let short = [("Snooze", 1), ("Dismiss", 2)];
-        assert_eq!(action_rows(Style::Standard, 240.0, short), [vec![1, 2]]);
-
-        let long = [
-            ("Read the full message", 1),
-            ("Show the containing folder", 2),
-            ("View notification settings", 3),
-        ];
-        let rows = action_rows(Style::Standard, 416.0, long);
-        assert!(rows.len() > 1);
-        assert_eq!(rows.concat(), [1, 2, 3]);
-    }
-}

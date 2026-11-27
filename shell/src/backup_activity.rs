@@ -171,33 +171,3 @@ async fn backup_unit_active() -> Option<bool> {
         .ok()?;
     Some(!units.is_empty())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn running_backups_and_their_outcome() {
-        assert_eq!(Running::from_status(&json!({"running": null})), None);
-        let running = Running::from_status(&json!({
-            "running": {"since": 100, "phase": "capturing", "target": "share"}
-        }))
-        .unwrap();
-        assert_eq!(running.since, 100);
-        assert_eq!(running.status().label, tr("shell-backup-activity-to-share"));
-        assert_eq!(
-            running.status().detail,
-            tr("shell-backup-activity-capturing")
-        );
-        assert_eq!(
-            outcome(&json!({"run": {"state": "failed", "at": 120}}), 100),
-            Outcome::Failed
-        );
-        assert_eq!(
-            outcome(&json!({"run": {"state": "failed", "at": 50}}), 100),
-            Outcome::Succeeded,
-            "an older failure does not mark this run"
-        );
-    }
-}

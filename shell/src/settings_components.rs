@@ -18,8 +18,6 @@ impl SettingsApp {
         route: &str,
         content: impl Into<Element<'a, Message>>,
     ) -> super::sections::SectionCard<'a, Message> {
-        #[cfg(test)]
-        self.built_sections.borrow_mut().insert(route.to_owned());
         super::sections::section_for_scaled(self.header_scale(), route, content)
     }
     pub(super) fn preview_frame<'a>(
@@ -73,8 +71,6 @@ impl SettingsApp {
         key: &str,
         content: impl Into<Element<'a, Message>>,
     ) -> Element<'a, Message> {
-        #[cfg(test)]
-        self.built_routes.borrow_mut().insert(key.to_owned());
         container(content)
             .id(format!("setting-{key}"))
             .width(Length::Fill)
@@ -100,8 +96,6 @@ impl SettingsApp {
         content: impl Into<Element<'a, Message>>,
         decorate: bool,
     ) -> Element<'a, Message> {
-        #[cfg(test)]
-        self.built_routes.borrow_mut().insert(key.to_owned());
         let highlight = decorate && self.highlighted == Some(key);
         let theme = self.tokens();
         let palette = theme.palette;

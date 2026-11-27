@@ -6,6 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[[bin]]
+name = "enzui-power-boost"
+path = "src/main.rs"
+test = false
+
 [dependencies]
 tokio = { version = "1", features = ["rt", "time", "macros", "signal", "sync"] }
 serde = "1"

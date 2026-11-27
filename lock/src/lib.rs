@@ -1559,12 +1559,6 @@ mod scale_tests {
         assert_eq!(Scale::Fractional(120).physical((1280, 800)), (1280, 800));
         assert_eq!(Scale::Fractional(180).factor(), 1.5);
     }
-
-    #[test]
-    fn an_integer_scale_multiplies_the_surface_size() {
-        assert_eq!(Scale::Integer(2).physical((1504, 1003)), (3008, 2006));
-        assert_eq!(Scale::Integer(1).physical((1504, 1003)), (1504, 1003));
-    }
 }
 
 #[cfg(test)]

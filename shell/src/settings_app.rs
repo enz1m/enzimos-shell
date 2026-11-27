@@ -185,14 +185,6 @@ enum Message {
 
 struct SettingsApp {
     chrome: enzui_widgets::app_shell::ShellWindowState,
-    #[cfg(test)]
-    built_routes: std::cell::RefCell<std::collections::BTreeSet<String>>,
-    // The sections the last build gave an anchor a sidebar jump can land on.
-    #[cfg(test)]
-    built_sections: std::cell::RefCell<std::collections::BTreeSet<String>>,
-    // Whether each recorded row was built live or inert, last time.
-    #[cfg(test)]
-    route_liveness: std::cell::RefCell<std::collections::BTreeMap<String, bool>>,
     store: Store,
     plugins: plugins_settings::State,
     search: quick_search_settings::State,
@@ -282,12 +274,6 @@ impl SettingsApp {
             .ok()
             .and_then(|route| enzui_shell::settings_catalog::find(&route));
         let mut app = Self {
-            #[cfg(test)]
-            built_routes: Default::default(),
-            #[cfg(test)]
-            built_sections: Default::default(),
-            #[cfg(test)]
-            route_liveness: Default::default(),
             store,
             plugins,
             search: Default::default(),

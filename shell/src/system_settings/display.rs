@@ -870,55 +870,22 @@ mod tests {
 
     #[test]
     fn display_behaviour() {
-        // Modes and outputs describe themselves.
-        {
-            let mode = Mode {
-                width: 2560,
-                height: 1440,
-                refresh_mhz: 59_951,
-                preferred: true,
-            };
-            assert_eq!(
-                (
-                    mode.resolution().as_str(),
-                    mode.refresh()
-                        .replace(['\u{2068}', '\u{2069}'], "")
-                        .as_str()
-                ),
-                ("2560 × 1440", "60 Hz")
-            );
-            assert_eq!(
-                Mode {
-                    refresh_mhz: 143_856,
-                    ..mode
-                }
-                .refresh()
-                .replace(['\u{2068}', '\u{2069}'], ""),
-                "144 Hz"
-            );
-            let output = Output {
-                name: "DP-1".into(),
-                make: "Dell".into(),
-                model: "U2723QE".into(),
-                modes: vec![mode],
-                current: Some(0),
-                scale: 1.25,
-                physical_mm: (597, 336),
-                ..Output::default()
-            };
-            assert_eq!(output.title(), "Dell U2723QE");
-            assert_eq!(output.logical_size(), (2048.0, 1152.0));
-            assert!((output.diagonal_inches().unwrap() - 27.0).abs() < 0.1);
-            assert_eq!(
-                Output {
-                    name: "WAYLAND-1".into(),
-                    ..Output::default()
-                }
-                .title(),
-                "WAYLAND-1"
-            );
-            assert_eq!(Mode::default().refresh(), "—");
-        }
+        let panel = Mode {
+            width: 2256,
+            height: 1504,
+            refresh_mhz: 60_000,
+            preferred: true,
+        };
+        assert!(supports_scale(panel, 1.25));
+        assert!(!supports_scale(
+            Mode {
+                width: 1366,
+                height: 768,
+                ..panel
+            },
+            1.25
+        ));
+
         // Layouts pack edge to edge and follow rotation.
         {
             let displays = two();

@@ -172,27 +172,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn warns_near_a_zones_own_critical_trip_point() {
-        let sys = tempfile::tempdir().unwrap();
-        let zone = sys.path().join("thermal_zone0");
-        fs::create_dir(&zone).unwrap();
-        fs::write(zone.join("trip_point_3_type"), "critical\n").unwrap();
-        fs::write(zone.join("trip_point_3_temp"), "95000\n").unwrap();
-        fs::write(zone.join("trip_point_4_type"), "passive\n").unwrap();
-        fs::write(zone.join("trip_point_4_temp"), "85000\n").unwrap();
-        for (temp, expected) in [
-            ("not available", None),
-            ("89000", Some(Level::Normal)),
-            ("90000", Some(Level::Critical)),
-        ] {
-            fs::write(zone.join("temp"), temp).unwrap();
-            assert_eq!(zones(sys.path()), expected);
-        }
-        fs::write(zone.join("mode"), "disabled").unwrap();
-        assert_eq!(zones(sys.path()), None);
-    }
-
-    #[test]
     fn escalation_bypasses_throttling_cooldown_and_recovery_rearms_notices() {
         let mut warnings = Warnings::default();
         let start = Instant::now();

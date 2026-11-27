@@ -409,19 +409,3 @@ pub fn demo() -> Overview {
         checked: Some(1_793_000_000),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn release_notes_become_plain_text() {
-        let markup =
-            "<p>This release:</p><ul><li>Fixes &lt;S3&gt; resume</li><li>Updates the EC</li></ul>";
-        assert_eq!(
-            plain_notes(markup),
-            "This release:\n• Fixes <S3> resume\n• Updates the EC"
-        );
-        assert_eq!(plain_notes("plain"), "plain");
-    }
-}

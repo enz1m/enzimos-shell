@@ -58,7 +58,7 @@ services, set `ENZUI_BUILD_MEMORY_MAX` to a value such as `4G`.
 
 ```sh
 scripts/shell-iterate check settings
-scripts/shell-iterate test settings system_pages::developer::tests
+scripts/shell-iterate test settings settings_app_tests::settings_pages_publish_routable_controls
 scripts/shell-iterate test lib developer_tools::tests
 scripts/shell-iterate build settings
 scripts/shell-iterate lint

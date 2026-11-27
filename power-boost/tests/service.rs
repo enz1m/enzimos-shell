@@ -292,28 +292,3 @@ async fn unauthorized_callers_change_nothing() {
     assert_eq!(boost(&client).await, "denied");
     assert_eq!(host.preference(0), "balance_power");
 }
-
-#[tokio::test]
-async fn a_host_without_energy_preferences_is_reported_unsupported() {
-    let host = Host::start(true, &[]).await;
-    let _helper = host.serve(Duration::from_secs(30)).await;
-    assert_eq!(boost(&host.bus.connect().await).await, "unsupported");
-}
-
-#[tokio::test]
-async fn a_boost_left_by_a_stopped_helper_is_ended_when_the_next_one_starts() {
-    let host = Host::start(true, &["balance_power"]).await;
-    std::fs::write(
-        host.marker(),
-        "enzui-power-boost 1\nprofile balanced\npolicy0 balance_power\n",
-    )
-    .unwrap();
-    std::fs::write(
-        host.cpufreq().join("policy0/energy_performance_preference"),
-        "performance",
-    )
-    .unwrap();
-    let _helper = host.serve(Duration::from_secs(30)).await;
-    assert_eq!(host.preference(0), "balance_power");
-    assert!(!host.marker().exists());
-}

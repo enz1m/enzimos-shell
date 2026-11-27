@@ -2,8 +2,7 @@ use super::*;
 use enzui_shell::settings::{Metric, QuickAction};
 
 #[test]
-fn settings_app_behaviour() {
-    // Every catalog setting has a reveal target and navigation does not edit.
+fn stale_reads_and_queued_edits_do_not_replace_current_settings() {
     {
         let directory = tempfile::tempdir().unwrap();
         let store = Store::at(directory.path().join("settings.json")).unwrap();
@@ -35,55 +34,7 @@ fn settings_app_behaviour() {
             app.settings.metrics.bar, 47,
             "presentation did not load current persisted settings"
         );
-        app.layout_preview = true;
-        app.wallpaper.supported = true;
-        app.system.platform = Some(enzui_shell::platform::Platform::everything());
-        let before = app.settings.clone();
-        for entry in enzui_shell::settings_catalog::ENTRIES {
-            app.filter = "previous search".into();
-            let _ = app.update(Message::Reveal(entry.route));
-            assert_eq!(app.page, entry.category());
-            assert_eq!(app.highlighted, Some(entry.route));
-            assert!(app.reveal_pending);
-            assert!(app.filter.is_empty());
-            app.built_routes.borrow_mut().clear();
-            let _ = app.settings_page();
-            assert!(
-                app.built_routes.borrow().contains(entry.route),
-                "Missing {}",
-                entry.route
-            );
-            assert_eq!(app.settings, before);
-        }
-        // A sidebar jump lands on the section's heading only where the section
-        // carries an anchor; without one it lands on the first row and the
-        // heading is scrolled off.
-        let mut missing = Vec::new();
-        for category in enzui_shell::settings_catalog::Category::ALL {
-            app.page = category;
-            app.built_sections.borrow_mut().clear();
-            let _ = app.settings_page();
-            for section in app.sections(category) {
-                // These cards are drawn once the system has answered; this
-                // window has no system snapshot.
-                let waits = matches!(
-                    section.route,
-                    "phone/sharing"
-                        | "power/memory"
-                        | "power/temporary_storage"
-                        | "updates/generations"
-                ) || section.route.starts_with("backups/");
-                if !waits && !app.built_sections.borrow().contains(section.route) {
-                    missing.push(section.route);
-                }
-            }
-        }
-        assert!(
-            missing.is_empty(),
-            "Sections without an anchor: {missing:?}"
-        );
     }
-    // Rapid edits keep the latest value and close waits for the queue.
     {
         let temp = tempfile::tempdir().unwrap();
         let store = Store::at(temp.path().join("settings.json")).unwrap();

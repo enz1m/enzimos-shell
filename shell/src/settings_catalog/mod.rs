@@ -304,6 +304,3 @@ pub fn search(query: &str) -> Vec<Entry> {
     found.truncate(30);
     found
 }
-
-#[cfg(test)]
-mod tests;

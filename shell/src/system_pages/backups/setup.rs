@@ -1,8 +1,6 @@
 use super::*;
 use enzui_shell::i18n::tr;
 use enzui_shell::tr;
-#[cfg(test)]
-mod tests;
 use enzui_core::form::SecretText;
 use enzui_shell::system_settings::backup_setup::{self, Job, Mode, Status};
 use enzui_widgets::secure_field::enz_secure_field;

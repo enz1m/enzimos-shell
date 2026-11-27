@@ -421,7 +421,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retries_failed_lock_within_the_delay() {
+    async fn lock_retries_until_success_or_the_delay_deadline() {
         let mut calls = 0;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         lock_before_deadline(
@@ -439,10 +439,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(calls, 2);
-    }
 
-    #[tokio::test]
-    async fn keeps_the_delay_until_its_deadline_when_lock_start_fails() {
         let deadline = tokio::time::Instant::now() + Duration::from_millis(20);
         let result = lock_before_deadline(async |_| Err("startup failed".into()), deadline).await;
         assert_eq!(result.unwrap_err(), "startup failed");

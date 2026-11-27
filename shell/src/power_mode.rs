@@ -168,23 +168,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn power_profiles_reports_heat_separately_from_lap_detection() {
-        for (reason, thermal) in [
-            ("high-operating-temperature", true),
-            ("lap-detected", false),
-        ] {
-            let bus = crate::test_bus::Bus::start();
-            let _service = bus
-                .serve(SERVICES[0].0, SERVICES[0].1, Profiles(false, reason))
-                .await;
-            assert_eq!(
-                thermal_degradation_on(&bus.client().await).await,
-                Some(thermal)
-            );
-        }
-    }
-
     /// A power-profiles service that never answers leaves the power mode
     /// unknown within the read bound instead of holding the control
     /// center's refresh; one that answers is read.

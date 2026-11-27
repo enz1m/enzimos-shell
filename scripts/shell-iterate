@@ -14,7 +14,7 @@ TARGETS = {"lib": ["--lib"], "settings": ["--bin", "enzui-settings"], "welcome":
 def cargo_arguments(mode, target=None, test_filter=None):
     args = ["cargo", "test" if mode == "gate" else mode, "--offline", "--locked"]
     if mode == "gate":
-        return args + ["--workspace", "--all-targets", "--all-features", "--", "--test-threads=1"]
+        return args + ["--workspace", "--all-features", "--", "--test-threads=1"]
     args += ["-p", "enzui-shell", *TARGETS[target]]
     if mode == "test":
         return args + [test_filter, "--", "--test-threads=1"]

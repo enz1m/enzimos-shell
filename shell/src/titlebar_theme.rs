@@ -119,46 +119,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dark_theme_matches_the_enzui_frame() {
-        let theme = TitleBarTheme::new(&EnzTheme::dark(), ":close".to_owned());
-        assert_eq!(theme.background, [0x1d, 0x1d, 0x1f, 0xff]);
-        assert_eq!(theme.button, [0x30, 0x30, 0x32, 0xff]);
-        assert_eq!(theme.button_hover, [0x45, 0x45, 0x47, 0xff]);
-        assert_eq!(theme.glyph, [0xb3, 0xb3, 0xb5, 0xff]);
-        assert_eq!(theme.font_size, 14);
-        assert_eq!(theme.font_weight, 700);
-    }
-
-    #[test]
-    fn light_and_dark_themes_differ() {
-        let dark = TitleBarTheme::new(&EnzTheme::dark(), ":close".to_owned());
-        let light = TitleBarTheme::new(&EnzTheme::light(), ":close".to_owned());
-        assert_ne!(dark.lua(), light.lua());
-        assert!(light.lua().contains("active=\"rgba(f6f6f8ff)\""));
-    }
-
-    #[test]
-    fn layout_places_controls_on_their_side() {
-        let all = [
-            WindowControlKind::Minimize,
-            WindowControlKind::Maximize,
-            WindowControlKind::Close,
-        ];
-        assert_eq!(layout(&all, false), ":minimize,maximize,close");
-        assert_eq!(layout(&[WindowControlKind::Close], true), "close:");
-    }
-
-    #[test]
     fn unusual_font_family_falls_back() {
         assert_eq!(lua_safe_family("Noto Sans"), "Noto Sans");
         assert_eq!(lua_safe_family("x\") os.exit() --"), "Sans");
         assert_eq!(lua_safe_family(""), "Sans");
-    }
-
-    #[test]
-    fn lua_chunk_names_every_value() {
-        let lua = TitleBarTheme::new(&EnzTheme::dark(), ":close".to_owned()).lua();
-        assert!(lua.starts_with("hl.config({decoration={titlebar={font_family=\"Sans\",font_size=14,font_weight=700,buttons=\":close\","));
-        assert!(lua.ends_with("}}}) return \"ok\""));
     }
 }

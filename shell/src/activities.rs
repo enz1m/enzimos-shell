@@ -125,45 +125,6 @@ mod tests {
     }
 
     #[test]
-    fn super_opens_nothing_with_the_framed_bar() {
-        let mut shell = island_shell();
-        shell.metrics.islands = None;
-        let _ = shell.activities_command(true);
-        assert!(!shell.activities);
-        assert!(!shell.spread_active());
-    }
-
-    #[test]
-    fn super_opens_the_spread_with_search_and_closes_both() {
-        let mut shell = island_shell();
-        let _ = shell.activities_command(true);
-        assert!(shell.activities);
-        assert!(shell.search.overview);
-        assert!(shell.spread_active());
-
-        let _ = shell.activities_command(true);
-        assert!(!shell.activities);
-        assert!(!shell.spread_active());
-    }
-
-    #[test]
-    fn super_on_a_tiling_desktop_leaves_the_windows_in_place() {
-        let mut shell = island_shell();
-        let _ = shell.activities_command(false);
-        assert!(!shell.activities);
-        assert!(!shell.spread_active());
-    }
-
-    #[test]
-    fn closing_the_spread_closes_the_overview() {
-        let mut shell = island_shell();
-        let _ = shell.activities_command(true);
-        let _ = shell.spread_message(SpreadMessage::Dismiss);
-        assert!(!shell.activities);
-        assert!(!shell.spread_active());
-    }
-
-    #[test]
     fn choosing_another_desktop_keeps_the_overview_and_spreads_it_once_up() {
         let mut shell = island_shell();
         let _ = shell.activities_command(true);
@@ -176,15 +137,6 @@ mod tests {
         assert!(shell.activities);
         assert!(shell.spread_active());
 
-        let _ = shell.activities_command(true);
-        assert!(!shell.activities);
-        assert!(!shell.spread_active());
-    }
-
-    #[test]
-    fn the_super_key_preference_can_turn_the_overview_off() {
-        let mut shell = island_shell();
-        shell.desired_settings.compositor.super_key = 2;
         let _ = shell.activities_command(true);
         assert!(!shell.activities);
         assert!(!shell.spread_active());

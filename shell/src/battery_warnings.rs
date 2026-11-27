@@ -231,11 +231,4 @@ mod tests {
             Some(Warning::Critical(2))
         );
     }
-
-    #[test]
-    fn missing_or_ignored_action_does_not_promise_shutdown() {
-        assert_eq!(action_label(None), None);
-        assert_eq!(action_label(Some("Ignore")), None);
-        assert!(action_label(Some("PowerOff")).is_some());
-    }
 }

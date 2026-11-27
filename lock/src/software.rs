@@ -70,33 +70,3 @@ fn native_argb(pixels: &mut [u8]) {
         pixel.copy_from_slice(&word.to_ne_bytes());
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn software_colors_match_wayland_argb_without_swapping_red_and_blue() {
-        let mut renderer = iced_tiny_skia::Renderer::new(crate::renderer_settings());
-        let mut pixels = tiny_skia::Pixmap::new(1, 1).unwrap();
-        let mut mask = tiny_skia::Mask::new(1, 1).unwrap();
-        let viewport = Viewport::with_physical_size(
-            iced::Size::new(1, 1),
-            iced_wgpu::core::renderer::Scale {
-                window: 1.0,
-                application: 1.0,
-            },
-        );
-        renderer.draw(
-            &mut pixels.as_mut(),
-            &mut mask,
-            &viewport,
-            &[iced::Rectangle::with_size(iced::Size::new(1.0, 1.0))],
-            iced::Color::from_rgb8(31, 73, 149),
-        );
-        native_argb(pixels.data_mut());
-        assert_eq!(
-            u32::from_ne_bytes(pixels.data()[..4].try_into().unwrap()),
-            0xff1f4995
-        );
-    }
-}

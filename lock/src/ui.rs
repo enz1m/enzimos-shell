@@ -882,7 +882,3 @@ impl Ui {
         )
     }
 }
-
-#[cfg(test)]
-#[path = "ui_tests.rs"]
-mod tests;

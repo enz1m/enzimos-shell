@@ -12,6 +12,117 @@ x11 = ["iced/x11", "enzui-widgets/x11"]
 # Dev-only NDJSON frame timing: ENZUI_FRAME_REPORT or the runtime default, refreshed each second.
 frame-report = ["iced/performance-observer"]
 
+# These binaries have no unit tests. The workspace lint gate checks all targets.
+[[bin]]
+name = "enzui-agent-consent"
+path = "src/bin/enzui-agent-consent.rs"
+test = false
+
+[[bin]]
+name = "enzui-agent-mock"
+path = "src/bin/enzui-agent-mock.rs"
+test = false
+
+[[bin]]
+name = "enzui-assistant"
+path = "src/bin/enzui-assistant.rs"
+test = false
+
+[[bin]]
+name = "enzui-clipboard-probe"
+path = "src/bin/enzui-clipboard-probe.rs"
+test = false
+
+[[bin]]
+name = "enzui-ctm-probe"
+path = "src/bin/enzui-ctm-probe.rs"
+test = false
+
+[[bin]]
+name = "enzui-dev-tools"
+path = "src/bin/enzui-dev-tools.rs"
+test = false
+
+[[bin]]
+name = "enzui-drive-unlock"
+path = "src/bin/enzui-drive-unlock.rs"
+test = false
+
+[[bin]]
+name = "enzui-glass-sample"
+path = "src/bin/enzui-glass-sample.rs"
+test = false
+
+[[bin]]
+name = "enzui-idle-inhibit"
+path = "src/bin/enzui-idle-inhibit.rs"
+test = false
+
+[[bin]]
+name = "enzui-keyring-prompt"
+path = "src/bin/enzui-keyring-prompt.rs"
+test = false
+
+[[bin]]
+name = "enzui-location-agent"
+path = "src/bin/enzui-location-agent.rs"
+test = false
+
+[[bin]]
+name = "enzui-maximize-preview"
+path = "src/bin/enzui-maximize-preview.rs"
+test = false
+
+[[bin]]
+name = "enzui-network-secrets"
+path = "src/bin/enzui-network-secrets.rs"
+test = false
+
+[[bin]]
+name = "enzui-notification-probe"
+path = "src/bin/enzui-notification-probe.rs"
+test = false
+
+[[bin]]
+name = "enzui-plugin-probe"
+path = "src/bin/enzui-plugin-probe.rs"
+test = false
+
+[[bin]]
+name = "enzui-search-bench"
+path = "src/bin/enzui-search-bench.rs"
+test = false
+
+[[bin]]
+name = "enzui-search-demo-provider"
+path = "src/bin/enzui-search-demo-provider.rs"
+test = false
+
+[[bin]]
+name = "enzui-search-probe"
+path = "src/bin/enzui-search-probe.rs"
+test = false
+
+[[bin]]
+name = "enzui-share-picker"
+path = "src/bin/enzui-share-picker.rs"
+test = false
+
+[[bin]]
+name = "enzui-shell-command"
+path = "src/bin/enzui-shell-command.rs"
+test = false
+
+[[bin]]
+name = "enzui-wallpaper"
+path = "src/bin/enzui-wallpaper.rs"
+test = false
+
+[[bin]]
+name = "enzui-welcome"
+path = "src/bin/enzui-welcome.rs"
+test = false
+
 [dependencies]
 ab_glyph = "=0.2.32"
 enzimos-phone-client = { path = "../vendor/phone-link/crates/host-client" }

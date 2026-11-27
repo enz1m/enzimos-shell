@@ -702,10 +702,6 @@ fn memory(value: Option<u64>) -> String {
     )
 }
 
-#[cfg(test)]
-#[path = "dev_tools/tests.rs"]
-mod tests;
-
 fn main() -> iced::Result {
     i18n::initialize();
     let mut settings = enz_window_settings(ShellLayout::TitlebarContent);

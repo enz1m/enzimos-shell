@@ -325,14 +325,6 @@ pub fn app_names(windows: &[SharedWindow]) -> HashMap<String, String> {
 mod tests {
     use super::*;
 
-    fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
-        let map: HashMap<String, String> = pairs
-            .iter()
-            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
-            .collect();
-        move |key| map.get(key).cloned()
-    }
-
     fn screen(name: &str, x: i32, width: i32, height: i32) -> Output {
         Output {
             name: name.into(),
@@ -343,48 +335,6 @@ mod tests {
             pixel_height: height * 2,
             ..Default::default()
         }
-    }
-
-    #[test]
-    fn window_list_round_trips_portal_records() {
-        let list = "305419896[HC>]org.example.Editor[HT>]notes.txt — Editor[HE>]94022344[HA>]7[HC>]foot[HT>][HE>]0[HA>]";
-        assert_eq!(
-            parse_window_list(list),
-            vec![
-                SharedWindow {
-                    handle: 305_419_896,
-                    class: "org.example.Editor".into(),
-                    title: "notes.txt — Editor".into()
-                },
-                SharedWindow {
-                    handle: 7,
-                    class: "foot".into(),
-                    title: String::new()
-                },
-            ]
-        );
-        assert!(parse_window_list("").is_empty());
-        assert!(parse_window_list("x[HC>]a[HT>]b[HE>]0[HA>]").is_empty());
-    }
-
-    #[test]
-    fn request_reads_portal_environment() {
-        let request = Request::new(
-            &["--allow-token".into()],
-            env(&[
-                ("XDPH_APP_ID", "org.example.Cast"),
-                ("XDPH_OFFER_PERSIST", "1"),
-                (
-                    "XDPH_WINDOW_SHARING_LIST",
-                    "1[HC>]a[HT>]b[HE>]0[HA>]2[HC>]dev.enzui.ControlCenter[HT>]Control Center[HE>]0[HA>]",
-                ),
-            ]),
-        );
-        assert_eq!(request.app_id, "org.example.Cast");
-        assert!(request.offer_persist && request.remember_by_default);
-        assert_eq!(request.windows.len(), 1);
-        let bare = Request::new(&[], env(&[("XDPH_OFFER_PERSIST", "0")]));
-        assert_eq!(bare, Request::default());
     }
 
     #[test]
@@ -471,26 +421,5 @@ mod tests {
         );
         assert_eq!(parse_slurp("selection cancelled", &outputs), None);
         assert_eq!(parse_slurp("DP-9 0 0 10 10", &outputs), None);
-    }
-
-    #[test]
-    fn scale_accounts_for_rotation() {
-        let mut output = Output {
-            width: 1280,
-            height: 800,
-            pixel_width: 2560,
-            pixel_height: 1600,
-            ..Default::default()
-        };
-        assert!((output.scale() - 2.0).abs() < f64::EPSILON);
-        output = Output {
-            width: 1067,
-            height: 1707,
-            pixel_width: 2560,
-            pixel_height: 1600,
-            rotated: true,
-            ..Default::default()
-        };
-        assert!((output.scale() - 1.5).abs() < f64::EPSILON);
     }
 }

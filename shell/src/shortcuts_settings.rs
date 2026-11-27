@@ -613,10 +613,6 @@ impl SettingsApp {
                 .spacing(8),
             );
         }
-        #[cfg(test)]
-        self.built_sections
-            .borrow_mut()
-            .insert("keyboard/shortcuts".to_owned());
         super::sections::grouped_section_for_scaled(
             self.tokens().typography.scale_factor().factor(),
             "keyboard/shortcuts",

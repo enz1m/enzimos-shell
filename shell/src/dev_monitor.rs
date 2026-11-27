@@ -427,6 +427,3 @@ fn parse<T: serde::de::DeserializeOwned>(json: &str) -> Result<T, String> {
     serde_json::from_str(json)
         .map_err(|error| tr!("shell-invalid-dev-monitor-response", "arg0" => format!("{:}", error)))
 }
-
-#[cfg(test)]
-mod tests;

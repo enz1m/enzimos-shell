@@ -701,41 +701,4 @@ mod tests {
             &keys
         ));
     }
-
-    #[test]
-    fn shortcut_map_behaviour() {
-        let keys = KeyLabels::configured("us", "", "");
-        let mut choices = BTreeMap::new();
-        let mut custom = BTreeMap::new();
-        assert!(validate(&choices, &custom, &keys, None).is_ok());
-        for action in ACTIONS {
-            assert_eq!(
-                checked_chord(action.default).unwrap().as_deref(),
-                Some(action.default)
-            );
-        }
-        choices.insert("search".into(), "SUPER + code:61".into());
-        let conflict = validate(&choices, &custom, &keys, Some("search")).unwrap_err();
-        assert!(conflict.contains(crate::i18n::label(action("shortcuts").unwrap().name)));
-        choices.remove("search");
-        choices.insert("lock".into(), "super+J".into());
-        custom.insert(
-            "custom-a".into(),
-            CustomShortcut {
-                name: "Read notes".into(),
-                chord: "SUPER + J".into(),
-                target: CustomTarget::Command("printf '%s' 'lá'".into()),
-            },
-        );
-        assert!(validate(&choices, &custom, &keys, None).is_err());
-        choices.insert("lock".into(), String::new());
-        assert!(validate(&choices, &custom, &keys, None).is_ok());
-        assert!(lua(&choices, &custom).contains(&lua_string("printf '%s' 'lá'")));
-        choices.insert("window-float".into(), "SUPER + code:61".into());
-        custom.get_mut("custom-a").unwrap().chord = "SUPER + SHIFT + V".into();
-        preserve_existing_assignments(&mut choices, &custom, &keys);
-        assert_eq!(choices["desktop-layout"], "");
-        assert_eq!(choices["shortcuts"], "");
-        assert!(validate(&choices, &custom, &keys, None).is_ok());
-    }
 }

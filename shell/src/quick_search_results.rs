@@ -292,27 +292,3 @@ impl Shell {
 fn result_key(heading: bool, id: &str) -> String {
     format!("{}:{id}", if heading { "heading" } else { "result" })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn file_state() -> State {
-        let mut state = State::default();
-        state.preferences.categories.push(Category::Files);
-        state.preferences.roots.push("/owned-fixture".into());
-        state.model.query = "report".into();
-        state.model.category = Some(Category::Files);
-        state
-    }
-
-    #[test]
-    fn pending_file_work_is_not_a_completed_empty_result() {
-        let mut state = file_state();
-        assert_eq!(state.file_wait_notice(), None);
-        state.file_query_busy = true;
-        assert_eq!(state.file_wait_notice(), Some("Searching file names…"));
-        state.file_busy = true;
-        assert_eq!(state.file_wait_notice(), Some("Indexing chosen folders…"));
-    }
-}

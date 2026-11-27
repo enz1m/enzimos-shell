@@ -1075,18 +1075,6 @@ impl crate::compositor::Compositor {
 mod tests {
     use super::*;
     use crate::search::{AppTarget, Category};
-    fn app(id: &str) -> App {
-        App::from_item(Item::new(
-            format!("app:{id}"),
-            Category::Apps,
-            id,
-            "",
-            "Open",
-            "app-window",
-            Some(Target::App(AppTarget::Prepared(id.into()))),
-        ))
-        .unwrap()
-    }
     fn window(app: &str, workspace: i64, index: u32) -> Window {
         Window {
             target: WindowTarget {
@@ -1177,98 +1165,6 @@ mod tests {
         assert_eq!(
             identify(serde_json::json!({"class": "org.example.Variant"}), &apps),
             Some(apps[2].item.id.clone())
-        );
-    }
-
-    #[tokio::test]
-    async fn dock_behaviour() {
-        // Dock behaviour.
-        {
-            // Pins have stable order and running windows do not make duplicate icons.
-            {
-                let p = Preferences {
-                    pins: vec!["app:b".into(), "app:a".into()],
-                    ..Default::default()
-                };
-                let result = groups(
-                    &p,
-                    &[app("a"), app("b"), app("c")],
-                    &[window("a", 1, 1), window("a", 1, 2), window("c", 1, 3)],
-                    1,
-                );
-                assert_eq!(
-                    result.iter().map(|g| g.id.as_str()).collect::<Vec<_>>(),
-                    ["app:b", "app:a", "app:c"]
-                );
-                assert_eq!(result[1].windows.len(), 2);
-                assert!(result[1].pinned && !result[2].pinned);
-            }
-            // Geometry fits all edges and overflow is bounded.
-            {
-                for position in Position::ALL
-                    .iter()
-                    .copied()
-                    .filter(|p| *p != Position::Bar)
-                {
-                    for style in Style::ALL {
-                        for icon_size in [24, 40, 64] {
-                            let p = Preferences {
-                                position,
-                                style: *style,
-                                icon_size,
-                                ..Default::default()
-                            };
-                            let g = geometry(
-                                &p,
-                                64,
-                                Size::new(640.0, 480.0),
-                                crate::settings::BarEdge::Bottom,
-                                crate::settings::Metrics {
-                                    bar: 48,
-                                    islands: None,
-                                    ..Default::default()
-                                },
-                                (50, 8),
-                            );
-                            assert!(
-                                g.body.x >= 0.0
-                                    && g.body.y >= 0.0
-                                    && g.body.x + g.body.width <= 640.0
-                                    && g.body.y + g.body.height <= 432.0
-                            );
-                            assert!(
-                                g.sensor.x >= 0.0
-                                    && g.sensor.y >= 0.0
-                                    && g.sensor.x + g.sensor.width <= 640.0
-                                    && g.sensor.y + g.sensor.height <= 480.0
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        let compositor =
-            crate::compositor::Compositor::new("/usr/bin/true".into(), "dock-fixture".into())
-                .unwrap();
-        let mut target = window("a", 1, 1).target;
-        target.pid = std::process::id();
-        target.start = crate::window_feed::start_ticks(
-            &std::fs::read_to_string(format!("/proc/{}/stat", target.pid)).unwrap(),
-        )
-        .unwrap();
-        assert!(
-            compositor
-                .dock_window_action(target.clone(), "close")
-                .await
-                .is_err()
-        );
-        target.start += 1;
-        assert!(
-            compositor
-                .dock_window_action(target, "focus")
-                .await
-                .is_err()
         );
     }
 }

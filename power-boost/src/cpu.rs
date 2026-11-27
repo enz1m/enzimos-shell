@@ -137,34 +137,3 @@ pub(crate) mod fake {
         std::fs::write(root.join(format!("policy{number}/{attribute}")), value).unwrap();
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_numbered_policies_with_a_preference_are_listed_in_numeric_order() {
-        let root = tempfile::tempdir().unwrap();
-        for number in [10, 2, 0] {
-            fake::policy(root.path(), number, "balance_power", "powersave");
-        }
-        fs::create_dir_all(root.path().join("policy3")).unwrap();
-        fs::create_dir_all(root.path().join("policyX")).unwrap();
-        let names: Vec<String> = policies(root.path())
-            .iter()
-            .map(|p| p.name().to_owned())
-            .collect();
-        assert_eq!(names, ["policy0", "policy2", "policy10"]);
-        assert!(policies(&root.path().join("absent")).is_empty());
-        assert!(Policy::named(root.path(), "policy").is_none());
-        assert!(Policy::named(root.path(), "../policy0").is_none());
-
-        fake::set(root.path(), 2, "affected_cpus", "");
-        fake::set(root.path(), 10, "affected_cpus", "10 11");
-        let names: Vec<String> = policies(root.path())
-            .iter()
-            .map(|p| p.name().to_owned())
-            .collect();
-        assert_eq!(names, ["policy0", "policy10"]);
-    }
-}

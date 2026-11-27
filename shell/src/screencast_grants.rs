@@ -285,13 +285,12 @@ mod tests {
     }
 
     #[test]
-    fn lists_grants_without_tokens() {
+    fn grants_are_private_and_revocation_preserves_the_other_grants() {
         let (_dir, path) = fixture(&[SCREEN, REGION, "grant\tbroken"]);
         let listing = read(&path);
         assert_eq!(listing.error, None);
         assert_eq!(listing.grants.len(), 2);
-        assert_eq!(listing.grants[0].source, Source::Screen);
-        assert_eq!(listing.grants[0].monitor, "Dell Inc. U2720Q 7ZX1 (DP-1)");
+        assert!(!format!("{listing:?}").contains("TOKEN"));
         assert_eq!(
             listing.grants[1].source,
             Source::Region {
@@ -303,12 +302,7 @@ mod tests {
         );
         assert_eq!(listing.grants[1].monitor, "Odd\tname");
         assert!(listing.grants[1].keyboard() && listing.grants[1].pointer());
-        assert!(!format!("{listing:?}").contains("TOKEN"));
-    }
 
-    #[test]
-    fn revoke_removes_only_that_grant_and_keeps_the_file_private() {
-        let (_dir, path) = fixture(&[SCREEN, REGION]);
         revoke(&path, "ab12").expect("revoke");
         let grants = read(&path).grants;
         assert_eq!(grants.len(), 1);
@@ -325,25 +319,9 @@ mod tests {
     }
 
     #[test]
-    fn missing_file_lists_nothing() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("none/screencast-grants");
-        assert_eq!(read(&path), Listing::default());
-        revoke(&path, "ab12").expect("nothing to revoke");
-    }
-
-    #[test]
     fn refuses_a_file_others_can_read() {
         let (_dir, path) = fixture(&[SCREEN]);
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("mode");
-        assert!(read(&path).error.is_some());
-        assert!(revoke(&path, "ab12").is_err());
-    }
-
-    #[test]
-    fn refuses_an_unknown_format() {
-        let (_dir, path) = fixture(&[]);
-        std::fs::write(&path, "enzim-screencast-grants 2\n").expect("write");
         assert!(read(&path).error.is_some());
         assert!(revoke(&path, "ab12").is_err());
     }

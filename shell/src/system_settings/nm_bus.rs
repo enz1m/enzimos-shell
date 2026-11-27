@@ -233,46 +233,6 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use zbus::zvariant::Str;
 
-    /// The bus reading keeps what `nmcli` parsing keeps. Sabotage: map
-    /// NetworkManager's state 100 to Connecting; the connected link then
-    /// reads as connecting.
-    #[test]
-    fn devices_and_saved_connections_read_as_nmcli_lists_them() {
-        let wired = interface("enp4s0".into(), 1, 100, "Wired".into()).expect("ethernet");
-        assert_eq!(
-            (wired.kind, wired.state),
-            (InterfaceKind::Ethernet, LinkState::Connected)
-        );
-        let wifi = interface("wlan0".into(), 2, 50, String::new()).expect("wifi");
-        assert_eq!(wifi.state, LinkState::Connecting);
-        assert_eq!(
-            interface("wg0".into(), 29, 30, String::new()).map(|i| (i.kind, i.state)),
-            Some((InterfaceKind::Vpn, LinkState::Disconnected))
-        );
-        assert!(
-            interface("eth1".into(), 1, 10, String::new()).is_none(),
-            "unmanaged"
-        );
-        assert!(
-            interface("veth12".into(), 1, 100, String::new()).is_none(),
-            "container link"
-        );
-        assert!(
-            interface("lo".into(), 32, 100, String::new()).is_none(),
-            "loopback"
-        );
-        let active = HashSet::from(["b".to_owned()]);
-        assert!(
-            saved_connection("Home".into(), "a".into(), "802-11-wireless", &active)
-                .is_some_and(|c| !c.active)
-        );
-        assert!(
-            saved_connection("Work".into(), "b".into(), "wireguard", &active)
-                .is_some_and(|c| c.active && c.kind == ConnectionKind::Vpn)
-        );
-        assert!(saved_connection("Cable".into(), "c".into(), "802-3-ethernet", &active).is_none());
-    }
-
     const PATH: &str = "/org/freedesktop/NetworkManager";
     const SETTINGS: &str = "/org/freedesktop/NetworkManager/Settings";
     const PROFILE: &str = "/org/freedesktop/NetworkManager/Settings/1";

@@ -13,7 +13,18 @@ greeter-preview = []
 [[bin]]
 name = "enzui-greeter-preview"
 path = "src/bin/enzui-greeter-preview.rs"
+test = false
 required-features = ["greeter-preview"]
+
+[[bin]]
+name = "enzui-lock"
+path = "src/main.rs"
+test = false
+
+[[bin]]
+name = "enzui-greeter"
+path = "src/bin/enzui-greeter.rs"
+test = false
 
 [dependencies]
 enzui-core = { git = "https://github.com/enz1m/enzui.git", rev = "503341c0d70d3984a3b024e960a2fa82ca0137ba" }

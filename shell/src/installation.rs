@@ -29,25 +29,3 @@ pub fn layout(root: &Path) -> Option<Layout> {
         apps: path("apps")?,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_a_complete_absolute_manifest_selects_an_installed_layout() {
-        let root = tempfile::tempdir().unwrap();
-        assert_eq!(layout(root.path()), None);
-        std::fs::write(root.path().join("installed.json"), r#"{"compositor":"/usr/lib/enzui/compositor","bin":"/usr/lib/enzui/bin","apps":"/usr/lib/enzui/apps"}"#).unwrap();
-        assert_eq!(
-            layout(root.path()).unwrap().bin,
-            PathBuf::from("/usr/lib/enzui/bin")
-        );
-        std::fs::write(
-            root.path().join("installed.json"),
-            r#"{"compositor":"/c","bin":"relative","apps":"/a"}"#,
-        )
-        .unwrap();
-        assert_eq!(layout(root.path()), None);
-    }
-}

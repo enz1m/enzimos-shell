@@ -439,6 +439,3 @@ fn policy(value: &BTreeMap<String, bool>) -> bool {
             .contains(&k.as_str())
         })
 }
-
-#[cfg(test)]
-mod tests;

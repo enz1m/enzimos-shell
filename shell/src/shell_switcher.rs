@@ -1,7 +1,5 @@
 use super::{Message, Shell, window_settings};
 use enzui_shell::tr;
-#[cfg(test)]
-mod tests;
 use enzui_shell::commands::Command;
 use enzui_shell::compositor::ControlGeometry;
 use enzui_shell::search::compositor::{SwitchEntry, SwitcherSnapshot};

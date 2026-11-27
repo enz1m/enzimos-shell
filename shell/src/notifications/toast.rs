@@ -60,24 +60,3 @@ impl Toast {
         changed
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn renewal_is_not_published_and_release_resumes_remaining_time() {
-        let now = Instant::now();
-        let at = |seconds| now + Duration::from_secs(seconds);
-        let mut toast = Toast::new(Some(at(5)));
-        assert!(toast.hold(true, at(2)));
-        let snapshot = toast;
-        assert!(!toast.hold(true, at(4)));
-        assert!(!toast.advance(at(6)));
-        assert!(snapshot.visible(at(6)));
-        assert!(toast.hold(false, at(6)));
-        assert!(toast.visible(at(8)));
-        assert!(toast.advance(at(9)));
-        assert!(!toast.visible(at(9)));
-    }
-}

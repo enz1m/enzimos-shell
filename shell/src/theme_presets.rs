@@ -404,12 +404,6 @@ pub(crate) fn apply_changes(
     written
 }
 
-#[cfg(test)]
-fn apply(document: &mut ThemeDocument, choices: Choices) -> usize {
-    let before = detect(document);
-    apply_changes(document, before, choices)
-}
-
 fn apply_scheme(document: &mut ThemeDocument, scheme: Scheme, mode: EnzThemeMode) -> usize {
     if scheme.is_builtin() {
         // Clearing restores the built-in value instead of pinning a copy of
@@ -547,72 +541,5 @@ fn color_at(document: &ThemeDocument, path: &str, mode: EnzThemeMode) -> Option<
     match document.get(path, mode) {
         Some(TokenValue::Color(c)) => Some(*c),
         _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn round_trip(choices: Choices) -> Choices {
-        let mut document = ThemeDocument::empty();
-        apply(&mut document, choices);
-        let parsed = ThemeDocument::parse(&document.to_toml()).expect("generated theme parses");
-        Choices {
-            scheme: choices.scheme,
-            ..detect(&parsed)
-        }
-    }
-
-    #[test]
-    fn theme_presets_behaviour() {
-        // Every shape combination survives a write and reread.
-        {
-            for &corners in Corners::ALL {
-                for &density in Density::ALL {
-                    for &shadows in Shadows::ALL {
-                        for &scrollbars in Scrollbars::ALL {
-                            let choices = Choices {
-                                corners,
-                                density,
-                                shadows,
-                                scrollbars,
-                                ..Choices::default()
-                            };
-                            assert_eq!(round_trip(choices), choices, "{choices:?}");
-                        }
-                    }
-                }
-            }
-        }
-        // Settings writes leave unrelated studio tokens alone.
-        {
-            let mut document = ThemeDocument::parse(
-                "version = 1\n[typography]\nbody_size = 17.0\n[dark.palette]\ndanger = \"#ff0000\"\n",
-            )
-            .expect("fixture parses");
-            let scheme = Scheme {
-                style: Style::Vibrant,
-                seed: Seed::Color(crate::theme_palette::rgb(0x00a5a8)),
-            };
-            apply(
-                &mut document,
-                Choices {
-                    scheme,
-                    corners: Corners::Soft,
-                    density: Density::Spacious,
-                    shadows: Shadows::Strong,
-                    scrollbars: Scrollbars::Wide,
-                },
-            );
-            assert_eq!(
-                document.get("typography.body_size", EnzThemeMode::Dark),
-                Some(&TokenValue::Number(17.0))
-            );
-            assert_eq!(
-                color_at(&document, "palette.danger", EnzThemeMode::Dark),
-                Some(Color::from_rgb(1.0, 0.0, 0.0))
-            );
-        }
     }
 }

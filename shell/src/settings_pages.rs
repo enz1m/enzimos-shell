@@ -549,18 +549,10 @@ impl SettingsApp {
             .expect("the settings catalog contains each built-in setting")
             .route
     }
-    pub(super) fn record_liveness(&self, route: &str) {
-        #[cfg(test)]
-        self.route_liveness
-            .borrow_mut()
-            .insert(route.to_owned(), self.controls_live());
-        let _ = route;
-    }
     // One row on its own, so a page can build it inside `dependent`.
     pub(super) fn compositor_row(&self, key: OptionKey) -> Element<'_, Message> {
         let entry = settings_catalog::find(Self::compositor_route(key))
             .expect("the settings catalog contains each built-in setting");
-        self.record_liveness(entry.route);
         let value = self.settings.compositor.value(key);
         if key == OptionKey::AnimationRate && !self.motion_supported {
             self.mark_setting(entry.route, crate::settings_app::settings_row(tr("shell-animation-speed"))

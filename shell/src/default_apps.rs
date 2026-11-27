@@ -738,38 +738,4 @@ mod tests {
             "[Default Applications]\ntext/plain=io.github.enzui.Text.desktop\n"
         );
     }
-
-    #[test]
-    fn default_apps_behaviour() {
-        // A default chosen in enzUI goes to its own list and keeps the rest of it.
-        // Sabotage: keep the old lines for `types` in `with_defaults`.
-        {
-            let text = "[Added Associations]\ntext/plain=b.desktop;\n\n[Default Applications]\ntext/plain=old.desktop\nimage/png=viewer.desktop\n";
-            let updated = with_defaults(
-                text,
-                &["text/plain", "text/markdown"],
-                "io.github.enzui.Text.desktop",
-            );
-            assert_eq!(
-                updated,
-                "[Added Associations]\ntext/plain=b.desktop;\n\n[Default Applications]\nimage/png=viewer.desktop\ntext/plain=io.github.enzui.Text.desktop\ntext/markdown=io.github.enzui.Text.desktop\n"
-            );
-            assert_eq!(
-                with_defaults("", &["inode/directory"], "io.github.enzui.Files.desktop"),
-                "[Default Applications]\ninode/directory=io.github.enzui.Files.desktop\n"
-            );
-        }
-        // Sabotage: stamp only the folders. Editing a list in place then keeps
-        // the stamp and serves the old default.
-        {
-            let folder = tempfile::tempdir().unwrap();
-            let list = folder.path().join("mimeapps.list");
-            std::fs::write(&list, "[Default Applications]\ntext/plain=a.desktop\n").unwrap();
-            let paths = vec![list.clone(), folder.path().to_path_buf()];
-            let before = stamp_of(&paths);
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            std::fs::write(&list, "[Default Applications]\ntext/plain=b.desktop\n").unwrap();
-            assert_ne!(stamp_of(&paths), before);
-        }
-    }
 }

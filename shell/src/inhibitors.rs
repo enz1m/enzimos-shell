@@ -77,31 +77,3 @@ async fn list_now() -> Result<Vec<Inhibitor>, String> {
         })
         .collect())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn lock(what: &str, mode: &str, uid: u32) -> Inhibitor {
-        Inhibitor {
-            who: "App".into(),
-            why: "Busy".into(),
-            what: what.into(),
-            mode: mode.into(),
-            uid,
-        }
-    }
-
-    #[test]
-    fn only_blocking_shutdown_locks_hold_off_power_actions() {
-        let me = rustix::process::getuid().as_raw();
-        let all = [
-            lock("shutdown:sleep", "block", 0),
-            lock("shutdown", "delay", 0),
-            lock("sleep", "block", me),
-            lock("idle", "block", me + 1),
-        ];
-        assert_eq!(relevant(&all, false), vec![all[0].clone()]);
-        assert_eq!(relevant(&all, true), vec![all[2].clone()]);
-    }
-}

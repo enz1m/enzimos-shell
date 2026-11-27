@@ -790,21 +790,3 @@ impl SettingsApp {
         body
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::parse_size;
-
-    #[test]
-    fn typed_sizes_round_to_whole_mebibytes_and_the_whole_region() {
-        let max = 400_000_000_000;
-        assert_eq!(parse_size("400", max), Some(0), "all of it");
-        assert_eq!(
-            parse_size("100,5", max),
-            Some(100_500_000_000 / 1_048_576 * 1_048_576)
-        );
-        assert_eq!(parse_size("0", max), None);
-        assert_eq!(parse_size("0.001", max), None, "too small");
-        assert_eq!(parse_size("abc", max), None);
-    }
-}

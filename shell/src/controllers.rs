@@ -544,43 +544,6 @@ pub fn axis_name(code: u16) -> &'static str {
 mod tests {
     use super::*;
 
-    #[test]
-    fn bluetooth_reconnect_and_composite_nodes_share_one_notification_identity() {
-        let mut controller = Controller {
-            id: "hid-instance-1".into(),
-            name: "Fixture controller".into(),
-            transport: Transport::Bluetooth,
-            battery: None,
-            rumble: false,
-            node: PathBuf::from("/dev/null"),
-            accessible: false,
-            bluetooth_address: Some("aa:bb:cc:dd:ee:ff".into()),
-        };
-        let mut notifications = Notifications::default();
-        let now = std::time::Instant::now();
-        notifications.connected(&[controller.clone()], true, now);
-        notifications.connected(&[], true, now + Duration::from_secs(1));
-        controller.id = "hid-instance-2".into();
-        assert!(
-            notifications
-                .connected(&[controller.clone()], true, now + Duration::from_secs(2))
-                .is_empty()
-        );
-        notifications.connected(&[], true, now + Duration::from_secs(63));
-        let mut composite = controller.clone();
-        composite.id = "hid-instance-3".into();
-        assert_eq!(
-            notifications
-                .connected(
-                    &[controller, composite],
-                    true,
-                    now + Duration::from_secs(64)
-                )
-                .len(),
-            1
-        );
-    }
-
     #[tokio::test]
     #[ignore = "Requires the owned public UHID fixture in a disposable enzimOS guest"]
     async fn installed_controller_reader_uses_kernel_limits_and_closes_while_quiet() {

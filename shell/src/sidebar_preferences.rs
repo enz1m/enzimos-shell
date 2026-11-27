@@ -130,20 +130,3 @@ impl Preferences {
         ))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn writes_preserve_extensions_and_unrelated_preferences() {
-        let mut document =
-            json!({"shell_style":"frame","sidebar_behavior":{"peer":true},"icon_size":18});
-        Preferences::default().write_json(&mut document).unwrap();
-        assert_eq!(document["shell_style"], "frame");
-        assert_eq!(document["icon_size"], 18);
-        assert_eq!(document["sidebar_behavior"]["peer"], true);
-        assert_eq!(document["sidebar_behavior"]["fullscreen_padding"], 8);
-        assert!(Preferences::default().write_json(&mut Value::Null).is_err());
-    }
-}

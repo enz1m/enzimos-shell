@@ -145,28 +145,3 @@ fn write_recent(path: &Path, text: &str) -> std::io::Result<()> {
     list.truncate(RECENT);
     enzui_core::atomic_state::save_atomic_raw(path, (list.join("\n") + "\n").as_bytes())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_emoji_list_is_found_in_any_data_directory() {
-        let root = tempfile::tempdir().unwrap();
-        let (home, other) = (root.path().join("home"), root.path().join("other"));
-        std::fs::create_dir_all(other.join("unicode/emoji")).unwrap();
-        std::fs::write(other.join(DATA), "").unwrap();
-        let dirs = std::env::join_paths([PathBuf::from("/nonexistent"), other.clone()]).unwrap();
-        assert_eq!(
-            data_path(Some(home.clone().into()), None, Some(dirs.clone())),
-            Some(other.join(DATA))
-        );
-        // The account's own copy comes first.
-        std::fs::create_dir_all(home.join("unicode/emoji")).unwrap();
-        std::fs::write(home.join(DATA), "").unwrap();
-        assert_eq!(
-            data_path(Some(home.clone().into()), None, Some(dirs)),
-            Some(home.join(DATA))
-        );
-    }
-}

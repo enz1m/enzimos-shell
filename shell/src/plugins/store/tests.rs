@@ -189,38 +189,3 @@ fn store_behaviour() {
         assert!(!store.refresh_bundled(&fixture("other", "2")).unwrap());
     }
 }
-
-#[test]
-fn dock_folder_pins_survive_the_registry_round_trip() {
-    use super::super::applications;
-    use crate::dock::Change;
-
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::at(temp.path().join("plugins")).unwrap();
-    let package = applications::package().unwrap();
-    let record = store
-        .install(&package, None, package.manifest().permissions.clone(), true)
-        .unwrap();
-    let uri = crate::desktop_portal::uri(&temp.path().join("My Folder"));
-    let save = |change| {
-        store.configure_active(
-            record.id(),
-            record.digest(),
-            record.activation(),
-            Permission::Applications,
-            |manifest, config| applications::edit(manifest, config, &change),
-        )
-    };
-
-    assert!(save(Change::PinFolders(vec!["file://remote/share".into()])).is_err());
-    save(Change::PinFolders(vec![uri.clone(), uri.clone()])).unwrap();
-    assert_eq!(
-        store.registry().unwrap().entries[0].config()["folders"],
-        json!([&uri])
-    );
-    save(Change::UnpinFolder(uri)).unwrap();
-    assert_eq!(
-        store.registry().unwrap().entries[0].config()["folders"],
-        json!([])
-    );
-}

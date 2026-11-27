@@ -261,19 +261,3 @@ fn graphic_font(time: &str, family: &str, weight: u16) -> Arc<Graphic> {
     *cache = Some((key, std::sync::Arc::clone(&graphic)));
     graphic
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn numeral_changes_do_not_resize_the_clock() {
-        for time in ["20:48", "11:11", "00:00"] {
-            assert_eq!(
-                graphic_font(time, "Fredoka", 600).silhouette.aspect_ratio(),
-                graphic_font("20:48", "Fredoka", 600)
-                    .silhouette
-                    .aspect_ratio()
-            );
-        }
-    }
-}

@@ -69,12 +69,11 @@ pub(crate) fn rows(
         return Vec::new();
     }
     let desktop_id = &provider.declaration.desktop_id;
-    // Search already lists every Settings page itself; Settings' own answer
-    // adds only its "Search in Settings".
+    // Built-in Settings destinations are Actions; the provider adds its search entry.
     let built_in = desktop_id.strip_suffix(".desktop") == Some(SETTINGS_PROVIDER);
     let mut rows: Vec<Item> = found
         .into_iter()
-        .filter(|found| !(built_in && enzui_shell::settings_catalog::find(&found.id).is_some()))
+        .filter(|_| !built_in)
         .take(providers::SHOWN)
         .map(|found| {
             // A themed icon the result names, else the app's own.

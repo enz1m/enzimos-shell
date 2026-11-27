@@ -276,65 +276,84 @@ impl Shell {
     }
     pub(super) fn search_commands(&self) -> Vec<Item> {
         let mut items = Vec::new();
-        // Only the pages Settings shows on this computer.
+        use enzui_shell::settings_catalog::{self, SearchDestination};
+
         let platform = self.system.platform.as_ref();
         let shows = |route: &str| enzui_shell::platform::shows(platform, route);
-        for category in enzui_shell::settings_catalog::Category::ALL
-            .into_iter()
-            .filter(|category| shows(category.page()))
+        let query = &self.search.model.query;
+        for group in settings_catalog::search_groups(query, |page, entry| {
+            shows(page.page()) && entry.is_none_or(|entry| shows(entry.route))
+        })
+        .into_iter()
+        .take(settings_catalog::DESKTOP_GROUP_LIMIT)
         {
-            items.push(Item::new(
-                format!("setting:{}", category.page()),
-                Category::Actions,
-                tr!("shell-settings-5", "arg0" => category.title().to_owned()),
-                tr("shell-settings"),
-                tr("shell-open"),
-                category.icon(),
-                Some(Target::Settings(category.page())),
-            ));
-        }
-        for (page, title) in [
-            ("sizing", "Size & spacing"),
-            ("controls", tr("shell-quick-controls")),
-            ("bar-layout", tr("shell-bar-contents")),
-            ("plugins", tr("shell-plugins")),
-        ] {
-            let category = enzui_shell::settings_catalog::category(page)
-                .expect("catalog items belong to a registered category");
-            if !shows(category.page()) {
-                continue;
-            }
-            items.push(Item::new(
-                format!("setting:{page}"),
-                Category::Actions,
-                title,
-                tr!("shell-settings-2", "arg0" => category.title().to_owned()),
-                tr("shell-open"),
-                category.icon(),
-                Some(Target::Settings(page)),
-            ));
-        }
-        for entry in enzui_shell::settings_catalog::ENTRIES
-            .iter()
-            .filter(|entry| shows(entry.category().page()) && shows(entry.route))
-        {
+            let (subtitle, target) = match group.destination {
+                SearchDestination::Page(page) => {
+                    (tr("shell-settings").into(), Target::Settings(page.page()))
+                }
+                SearchDestination::Section(route) => (
+                    tr!("shell-settings-2", "arg0" => group.category.title().to_owned()),
+                    Target::SettingsSection(route),
+                ),
+            };
             items.push(
                 Item::new(
-                    format!("setting:{}", entry.route),
+                    format!("setting:{}", group.destination.id()),
+                    Category::Actions,
+                    group.title,
+                    subtitle,
+                    tr("shell-open"),
+                    group.category.icon(),
+                    Some(target),
+                )
+                .with_settings_rank(group.rank),
+            );
+        }
+        if let Some(id) =
+            search::alias_target(query, self.search.model.category, &self.search.preferences)
+            && let Some(route) = id.strip_prefix("setting:")
+            && shows(route)
+            && !items.iter().any(|item| item.id == *id)
+        {
+            // Explicit quick keys keep their saved destinations when controls are grouped.
+            if let Some(section) = SearchDestination::section(route)
+                && shows(section.category.page())
+                && shows(section.route)
+            {
+                items.push(Item::new(
+                    id.clone(),
+                    Category::Actions,
+                    tr(section.label),
+                    section.category.title(),
+                    tr("shell-open"),
+                    section.category.icon(),
+                    Some(Target::SettingsSection(section.route)),
+                ));
+            } else if let Some(entry) = settings_catalog::find(route)
+                && shows(entry.category().page())
+            {
+                items.push(Item::new(
+                    id.clone(),
                     Category::Actions,
                     entry.title(),
-                    tr!("shell-settings-3", "arg0" => entry.category().title().to_owned(), "arg1" => entry.section().to_owned()),
+                    entry.category().title(),
                     tr("shell-open"),
-                    match entry.route {
-                        "shell/assistant_enabled" | "agents/assistant" => {
-                            enzui_shell::settings_catalog::icon(entry.route).unwrap_or_else(|| entry.category().icon())
-                        }
-                        _ => entry.category().icon(),
-                    },
+                    entry.category().icon(),
                     Some(Target::Settings(entry.route)),
-                )
-                .search_terms(entry.keywords()),
-            );
+                ));
+            } else if let Some(page) = settings_catalog::category(route)
+                && shows(page.page())
+            {
+                items.push(Item::new(
+                    id.clone(),
+                    Category::Actions,
+                    page.title(),
+                    tr("shell-settings"),
+                    tr("shell-open"),
+                    page.icon(),
+                    Some(Target::Settings(page.page())),
+                ));
+            }
         }
         let light = self.desired_settings.light;
         let tiled = self.snapshot.as_ref().is_some_and(|s| s.tiling);

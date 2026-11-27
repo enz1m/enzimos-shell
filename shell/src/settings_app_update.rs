@@ -210,7 +210,7 @@ impl SettingsApp {
                 let relocate = matches!(reason, navigation::Interruption::Resize)
                     && self.highlighted.is_some()
                     && (self.navigation.moving() || self.navigation.resting());
-                self.navigation.interrupt();
+                self.navigation.interrupt_scroll(reason);
                 if matches!(reason, navigation::Interruption::User) {
                     self.reveal_pending = false;
                 } else if relocate {
@@ -219,6 +219,12 @@ impl SettingsApp {
                 Task::none()
             }
             Message::FindSetting => return iced::widget::operation::focus(SEARCH_FIELD),
+            Message::ToggleSearchGroup(route) => {
+                if !self.expanded_search_groups.remove(route) {
+                    self.expanded_search_groups.insert(route);
+                }
+                Task::none()
+            }
             Message::Filter(value) => {
                 self.users_leave();
                 self.sandbox_leave();
@@ -238,6 +244,7 @@ impl SettingsApp {
                     self.image_purpose = super::ImagePurpose::Desktop;
                 }
                 self.filter = value.chars().take(128).collect();
+                self.expanded_search_groups.clear();
                 self.highlighted = None;
                 self.reveal_pending = true;
                 self.menu = None;
@@ -254,7 +261,8 @@ impl SettingsApp {
                 }
                 Task::none()
             }
-            Message::Reveal(route) => {
+            Message::Reveal(route) | Message::RevealSection(route) => {
+                let section = matches!(message, Message::RevealSection(_));
                 self.dev_tools_launch.cancel(false);
                 if let Some(entry) = enzui_shell::settings_catalog::find(route)
                     .filter(|entry| !self.route_refused(entry.route))
@@ -275,13 +283,22 @@ impl SettingsApp {
                     self.startup.close();
                     self.page = entry.category();
                     self.navigation.expanded = Some(self.page);
-                    self.highlighted = Some(entry.route);
+                    self.highlighted = (!section).then_some(entry.route);
                     self.show_route_section(entry.route);
-                    self.reveal_pending = true;
+                    self.reveal_pending = !section;
+                    if section {
+                        self.navigation.request_search_section(entry.route);
+                    }
                     self.filter.clear();
                     self.menu = None;
                 }
-                Task::batch([self.read_controls(), self.read_system(true)])
+                Task::batch([
+                    self.read_controls(),
+                    self.read_system(true),
+                    self.read_users(),
+                    self.read_wallpaper_gallery(),
+                    self.warm_wallpaper_preview(),
+                ])
             }
             Message::RevealFrame => {
                 let selected = self.navigation.selected;

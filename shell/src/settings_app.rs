@@ -134,6 +134,8 @@ enum Message {
     SectionObserved(u64, Option<(&'static str, f32)>),
     InterruptScroll(navigation::Interruption),
     FindSetting,
+    ToggleSearchGroup(&'static str),
+    RevealSection(&'static str),
     Filter(String),
     Reveal(&'static str),
     RevealFrame,
@@ -231,6 +233,7 @@ struct SettingsApp {
     page: Page,
     navigation: navigation::Navigation,
     filter: String,
+    expanded_search_groups: std::collections::HashSet<&'static str>,
     menu: Option<String>,
     background: background_settings::State,
     highlighted: Option<&'static str>,
@@ -266,13 +269,15 @@ impl SettingsApp {
     pub(super) fn model(store: Store) -> Self {
         let plugins = plugins_settings::State::new(&store);
         let layout_preview = enzui_shell::desktop_session::mode().managed();
-        let page = Page::requested(
-            std::env::var("ENZUI_SETTINGS_PAGE").ok().as_deref(),
-            layout_preview,
-        );
-        let target = std::env::var("ENZUI_SETTINGS_PAGE")
-            .ok()
-            .and_then(|route| enzui_shell::settings_catalog::find(&route));
+        let requested = std::env::var("ENZUI_SETTINGS_PAGE").ok();
+        let section = requested
+            .as_deref()
+            .and_then(enzui_shell::settings_catalog::SearchDestination::section)
+            .map(|section| section.route);
+        let page = Page::requested(section.or(requested.as_deref()), layout_preview);
+        let target = requested
+            .as_deref()
+            .and_then(enzui_shell::settings_catalog::find);
         let mut app = Self {
             store,
             plugins,
@@ -316,6 +321,7 @@ impl SettingsApp {
             page,
             navigation: Default::default(),
             filter: String::new(),
+            expanded_search_groups: Default::default(),
             menu: None,
             highlighted: target.map(|entry| entry.route),
             reveal_pending: target.is_some(),
@@ -346,7 +352,13 @@ impl SettingsApp {
             app.backup_share_request(id);
         }
         app.navigation.expanded = Some(page);
-        app.navigation.selected = app.sections(page).first().map(|section| section.route);
+        if let Some(route) = section.filter(|route| {
+            enzui_shell::settings_catalog::find(route).is_some_and(|entry| entry.category() == page)
+        }) {
+            app.navigation.request_search_section(route);
+        } else {
+            app.navigation.selected = app.sections(page).first().map(|section| section.route);
+        }
         app
     }
     pub(super) fn window_boot(&mut self) -> Task<Message> {

@@ -13,7 +13,7 @@ use enzui_core::activation::{ActivationContext, dbus::APPLICATION_CALL_CAPACITY}
 use enzui_shell::i18n::tr;
 use enzui_shell::settings::Store;
 use enzui_shell::settings_agent::APP_ID;
-use enzui_shell::settings_catalog::{self, Category as Page};
+use enzui_shell::settings_catalog::{self, Category as Page, SearchDestination};
 use enzui_shell::tr;
 use iced::{Subscription, Task};
 use std::sync::Arc;
@@ -159,7 +159,9 @@ fn share_id(id: &str) -> bool {
 /// up for backups.
 pub(super) fn opened_share(uri: &str) -> Option<String> {
     let backups = match opened(uri)?.0 {
-        Target::Entry(route) => settings_catalog::find(route)?.category() == Page::Backups,
+        Target::Entry(route) | Target::Section(route) => {
+            settings_catalog::find(route)?.category() == Page::Backups
+        }
         Target::Page(page) => page == Page::Backups,
     };
     let query = uri.strip_prefix(URI_SCHEME)?.split_once('?')?.1;
@@ -178,6 +180,7 @@ fn plugin_id(id: &str) -> bool {
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Target {
     Entry(&'static str),
+    Section(&'static str),
     Page(Page),
 }
 
@@ -190,7 +193,10 @@ pub(super) fn opened(uri: &str) -> Option<(Target, Option<String>)> {
         .find_map(|pair| pair.strip_prefix("plugin="));
     let target = match settings_catalog::find(route) {
         Some(entry) => Target::Entry(entry.route),
-        None => Target::Page(settings_catalog::category(route)?),
+        None => match SearchDestination::from_id(route)? {
+            SearchDestination::Page(page) => Target::Page(page),
+            SearchDestination::Section(route) => Target::Section(route),
+        },
     };
     Some((target, plugin.filter(|id| plugin_id(id)).map(str::to_owned)))
 }
@@ -200,19 +206,24 @@ pub(super) fn opened(uri: &str) -> Option<(Target, Option<String>)> {
 fn search_provider() -> SearchProvider {
     SearchProvider::blocking(|query| {
         let platform = enzui_shell::platform::latest();
-        settings_catalog::search(&query.text)
-            .into_iter()
-            .filter(|entry| {
-                enzui_shell::platform::shows(platform.as_ref(), entry.category().page())
-                    && enzui_shell::platform::shows(platform.as_ref(), entry.route)
+        settings_catalog::search_groups(&query.text, |page, entry| {
+            enzui_shell::platform::shows(platform.as_ref(), page.page())
+                && entry.is_none_or(|entry| {
+                    enzui_shell::platform::shows(platform.as_ref(), entry.route)
+                })
+        })
+        .into_iter()
+        .take(query.limit.min(settings_catalog::DESKTOP_GROUP_LIMIT))
+        .filter_map(|group| {
+            let result = SearchResult::new(group.destination.id(), group.title)
+                .ok()?
+                .icon(group.category.icon());
+            Some(match group.destination {
+                SearchDestination::Page(_) => result,
+                SearchDestination::Section(_) => result.subtitle(group.category.title()),
             })
-            .take(query.limit)
-            .filter_map(|entry| {
-                SearchResult::new(entry.route, entry.title())
-                    .ok()
-                    .map(|result| result.subtitle(entry.section()).icon("settings"))
-            })
-            .collect()
+        })
+        .collect()
     })
 }
 
@@ -239,9 +250,14 @@ impl SettingsApp {
         let mut tasks = Vec::new();
         for activation in self.process.take_searches() {
             tasks.push(match activation.request {
-                SearchRequest::Open { id, .. } => match settings_catalog::find(&id) {
-                    Some(entry) => self.update(Message::Reveal(entry.route)),
-                    None => Task::none(),
+                SearchRequest::Open { id, .. } => match SearchDestination::from_id(&id) {
+                    Some(SearchDestination::Page(page)) => self.update(Message::Page(page)),
+                    Some(SearchDestination::Section(route)) => {
+                        self.update(Message::RevealSection(route))
+                    }
+                    None => settings_catalog::find(&id).map_or_else(Task::none, |entry| {
+                        self.update(Message::Reveal(entry.route))
+                    }),
                 },
                 SearchRequest::Search { query } => self.update(Message::Filter(query)),
             });
@@ -300,6 +316,7 @@ impl SettingsApp {
             }
             tasks.push(match target {
                 Target::Entry(route) => self.update(Message::Reveal(route)),
+                Target::Section(route) => self.update(Message::RevealSection(route)),
                 Target::Page(page) => self.update(Message::Page(page)),
             });
             if let Some(id) = opened_share(uri) {
@@ -432,6 +449,15 @@ mod tests {
                 opened(&uris[0]).map(|(target, _)| target),
                 Some(Target::Page(Page::Appearance))
             );
+            let ApplicationIntent::Open(uris) = launch_intent(Some("section/dock/enabled"), None)
+            else {
+                panic!("a section opens")
+            };
+            assert_eq!(
+                opened(&uris[0]),
+                Some((Target::Section("dock/enabled"), None))
+            );
+            assert_eq!(opened("enzui-settings:section/dock/style"), None);
             let ApplicationIntent::Open(uris) =
                 launch_intent(Some("plugins/installed"), Some("clipboard"))
             else {

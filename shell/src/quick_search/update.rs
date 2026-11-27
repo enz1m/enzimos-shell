@@ -680,7 +680,10 @@ impl Shell {
                         self.search.action_busy = true;
                         if !matches!(
                             target,
-                            Target::App(_) | Target::Window(_) | Target::Settings(_)
+                            Target::App(_)
+                                | Target::Window(_)
+                                | Target::Settings(_)
+                                | Target::SettingsSection(_)
                         ) {
                             self.search.feedback = Some(tr("shell-opening").into());
                         }

@@ -1,4 +1,4 @@
-use enzui_shell::i18n::tr;
+use enzui_shell::{i18n::tr, settings_catalog::SearchRank};
 use enzui_shell::tr;
 /// How many apps the launcher's blank page shows in its icon row.
 pub const TOP_APPS: usize = 6;
@@ -48,6 +48,7 @@ pub enum Target {
     App(AppTarget),
     Window(WindowTarget),
     Settings(&'static str),
+    SettingsSection(&'static str),
     Desktop(DesktopAction),
     Copy(String),
     File {
@@ -85,6 +86,7 @@ pub struct Item {
     pub source: Option<Arc<str>>,
     normalized: Arc<String>,
     normalized_title: Arc<String>,
+    settings_rank: Option<SearchRank>,
 }
 impl Item {
     pub fn new(
@@ -103,6 +105,7 @@ impl Item {
             category,
             normalized: Arc::new(palette::normalize(&format!("{title} {subtitle}"))),
             normalized_title: Arc::new(palette::normalize(&title)),
+            settings_rank: None,
             title,
             subtitle,
             verb,
@@ -146,6 +149,11 @@ impl Item {
             "{} {}",
             self.normalized, limited
         )));
+        self
+    }
+    #[must_use]
+    pub fn with_settings_rank(mut self, rank: SearchRank) -> Self {
+        self.settings_rank = Some(rank);
         self
     }
     pub fn action_hint(&self) -> String {
@@ -396,6 +404,14 @@ fn rank_bounded<'a>(
         let shortcut = alias == Some(&item.id);
         let score = if shortcut {
             0
+        } else if let Some(rank) = item.settings_rank {
+            match rank {
+                SearchRank::ExactPage => 1,
+                SearchRank::PagePrefix => 2,
+                SearchRank::SectionName => 3,
+                SearchRank::ControlLabel => 4,
+                SearchRank::Context => 5,
+            }
         } else if item.normalized_title.as_str() == query {
             1
         } else if palette::matches_tokens(&item.normalized, &words) {
@@ -445,7 +461,7 @@ fn rank_bounded<'a>(
                         .unwrap_or(6),
                     _ => 7,
                 },
-                if item.category == Category::Clipboard {
+                if item.category == Category::Clipboard || item.settings_rank.is_some() {
                     ordinal
                 } else {
                     0
@@ -676,6 +692,28 @@ mod tests {
                     .collect::<Vec<_>>(),
                 ["app:prefix", "app:keyword"],
             );
+        }
+        {
+            let catalogue = crate::settings_catalog::search_groups("display", |_, _| true);
+            let items: Vec<_> = catalogue
+                .into_iter()
+                .take(3)
+                .map(|group| {
+                    Item::new(
+                        group.destination.id(),
+                        Category::Actions,
+                        group.title,
+                        group.category.title(),
+                        "Open",
+                        group.category.icon(),
+                        None,
+                    )
+                    .with_settings_rank(group.rank)
+                })
+                .collect();
+            let found = rank(items.iter(), "display", None, &Preferences::default());
+            assert_eq!(found[0].id, "display");
+            assert_eq!(found[1].id, "section/datetime/language");
         }
         // Bounded projection matches full order across categories and queries.
         {

@@ -1285,7 +1285,7 @@ mod tests {
         (root, app, package)
     }
     #[test]
-    fn dock_settings_search_reveals_installed_preferences() {
+    fn dock_settings_search_opens_section_and_reveals_individual_controls() {
         use enzui_shell::{i18n, settings_catalog};
 
         let (_root, mut app, _) = fixture();
@@ -1294,30 +1294,40 @@ mod tests {
         app.plugins.data = Some(read(store).unwrap());
         i18n::canonical(|| {
             let (_, package) = app.plugins.dock().unwrap();
+            let groups = settings_catalog::search_groups("Dock", |_, _| true);
+            let dock = &groups[0];
+            assert_eq!(
+                dock.destination,
+                settings_catalog::SearchDestination::Section("dock/enabled")
+            );
             for spec in &package.manifest().settings {
                 let route = format!("dock/{}", spec.key);
-                let entry = settings_catalog::find(&route).unwrap();
-                assert!(app.dock_route_shown(&spec.key));
-                assert!(
-                    settings_catalog::search(entry.title())
-                        .iter()
-                        .any(|entry| entry.route == route),
-                    "missing Dock result for {}",
-                    entry.title()
-                );
+                assert!(dock.controls.iter().any(|entry| entry.route == route));
             }
-            let first = settings_catalog::search("dock")[0];
-            assert_eq!(first.route, "dock/enabled");
+            let autohide = settings_catalog::search_groups("autohide", |_, _| true);
+            assert_eq!(autohide[0].destination, dock.destination);
             assert!(
-                settings_catalog::search("autohide")
+                autohide[0]
+                    .controls
                     .iter()
                     .any(|entry| entry.route == "dock/visibility")
             );
+
             app.filter = "dock".into();
-            let _ = app.update(AppMessage::Reveal(first.route));
+            let _ = app.update(AppMessage::RevealSection(dock.destination.route()));
             assert_eq!(app.page, super::super::Page::Shell);
-            assert_eq!(app.highlighted, Some(first.route));
+            assert_eq!(app.navigation.selected, Some("dock/enabled"));
+            assert_eq!(app.highlighted, None);
             assert!(app.filter.is_empty());
+
+            use super::super::navigation::Interruption;
+            let _ = app.update(AppMessage::InterruptScroll(Interruption::Resize));
+            assert!(app.navigation.moving());
+            let _ = app.update(AppMessage::InterruptScroll(Interruption::User));
+            assert!(!app.navigation.moving());
+
+            let _ = app.update(AppMessage::Reveal("dock/visibility"));
+            assert_eq!(app.highlighted, Some("dock/visibility"));
         });
     }
 

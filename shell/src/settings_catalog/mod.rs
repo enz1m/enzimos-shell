@@ -1,9 +1,13 @@
 use enzui_shell::i18n::tr;
 mod category;
 mod entries;
+mod search;
+mod sections;
 
 pub use category::{Category, Folder, Group};
 pub use entries::ENTRIES;
+pub use search::{DESKTOP_GROUP_LIMIT, SearchDestination, SearchRank, search_groups};
+pub use sections::{SECTIONS, Section};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Entry {
@@ -24,16 +28,30 @@ impl Entry {
     pub fn section(self) -> &'static str {
         tr(self.section_key)
     }
+    fn english_title(self) -> &'static str {
+        self.shortcut.map_or_else(
+            || crate::i18n::english(self.title_key),
+            |action| action.name,
+        )
+    }
     fn english_search_text(self) -> String {
         format!(
             "{} {} {}",
-            self.shortcut.map_or_else(
-                || crate::i18n::english(self.title_key),
-                |action| action.name
-            ),
+            self.english_title(),
             crate::i18n::english(self.section_key),
             crate::i18n::english(self.keywords_key)
         )
+    }
+    fn matches(self, words: &[&str]) -> bool {
+        let text = enzui_core::palette::normalize(&format!(
+            "{} {} {} {} {}",
+            self.english_search_text(),
+            self.title(),
+            self.category().title(),
+            self.section(),
+            self.keywords()
+        ));
+        words.iter().all(|word| text.contains(word))
     }
     pub fn keywords(self) -> &'static str {
         tr(self.keywords_key)
@@ -273,7 +291,7 @@ pub fn find(route: &str) -> Option<Entry> {
     all_entries().find(|entry| entry.route == route)
 }
 pub fn valid_route(route: &str) -> bool {
-    category(route).is_some() || find(route).is_some()
+    SearchDestination::from_id(route).is_some() || find(route).is_some()
 }
 pub fn search(query: &str) -> Vec<Entry> {
     let query = enzui_core::palette::normalize(query);
@@ -282,17 +300,7 @@ pub fn search(query: &str) -> Vec<Entry> {
     }
     let words: Vec<_> = query.split_whitespace().collect();
     let mut found: Vec<_> = all_entries()
-        .filter(|entry| {
-            let text = enzui_core::palette::normalize(&format!(
-                "{} {} {} {} {}",
-                entry.english_search_text(),
-                entry.title(),
-                entry.category().title(),
-                entry.section(),
-                entry.keywords()
-            ));
-            words.iter().all(|word| text.contains(word))
-        })
+        .filter(|entry| entry.matches(&words))
         .collect();
     found.sort_by_key(|entry| {
         (

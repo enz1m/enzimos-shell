@@ -870,6 +870,10 @@ impl Compositor {
             }
             Target::Window(window) => return self.focus_search_result(window).await,
             Target::Settings(page) => return self.launch_settings_page(root, page).await,
+            Target::SettingsSection(route) => {
+                let id = crate::settings_catalog::SearchDestination::Section(route).id();
+                return self.launch_settings_page(root, &id).await;
+            }
             Target::File {
                 path,
                 identity,

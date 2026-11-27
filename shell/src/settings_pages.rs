@@ -4,7 +4,7 @@ use enzui_shell::tr;
 use enzui_shell::{
     desktop_preferences::OptionKey,
     settings::{BarEdge, Change, Metric, SidebarEdge},
-    settings_catalog::{self, Category},
+    settings_catalog::{self, Category, SearchDestination},
     shell_style::{IslandOption, ShellStyle},
 };
 use enzui_widgets::{
@@ -793,68 +793,149 @@ impl SettingsApp {
             None => body,
         }
     }
+    fn search_results(&self) -> Column<'_, Message> {
+        const PREVIEW_CONTROLS: usize = 2;
+        let groups = settings_catalog::search_groups(&self.filter, |category, entry| {
+            self.category_available(category)
+                && (self.layout_preview || category != Category::Notifications)
+                && entry.is_none_or(|entry| {
+                    (self.layout_preview || !matches!(entry.page(), "plugins" | "bar-layout"))
+                        && (entry.page() != "wallpaper" || self.wallpaper.supported)
+                        && entry
+                            .route
+                            .strip_prefix("dock/")
+                            .is_none_or(|route| self.dock_route_shown(route))
+                        && self.route_shown(entry)
+                })
+        });
+        let mut results = column![
+            enz_text(tr("shell-search-results"))
+                .size(TextSize::Title2)
+                .heading(enzui_core::semantics::HeadingLevel::Page)
+                .into_element()
+        ]
+        .spacing(10);
+        if groups.is_empty() {
+            return results.push(
+                enz_text(tr("shell-no-matching-settings"))
+                    .muted_on(self.tokens().palette.surface)
+                    .into_element(),
+            );
+        }
+
+        let palette = self.tokens().palette;
+        let cards = groups.into_iter().map(|group| {
+            let route = group.destination.route();
+            let (open, breadcrumb, label) = match group.destination {
+                SearchDestination::Page(page) => (
+                    Message::Page(page),
+                    None,
+                    tr!("shell-search-open-page", "page" => group.title.to_owned()),
+                ),
+                SearchDestination::Section(route) => (
+                    Message::RevealSection(route),
+                    Some(group.category.title()),
+                    tr!("shell-search-open-section", "section" => group.title.to_owned(),
+                        "page" => group.category.title().to_owned()),
+                ),
+            };
+            let mut heading = column![
+                enz_text(group.title)
+                    .weight_rung(enzui_theme::WeightRung::Semibold)
+                    .into_element()
+            ].spacing(2);
+            if let Some(breadcrumb) = breadcrumb {
+                heading = heading.push(
+                    enz_text(breadcrumb).size(TextSize::Caption).muted_on(palette.surface).into_element()
+                );
+            }
+            let header = row![
+                enz_icon(group.category.icon()).size(18.0).into_element(),
+                heading.width(Length::Fill),
+                enz_icon("chevron-right").size(16.0).into_element(),
+            ]
+            .align_y(iced::Alignment::Center)
+            .spacing(10);
+            let header = enz_pressable(
+                container(header).width(Length::Fill).padding([8, 10]).into(),
+                open,
+            )
+            .style(PressableStyle::Row)
+            .aria_label(label)
+            .id(format!("find-group-{route}").into())
+            .into_element();
+
+            let control_row = |entry: settings_catalog::Entry| {
+                enz_pressable(
+                    container(enz_text(entry.title()).into_element())
+                        .width(Length::Fill)
+                        .padding([6, 10])
+                        .into(),
+                    Message::Reveal(entry.route),
+                )
+                .style(PressableStyle::Row)
+                .id(format!("find-setting-{}", entry.route).into())
+                .aria_label(entry.title())
+                .into_element()
+            };
+            let mut controls = column![].spacing(2).extend(
+                group.controls.iter().take(PREVIEW_CONTROLS).copied().map(control_row)
+            );
+            let hidden = group.controls.len().saturating_sub(PREVIEW_CONTROLS);
+            if hidden > 0 {
+                let expanded = self.expanded_search_groups.contains(route);
+                let (label, accessibility, chevron) = if expanded {
+                    (
+                        tr("shell-show-less").to_owned(),
+                        tr!("shell-search-show-fewer", "group" => group.title.to_owned()),
+                        "chevron-up",
+                    )
+                } else {
+                    let count = hidden.to_string();
+                    (
+                        tr!("shell-show-more-2", "arg0" => count.clone()),
+                        tr!("shell-search-show-more", "count" => count, "group" => group.title.to_owned()),
+                        "chevron-down",
+                    )
+                };
+                let disclosure = row![
+                    enz_text(label).size(TextSize::Caption).muted_on(palette.surface).into_element(),
+                    enz_icon(chevron).size(14.0).into_element(),
+                ]
+                .align_y(iced::Alignment::Center)
+                .spacing(6);
+                controls = controls.push(
+                    enz_pressable(
+                        container(disclosure).padding([7, 10]).into(),
+                        Message::ToggleSearchGroup(route),
+                    )
+                    .style(PressableStyle::Row)
+                    .aria_label(accessibility)
+                    .id(format!("find-more-{route}").into())
+                    .into_element(),
+                );
+                if expanded {
+                    controls = controls.extend(
+                        group.controls.into_iter().skip(PREVIEW_CONTROLS).map(control_row)
+                    );
+                }
+            }
+            let card = enzui_widgets::card::enz_card(column![
+                header,
+                container(controls).padding(iced::Padding::ZERO.left(28.0)),
+            ])
+            .padding(6)
+            .into_element();
+            (route.to_owned(), card)
+        }).collect();
+        results = results.push(enzui_widgets::keyed_column::keyed_column(cards).spacing(10.0));
+        results
+    }
     pub(super) fn settings_page(&self) -> Element<'_, Message> {
         let enabled = !self.closing;
         let mut body = column![].spacing(32);
         if !self.filter.trim().is_empty() {
-            body = column![
-                enz_text(tr("shell-search-results"))
-                    .size(TextSize::Title2)
-                    .into_element()
-            ]
-            .spacing(8);
-            let entries: Vec<_> = settings_catalog::search(&self.filter)
-                .into_iter()
-                .filter(|entry| {
-                    self.layout_preview
-                        || !matches!(entry.page(), "plugins" | "notifications" | "bar-layout")
-                })
-                .filter(|entry| entry.page() != "wallpaper" || self.wallpaper.supported)
-                .filter(|entry| {
-                    entry.route.strip_prefix("dock/").is_none_or(|route| self.dock_route_shown(route))
-                })
-                .filter(|entry| self.route_shown(*entry))
-                .take(30)
-                .collect();
-            if entries.is_empty() {
-                body = body.push(
-                    enz_text(tr("shell-no-matching-settings"))
-                        .muted_on(self.tokens().palette.surface)
-                        .into_element(),
-                );
-            }
-            for entry in entries {
-                body = body.push(
-                    enz_pressable(
-                        container(
-                            row![
-                                enz_icon(entry.category().icon()).size(20.0).into_element(),
-                                column![
-                                    enz_text(entry.title()).into_element(),
-                                    enz_text(format!(
-                                        "{} · {}",
-                                        entry.category().title(),
-                                        entry.section()
-                                    ))
-                                    .size(TextSize::Caption)
-                                    .muted_on(self.tokens().palette.surface)
-                                    .into_element()
-                                ]
-                                .spacing(3),
-                            ]
-                            .spacing(12)
-                            .align_y(iced::Alignment::Center),
-                        )
-                        .padding(8)
-                        .width(Length::Fill)
-                        .into(),
-                        Message::Reveal(entry.route),
-                    )
-                    .style(PressableStyle::Row)
-                    .id(format!("find-setting-{}", entry.route).into())
-                    .into_element(),
-                );
-            }
+            body = self.search_results();
         } else {
             body = body.push(
                 enz_text(self.page.title())

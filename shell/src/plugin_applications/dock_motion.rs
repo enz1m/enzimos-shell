@@ -88,6 +88,7 @@ impl Slot {
 pub(super) struct Strip {
     pub(super) trailing: Vec<Slot>,
     pub(super) divider: Track,
+    pub(super) find_apps: Track,
 }
 
 impl Strip {
@@ -134,6 +135,7 @@ impl Strip {
 
     pub(super) fn advance(&mut self, at: Instant) {
         self.divider.advance(at);
+        self.find_apps.advance(at);
         for slot in &mut self.trailing {
             slot.extent.advance(at);
         }
@@ -142,19 +144,24 @@ impl Strip {
     }
 
     pub(super) fn active(&self) -> bool {
-        self.divider.active() || self.trailing.iter().any(|slot| slot.extent.active())
+        self.divider.active()
+            || self.find_apps.active()
+            || self.trailing.iter().any(|slot| slot.extent.active())
     }
 
     pub(super) fn span(&self, slots: Slots, pinned: usize) -> f32 {
         let trailing = self.trailing.iter().enumerate().map(|(index, slot)| {
-            let gap = if index == 0 && pinned == 0 {
+            let gap = if index == 0 && pinned == 0 && self.find_apps.value() == 0.0 {
                 0.0
             } else {
                 slots.spacing
             };
             slot.extent() * (slots.target + gap)
         });
-        slots.span(pinned) + trailing.sum::<f32>() + self.divider.value() * slots.separator_span()
+        self.find_apps.value()
+            + slots.span(pinned)
+            + trailing.sum::<f32>()
+            + self.divider.value() * slots.separator_span()
     }
 }
 

@@ -108,6 +108,15 @@ impl Gesture {
     }
 }
 impl State {
+    fn enter(&mut self, id: String, origin: Origin) -> bool {
+        let needs_dwell = self.preview.as_ref().is_none_or(|preview| preview.id != id);
+        if needs_dwell {
+            self.clear();
+        }
+        self.hovered = Some((id, origin));
+        needs_dwell
+    }
+
     fn picture(&self, target: &WindowTarget, pixels: [u32; 2]) -> Option<&Picture> {
         self.pictures
             .iter()
@@ -371,9 +380,11 @@ impl Shell {
                 {
                     return Task::none();
                 }
-                self.dock.preview.clear();
-                self.dock.preview.hovered = Some((id, origin));
-                delay(self.dock.preview.serial, true)
+                if self.dock.preview.enter(id, origin) {
+                    delay(self.dock.preview.serial, true)
+                } else {
+                    Task::none()
+                }
             }
             Event::Leave(id) => {
                 if self
@@ -735,6 +746,31 @@ impl Shell {
 mod tests {
     use super::*;
     use iced::mouse::ScrollDelta;
+
+    #[test]
+    fn returning_to_the_previewed_icon_keeps_the_card_open() {
+        let mut state = State {
+            serial: 2,
+            preview: Some(Preview {
+                serial: 1,
+                next: 0,
+                bounds: Rectangle::default(),
+                windows: Vec::new(),
+                id: "terminal".into(),
+                body: Rectangle::default(),
+                point: iced::Point::ORIGIN,
+                position: Position::Bottom,
+                pixels: [160, 106],
+            }),
+            ..State::default()
+        };
+
+        assert!(!state.enter("terminal".into(), Origin::Dock));
+        assert!(state.preview.is_some());
+        assert!(state.hovered.is_some());
+        assert!(state.enter("editor".into(), Origin::Dock));
+        assert!(state.preview.is_none());
+    }
 
     #[test]
     fn one_smooth_swipe_advances_once_including_momentum() {

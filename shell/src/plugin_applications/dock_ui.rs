@@ -36,6 +36,25 @@ use std::{
 
 const FIND_APPS_WIDTH: f32 = 132.0;
 const MENU_WINDOWS: usize = 16;
+const MENU_GAP: f32 = 6.0;
+
+fn edge_padding(edge: Position, inset: f32) -> iced::Padding {
+    match edge {
+        Position::Left => iced::Padding::ZERO.left(inset),
+        Position::Right => iced::Padding::ZERO.right(inset),
+        Position::Top => iced::Padding::ZERO.top(inset),
+        _ => iced::Padding::ZERO.bottom(inset),
+    }
+}
+
+fn dock_menu_anchor(point: iced::Point, body: iced::Rectangle, edge: Position) -> iced::Point {
+    match edge {
+        Position::Left => iced::Point::new(body.x + body.width + MENU_GAP, point.y),
+        Position::Right => iced::Point::new(body.x - MENU_GAP, point.y),
+        Position::Top => iced::Point::new(point.x, body.y + body.height + MENU_GAP),
+        _ => iced::Point::new(point.x, body.y - MENU_GAP),
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Origin {
@@ -58,6 +77,7 @@ pub(crate) enum Event {
     KeyboardReady(window::Id, Result<(), String>),
     Click(String),
     Launch(String),
+    LaunchFlashExpired(String, u64),
     DropFolders(FileDrop),
     DropOnApp(String, FileDrop),
     Reorder(enzui_core::drag::DropRequest),
@@ -231,6 +251,7 @@ fn window_indicator<'a>(
     color: iced::Color,
     edge: Position,
     target: f32,
+    frame_inset: f32,
     spacing: enzui_theme::SpacingScale,
 ) -> Element<'a, Message> {
     use iced::{Border, Shadow};
@@ -287,7 +308,9 @@ fn window_indicator<'a>(
     } else {
         mark()
     };
-    let mark = container(ink).center(target).padding(spacing.space1);
+    let mark = container(ink)
+        .center(target)
+        .padding(edge_padding(edge, spacing.space1 + frame_inset));
     match edge {
         Position::Left => mark.align_left(target),
         Position::Right => mark.align_right(target),
@@ -371,9 +394,17 @@ fn count_corner<'a>(
     pill: Element<'a, Message>,
     edge: Position,
     target: f32,
+    frame_inset: f32,
     spacing: enzui_theme::SpacingScale,
 ) -> Element<'a, Message> {
-    let corner = container(pill).center(target).padding(spacing.space1);
+    let mut padding = iced::Padding::new(spacing.space1);
+    match edge {
+        Position::Left => padding.left += frame_inset,
+        Position::Right => padding.right += frame_inset,
+        Position::Top => padding.top += frame_inset,
+        _ => padding.bottom += frame_inset,
+    }
+    let corner = container(pill).center(target).padding(padding);
     let corner = if edge == Position::Left {
         corner.align_left(target)
     } else {
@@ -1425,6 +1456,14 @@ impl Shell {
                 self.dock.preview.clear();
                 self.dock_launch(id, Some(app), true)
             }
+            Event::LaunchFlashExpired(id, serial) => {
+                if self.dock.launches.get(&id) == Some(&serial) {
+                    self.dock.launches.remove(&id);
+                } else {
+                    self.quiet = true;
+                }
+                Task::none()
+            }
             Event::IconBounds(serial, id, origin, Some(bounds))
                 if serial == self.dock.menu_serial =>
             {
@@ -1458,6 +1497,27 @@ impl Shell {
                 let Some(entry) = self.dock.entries.iter().find(|e| e.group.id == id) else {
                     return Task::none();
                 };
+                let Some(geometry) = self.dock.geometry.as_ref() else {
+                    return Task::none();
+                };
+                let (body, edge) = match (origin, self.bar) {
+                    (Origin::Dock, _) => (geometry.body, self.dock.preferences.position),
+                    (Origin::Bar, enzui_shell::settings::BarEdge::Top) => (
+                        iced::Rectangle {
+                            height: f32::from(self.metrics.bar_band()),
+                            ..iced::Rectangle::default()
+                        },
+                        Position::Top,
+                    ),
+                    (Origin::Bar, enzui_shell::settings::BarEdge::Bottom) => (
+                        iced::Rectangle {
+                            y: geometry.screen.height - f32::from(self.metrics.bar_band()),
+                            ..iced::Rectangle::default()
+                        },
+                        Position::Bottom,
+                    ),
+                };
+                let point = dock_menu_anchor(point, body, edge);
                 let mut state = ContextMenuState::closed();
                 state.open_with_restore(
                     InvocationKind::Pointer(enzui_core::context_menu::Point::new(point.x, point.y)),
@@ -1645,12 +1705,27 @@ impl Shell {
         let Some(app) = app else { return Task::none() };
         self.dock.action_serial = self.dock.action_serial.wrapping_add(1);
         let serial = self.dock.action_serial;
-        if !self.tokens().motion.reduced_motion {
-            self.dock.launches.insert(id, serial);
-        }
+        let flash = self
+            .tokens()
+            .motion
+            .spring_slowdown()
+            .map_or_else(Task::none, |slowdown| {
+                self.dock.launches.insert(id.clone(), serial);
+                let spring = enzui_theme::ExpressiveMotion::DefaultSpatial
+                    .spring()
+                    .slowed(slowdown);
+                let duration = Duration::from_secs_f32(spring.settle_time(1.0, 0.0, 1e-3, 1e-2));
+                Task::perform(
+                    async move {
+                        tokio::time::sleep(duration).await;
+                        id
+                    },
+                    move |id| message(Event::LaunchFlashExpired(id, serial)),
+                )
+            });
         let root = self.root.clone();
         let compositor = self.compositor.clone();
-        Task::perform(
+        let launch = Task::perform(
             async move {
                 if !authority.load(std::sync::atomic::Ordering::Acquire) {
                     return Err(tr("shell-plugin-authority-changed").into());
@@ -1664,7 +1739,8 @@ impl Shell {
                 }
             },
             move |result| message(Event::Done(serial, result)),
-        )
+        );
+        Task::batch([flash, launch])
     }
     pub(crate) fn dock_windows(
         &mut self,
@@ -1791,6 +1867,25 @@ impl Shell {
             (position, _) => position,
         };
         let spacing = self.tokens().spacing;
+        let frame_inset = if matches!(origin, Origin::Dock) && self.metrics.islands.is_none() {
+            self.dock.geometry.as_ref().map_or(0.0, |geometry| {
+                let (distance, inner_padding) = match edge {
+                    Position::Left => (geometry.body.x, geometry.padding[1]),
+                    Position::Right => (
+                        geometry.screen.width - geometry.body.x - geometry.body.width,
+                        geometry.padding[1],
+                    ),
+                    Position::Top => (geometry.body.y, geometry.padding[0]),
+                    _ => (
+                        geometry.screen.height - geometry.body.y - geometry.body.height,
+                        geometry.padding[0],
+                    ),
+                };
+                (f32::from(self.metrics.frame) - distance - inner_padding).max(0.0)
+            })
+        } else {
+            0.0
+        };
         use enzui_widgets::pressable::{
             PressableStyle, PressableTokens, SurfaceColors, enz_pressable,
         };
@@ -1883,16 +1978,19 @@ impl Shell {
             let count = group.windows.len();
             let numbered = p.indicator == Indicator::Count && count > 1;
             let compact_count = count_width(group);
-            let inset = if numbered && compact_count.is_none() {
+            let count_inset = if numbered && compact_count.is_none() {
                 badge_height + spacing.space1
             } else {
                 0.0
             };
-            let glyph_pad = if edge == Position::Top {
-                iced::Padding::ZERO.top(inset)
+            let glyph_inset = frame_inset + frame_inset.min(spacing.sm());
+            let mut glyph_pad = edge_padding(edge, glyph_inset);
+            if edge == Position::Top {
+                glyph_pad.top += count_inset;
             } else {
-                iced::Padding::ZERO.bottom(inset)
-            };
+                glyph_pad.bottom += count_inset;
+            }
+            let inset = glyph_pad.x().max(glyph_pad.y());
             let icon = container(group_icon(
                 group,
                 size.min((target - inset).max(spacing.space1)),
@@ -1958,10 +2056,18 @@ impl Shell {
                             .align_right(width)
                             .into()
                     } else {
-                        count_corner(pill, edge, target, spacing)
+                        count_corner(pill, edge, target, frame_inset, spacing)
                     }
                 } else {
-                    window_indicator(p.indicator, count, color, edge, target, spacing)
+                    window_indicator(
+                        p.indicator,
+                        count,
+                        color,
+                        edge,
+                        target,
+                        frame_inset,
+                        spacing,
+                    )
                 };
                 layers.push(
                     enzui_widgets::motion::motion(

@@ -276,36 +276,35 @@ impl Shell {
         let keys = if self.search.showing {
             iced::event::listen_with_interest(
                 iced::event::Interest::KEYBOARD,
-                |event, status, id| match (event, status) {
-                    (
-                        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                            key,
-                            modifiers,
-                            repeat,
-                            ..
-                        }),
-                        status,
-                    ) if status == iced::event::Status::Ignored
-                    || source_chord(&key, modifiers).is_some()
-                    // The empty field takes the side arrows for its caret; the
-                    // top-apps row needs them too (the handler checks it is shown).
-                    || matches!(
+                |event, status, id| match event {
+                    iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                         key,
-                        iced::keyboard::Key::Named(
-                            iced::keyboard::key::Named::ArrowLeft
-                                | iced::keyboard::key::Named::ArrowRight
-                        )
-                    ) =>
-                    {
-                        Some((id, key, modifiers, repeat))
+                        modifiers,
+                        repeat,
+                        ..
+                    }) => {
+                        let search_key = status == iced::event::Status::Ignored
+                            || source_chord(&key, modifiers).is_some()
+                            || matches!(
+                                key,
+                                iced::keyboard::Key::Named(
+                                    iced::keyboard::key::Named::ArrowLeft
+                                        | iced::keyboard::key::Named::ArrowRight
+                                )
+                            );
+                        (search_key || crate::window_spread::activities_key_candidate(&key))
+                            .then_some((id, key, modifiers, repeat, search_key))
                     }
                     _ => None,
                 },
             )
-            .with(self.search.model.generation)
-            .map(|(generation, (id, key, modifiers, repeat))| {
-                message(Message::Key(id, generation, key, modifiers, repeat))
-            })
+            .with((self.search.model.generation, self.activities))
+            .filter_map(
+                |((generation, activities), (id, key, modifiers, repeat, search_key))| {
+                    (search_key || activities)
+                        .then(|| message(Message::Key(id, generation, key, modifiers, repeat)))
+                },
+            )
         } else {
             Subscription::none()
         };
@@ -395,6 +394,7 @@ impl Shell {
     }
     pub(crate) fn discard_search_surface(&mut self) -> Task<ShellMessage> {
         let _ = self.close_search();
+        self.search.overview = false;
         self.search.started = false;
         self.search.presented = false;
         self.search.geometry = None;
@@ -411,7 +411,6 @@ impl Shell {
     }
     pub(crate) fn close_search(&mut self) -> Task<ShellMessage> {
         let overview = self.overview_search_closing();
-        self.search.overview = false;
         Task::batch([overview, self.close_search_card()])
     }
     fn close_search_card(&mut self) -> Task<ShellMessage> {
@@ -510,6 +509,7 @@ impl Shell {
             }
             window::Event::CloseRequested => self.close_search(),
             window::Event::Closed => {
+                self.search.overview = false;
                 self.search.preedit = None;
                 self.search.window = None;
                 self.search.showing = false;

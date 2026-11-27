@@ -682,6 +682,7 @@ impl Shell {
         };
         enzui_widgets::keyboard_capture::keyboard_precapture(content, |key, modifiers| {
             source_chord(key, modifiers).is_some()
+                || self.activities_window_key(key, modifiers).is_some()
         })
     }
 }

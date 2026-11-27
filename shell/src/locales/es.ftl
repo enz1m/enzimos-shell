@@ -4769,6 +4769,7 @@ shell-a11y-hide = Ocultar { $arg0 }
 shell-a11y-allow = Permitir { $arg0 }
 shell-a11y-enable = Activar { $arg0 }
 shell-a11y-eject = Expulsar { $arg0 }
+shell-overview-window-shortcut = { $title }, atajo { $key }
 shell-a11y-use = Usar { $arg0 }
 shell-a11y-plugin-open-plugin-settings = Complemento { $arg0 }: abrir ajustes
 shell-a11y-plugin-settings = Complemento: { $arg0 } · Ajustes

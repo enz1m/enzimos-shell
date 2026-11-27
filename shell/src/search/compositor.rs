@@ -133,6 +133,8 @@ fn retained_search_focus(value: &serde_json::Value, pid: u32) -> bool {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpreadWindow {
     pub address: String,
+    /// Monotonic identity assigned when the compositor creates the window.
+    pub stable_id: u64,
     pub title: String,
     pub class: String,
     pub image: Option<std::path::PathBuf>,
@@ -189,6 +191,7 @@ fn spread_window(
         value["focusHistoryID"].as_i64().unwrap_or(i64::MAX),
         SpreadWindow {
             address: target.address,
+            stable_id: u64::from_str_radix(&target.stable_id, 16).ok()?,
             title: display_text(value["title"].as_str().unwrap_or(""), 256),
             class: display_text(class, 128),
             image: crate::search::catalogue::icon_for_app_id(class),
@@ -199,9 +202,9 @@ fn spread_window(
 }
 
 impl Compositor {
-    /// The windows of the shell output's active desktop for the window
-    /// spread, bottom-most first.
-    pub async fn spread_windows(&self) -> Result<SpreadDesktop, String> {
+    /// The windows of the shell output's active desktop, bottom-most first.
+    /// Activities keeps the oldest windows when the spread reaches its size limit.
+    pub async fn spread_windows(&self, overview: bool) -> Result<SpreadDesktop, String> {
         let output = self.desktop_output().await?;
         let scale = output["scale"]
             .as_f64()
@@ -230,14 +233,20 @@ impl Compositor {
         }
         let values: serde_json::Value =
             serde_json::from_str(&text).map_err(|_| tr("shell-invalid-window-list"))?;
+        const SPREAD_LIMIT: usize = 32;
+        const CLIENT_LIMIT: usize = 512;
         let mut windows: Vec<(i64, SpreadWindow)> = values
             .as_array()
             .ok_or_else(|| tr("shell-invalid-window-list"))?
             .iter()
-            .take(512)
+            .take(CLIENT_LIMIT)
             .filter_map(|value| spread_window(value, monitor, desktop, std::process::id()))
-            .take(32)
+            .take(if overview { CLIENT_LIMIT } else { SPREAD_LIMIT })
             .collect();
+        if overview && windows.len() > SPREAD_LIMIT {
+            windows.sort_unstable_by_key(|(_, window)| window.stable_id);
+            windows.truncate(SPREAD_LIMIT);
+        }
         windows.sort_by_key(|(history, _)| std::cmp::Reverse(*history));
         Ok(SpreadDesktop {
             output_id: monitor,

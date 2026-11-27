@@ -85,6 +85,7 @@ impl Shell {
                 }
                 self.search.epoch = self.search.epoch.saturating_add(1);
                 self.search.showing = true;
+                self.search.overview = self.activities;
                 self.search.activation = None;
                 self.search.activation_checked = false;
                 self.search.activation_tried.clear();
@@ -206,6 +207,7 @@ impl Shell {
                     eprintln!("quick-search presentation: {error}");
                     self.notice = Some(error);
                     self.search.showing = false;
+                    self.search.overview = false;
                     self.search.visible = false;
                     self.search.started = false;
                     return self
@@ -258,6 +260,7 @@ impl Shell {
                     && !self.search.showing =>
             {
                 self.search.started = false;
+                self.search.overview = false;
                 self.search.model.set_query(String::new());
                 self.search.model.results.clear();
                 self.search.model.selected = None;
@@ -523,6 +526,14 @@ impl Shell {
                 }
                 if modifiers.control() || modifiers.alt() || modifiers.logo() {
                     return Task::none();
+                }
+                if let Some(action) = self.activities_window_key(&key, modifiers) {
+                    return if repeat && matches!(key, Key::Character(_) | Key::Named(Named::Enter))
+                    {
+                        Task::none()
+                    } else {
+                        self.spread_message(action)
+                    };
                 }
                 // On the blank page the top apps are one row of icons: the
                 // side arrows move along it and Down opens every app below.

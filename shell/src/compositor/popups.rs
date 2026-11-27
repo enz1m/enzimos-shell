@@ -875,12 +875,9 @@ impl Compositor {
         }
     }
 
-    /// Shows the spread's windows again and focuses `focus`, if given.
-    pub async fn spread_restore(&self, focus: Option<&str>) -> Result<(), String> {
-        let focus = focus
-            .map(spread_address)
-            .transpose()?
-            .unwrap_or_else(|| "nil".into());
+    /// Shows the spread's windows again and focuses the given stable window ID.
+    pub async fn spread_restore(&self, focus: Option<u64>) -> Result<(), String> {
+        let focus = focus.map_or_else(|| "nil".into(), |id| format!("'{id:x}'"));
         let reply = self
             .request(&["eval", &format!("return enzui_spread_restore({focus})")])
             .await?;

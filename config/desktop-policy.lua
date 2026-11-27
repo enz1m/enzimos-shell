@@ -185,7 +185,7 @@ function enzui_spread_hide(addresses)
 end
 
 function enzui_spread_restore(focus)
-    assert(focus == nil or type(focus) == "string" and focus:match("^0x%x+$"), "Invalid window")
+    assert(focus == nil or type(focus) == "string" and focus:match("^%x+$"), "Invalid window")
     for address, window in pairs(enzui_desktop.spread) do
         -- A retained weak window handle: a reused address is another client.
         if window.mapped and window.address == address then
@@ -196,7 +196,7 @@ function enzui_spread_restore(focus)
     enzui_desktop.spread = {}
     local target
     for _, window in ipairs(focus and hl.get_windows() or {}) do
-        if window.address == focus and regular(window) then target = window end
+        if window.stable_id == focus and regular(window) then target = window end
     end
     if target then
         -- The pointer stays where the user clicked.

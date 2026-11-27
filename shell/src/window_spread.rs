@@ -1,9 +1,15 @@
 use super::{Message, Shell, window_settings};
+use enzui_core::semantics::{Role, Semantics};
 use enzui_shell::dock::{Geometry as DockGeometry, Position as DockPosition};
 use enzui_shell::i18n::tr;
 use enzui_shell::search::compositor::SpreadWindow;
 use enzui_shell::spread_layout::{self, Rect};
-use enzui_widgets::{icon::enz_icon, text::enz_text};
+use enzui_widgets::{
+    focus_button::focus_button,
+    icon::enz_icon,
+    text::{enz_text, line_box_px},
+};
+use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::widget::{column, container, image, mouse_area, pin, stack};
 use iced::{Element, Length, Padding, Subscription, Task, window};
 use std::time::{Duration, Instant};
@@ -13,8 +19,11 @@ use std::time::{Duration, Instant};
 const DURATION: f32 = 0.26;
 const MARGIN: f32 = 32.0;
 const GAP: f32 = 28.0;
-const LABEL: f32 = 34.0;
+const CAPTION_TEXT: f32 = 13.0;
+const CAPTION_GAP: f32 = 8.0;
+const CAPTION_PADDING_Y: f32 = 5.0;
 const RING: f32 = 5.0;
+const WINDOW_KEYS: [&str; 10] = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"];
 // The overview's desktops strip: room between it, Search and the windows.
 const STRIP_GAP: f32 = 18.0;
 
@@ -35,6 +44,7 @@ pub(crate) struct Entry {
     from: Rect,
     to: Rect,
     picture: Option<image::Handle>,
+    shortcut: Option<&'static str>,
 }
 
 #[derive(Clone, Debug)]
@@ -74,7 +84,7 @@ pub(crate) struct Spread {
     duration: f32,
     // The window to focus once the overlay has closed: closing hands focus
     // on, so focusing earlier would be undone.
-    focus_after: Option<(window::Id, String)>,
+    focus_after: Option<(window::Id, u64)>,
     allocations: Vec<image::Allocation>,
     ready: bool,
     ready_frames: u8,
@@ -95,10 +105,32 @@ pub(crate) enum SpreadMessage {
     Hover(usize),
     Pick(usize),
     Dismiss,
-    Key(iced::keyboard::key::Named),
+    Key(Named),
     Restored(u64, Result<(), String>),
     Finished(u64),
     Focused(Result<(), String>),
+}
+
+fn assign_window_keys(entries: &mut [Entry]) {
+    let mut by_age: Vec<_> = (0..entries.len()).collect();
+    by_age.sort_unstable_by_key(|&index| entries[index].window.stable_id);
+    for (index, key) in by_age.into_iter().zip(WINDOW_KEYS) {
+        entries[index].shortcut = Some(key);
+    }
+}
+
+fn spread_navigation_key(key: &Key) -> bool {
+    matches!(
+        key,
+        Key::Named(
+            Named::ArrowLeft | Named::ArrowRight | Named::ArrowUp | Named::ArrowDown | Named::Enter
+        )
+    )
+}
+
+pub(crate) fn activities_key_candidate(key: &Key) -> bool {
+    spread_navigation_key(key)
+        || matches!(key, Key::Character(text) if matches!(text.as_bytes(), [b'0'..=b'9']))
 }
 
 fn ease(t: f32) -> f32 {
@@ -197,29 +229,16 @@ fn arrange(windows: &[SpreadWindow], area: [f32; 4], insets: Padding) -> Vec<(Re
         .iter()
         .map(|w| Rect::new(w.at[0] - area[0], w.at[1] - area[1], w.size[0], w.size[1]))
         .collect();
-    // Room under each window for its title.
     let room = Rect::new(
         insets.left + MARGIN,
         insets.top + MARGIN,
         (area[2] - insets.x() - 2.0 * MARGIN).max(1.0),
         (area[3] - insets.y() - 2.0 * MARGIN).max(1.0),
     );
-    let padded: Vec<Rect> = from
-        .iter()
-        .map(|r| Rect::new(r.x, r.y, r.width, r.height + LABEL))
-        .collect();
-    let to = spread_layout::layout(&padded, room, GAP);
-    from.into_iter()
-        .zip(to)
-        .zip(padded)
-        .map(|((from, to), padded)| {
-            let scale = to.width / padded.width;
-            (
-                from,
-                Rect::new(to.x, to.y, from.width * scale, from.height * scale),
-            )
-        })
-        .collect()
+    let text = enzui_theme::text_scale::effective().apply_px(CAPTION_TEXT);
+    let caption = line_box_px(text).max(18.0) + 2.0 * CAPTION_PADDING_Y + CAPTION_GAP;
+    let to = spread_layout::layout(&from, room, GAP, caption);
+    from.into_iter().zip(to).collect()
 }
 
 // Capture at the resting tile size to limit uploads.
@@ -241,7 +260,7 @@ async fn load(
     overview: Option<OverviewBand>,
     dock: Option<(DockPosition, DockGeometry)>,
 ) -> Result<Loaded, String> {
-    let desktop = compositor.spread_windows().await?;
+    let desktop = compositor.spread_windows(overview.is_some()).await?;
     // The overview opens on an empty desktop too, for Search and the desktops.
     if desktop.windows.is_empty() && overview.is_none() {
         return Err(tr("shell-no-windows-to-spread").into());
@@ -281,22 +300,27 @@ async fn load(
         },
     ))
     .await;
+    let mut entries: Vec<_> = desktop
+        .windows
+        .into_iter()
+        .zip(places)
+        .zip(pictures)
+        .map(|((window, (from, to)), picture)| Entry {
+            window,
+            from,
+            to,
+            picture: picture.ok(),
+            shortcut: None,
+        })
+        .collect();
+    if overview.is_some() {
+        assign_window_keys(&mut entries);
+    }
     Ok(Loaded {
         desktop: desktop.desktop,
         rounding,
         area,
-        entries: desktop
-            .windows
-            .into_iter()
-            .zip(places)
-            .zip(pictures)
-            .map(|((window, (from, to)), picture)| Entry {
-                window,
-                from,
-                to,
-                picture: picture.ok(),
-            })
-            .collect(),
+        entries,
         strip,
     })
 }
@@ -398,6 +422,9 @@ impl Shell {
                 match self.spread.phase {
                     Phase::Opening if done => {
                         self.spread.phase = Phase::Open;
+                        if self.activities {
+                            self.redraw_only = None;
+                        }
                         Task::none()
                     }
                     Phase::Closing if done && self.spread.started.take().is_some() => {
@@ -407,10 +434,10 @@ impl Shell {
                             .spread
                             .chosen
                             .and_then(|index| self.spread.entries.get(index))
-                            .map(|entry| entry.window.address.clone());
+                            .map(|entry| entry.window.stable_id);
                         let compositor = self.compositor.clone();
                         Task::perform(
-                            async move { compositor.spread_restore(chosen.as_deref()).await },
+                            async move { compositor.spread_restore(chosen).await },
                             move |result| {
                                 Message::Spread(SpreadMessage::Restored(generation, result))
                             },
@@ -573,6 +600,7 @@ impl Shell {
     }
 
     pub(crate) fn close_spread(&mut self, chosen: Option<usize>) -> Task<Message> {
+        let with_search = self.activities;
         let search = self.overview_spread_closing();
         let spread = match self.spread.phase {
             Phase::Opening | Phase::Open => {
@@ -582,7 +610,9 @@ impl Shell {
                 self.spread.chosen = chosen.filter(|index| *index < self.spread.entries.len());
                 self.spread.started = Some(now);
                 self.spread.frame_at = None;
-                self.redraw_only = self.spread.window;
+                if !with_search {
+                    self.redraw_only = self.spread.window;
+                }
                 Task::none()
             }
             Phase::Loading => {
@@ -603,7 +633,7 @@ impl Shell {
             .spread
             .chosen
             .and_then(|index| self.spread.entries.get(index))
-            .map(|entry| entry.window.address.clone());
+            .map(|entry| entry.window.stable_id);
         let focus_after = window.zip(chosen);
         self.spread = Spread {
             generation: self.spread.generation + 1,
@@ -617,12 +647,13 @@ impl Shell {
         if self.spread.owns(id) {
             return self.abort_spread();
         }
-        let Some((_, address)) = self.spread.focus_after.take() else {
+        let Some((_, stable_id)) = self.spread.focus_after.take_if(|(closed, _)| *closed == id)
+        else {
             return Task::none();
         };
         let compositor = self.compositor.clone();
         Task::perform(
-            async move { compositor.spread_restore(Some(&address)).await },
+            async move { compositor.spread_restore(Some(stable_id)).await },
             |result| Message::Spread(SpreadMessage::Focused(result)),
         )
     }
@@ -645,8 +676,34 @@ impl Shell {
         self.spread.active()
     }
 
-    fn spread_key(&mut self, key: iced::keyboard::key::Named) -> Task<Message> {
-        use iced::keyboard::key::Named;
+    pub(crate) fn activities_window_key(
+        &self,
+        key: &Key,
+        modifiers: Modifiers,
+    ) -> Option<SpreadMessage> {
+        if !self.activities
+            || self.spread.phase != Phase::Open
+            || self.spread.entries.is_empty()
+            || modifiers.intersects(Modifiers::CTRL | Modifiers::ALT | Modifiers::LOGO)
+            || !self.search.accepts_overview_keys()
+        {
+            return None;
+        }
+        match key {
+            Key::Character(digit) => self
+                .spread
+                .entries
+                .iter()
+                .position(|entry| entry.shortcut == Some(digit.as_str()))
+                .map(SpreadMessage::Pick),
+            Key::Named(named) if modifiers.is_empty() && spread_navigation_key(key) => {
+                Some(SpreadMessage::Key(*named))
+            }
+            _ => None,
+        }
+    }
+
+    fn spread_key(&mut self, key: Named) -> Task<Message> {
         if self.spread.phase != Phase::Open {
             return Task::none();
         }
@@ -656,14 +713,10 @@ impl Shell {
         if matches!(key, Named::Enter | Named::Space) {
             return self.close_spread(self.spread.selected.or(focused));
         }
-        let Some(current) = self
-            .spread
-            .selected
-            .and_then(|index| self.spread.entries.get(index))
-        else {
-            self.spread.selected = focused;
+        let Some(selected) = self.spread.selected.or(focused) else {
             return Task::none();
         };
+        let current = &self.spread.entries[selected];
         let center = |r: Rect| (r.x + r.width / 2.0, r.y + r.height / 2.0);
         let (cx, cy) = center(current.to);
         let best = self
@@ -689,9 +742,7 @@ impl Shell {
                 (ahead > 1.0).then_some((index, ahead + 2.0 * aside))
             })
             .min_by(|a, b| a.1.total_cmp(&b.1));
-        if let Some((index, _)) = best {
-            self.spread.selected = Some(index);
-        }
+        self.spread.selected = Some(best.map_or(selected, |(index, _)| index));
         Task::none()
     }
 
@@ -701,20 +752,12 @@ impl Shell {
         };
         let keys = iced::event::listen_with_interest(
             iced::event::Interest::KEYBOARD,
-            |event, _, window| match event {
+            |event, status, window| match event {
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                    key: iced::keyboard::Key::Named(key),
+                    key: ref key @ Key::Named(named),
                     ..
-                }) if matches!(
-                    key,
-                    iced::keyboard::key::Named::ArrowLeft
-                        | iced::keyboard::key::Named::ArrowRight
-                        | iced::keyboard::key::Named::ArrowUp
-                        | iced::keyboard::key::Named::ArrowDown
-                        | iced::keyboard::key::Named::Enter
-                ) =>
-                {
-                    Some((window, key))
+                }) if status == iced::event::Status::Ignored && spread_navigation_key(key) => {
+                    Some((window, named))
                 }
                 _ => None,
             },
@@ -980,6 +1023,34 @@ impl Shell {
                 })
                 .into(),
             };
+            let picture = if let Some(shortcut) = entry.shortcut.filter(|_| open) {
+                let scale = (r.width.min(r.height) / 180.0).clamp(0.75, 1.0);
+                let size = 26.0 * scale;
+                let badge = container(
+                    enz_text(shortcut)
+                        .size_px(14.0 * scale)
+                        .weight_rung(enzui_theme::WeightRung::Semibold)
+                        .color(palette.on_accent())
+                        .into_element(),
+                )
+                .center(Length::Fixed(size))
+                .style(move |_| container::Style {
+                    background: Some(palette.accent.into()),
+                    border: iced::Border {
+                        radius: (size / 2.0).into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                });
+                let inset = 8.0 * scale;
+                stack![
+                    picture,
+                    pin(badge).x((r.width - size - inset).max(0.0)).y(inset)
+                ]
+                .into()
+            } else {
+                picture
+            };
             let accent = palette.accent;
             // The ring sits outside the picture, which would cover it.
             let framed = container(picture)
@@ -1001,11 +1072,29 @@ impl Shell {
             } else {
                 entry.window.title.clone()
             };
-            // The pointer and the arrows choose; the ring shows the choice.
-            let pick = mouse_area(framed)
-                .on_press(Message::Spread(SpreadMessage::Pick(index)))
-                .on_enter(Message::Spread(SpreadMessage::Hover(index)))
-                .interaction(iced::mouse::Interaction::Pointer);
+            let activate = Message::Spread(SpreadMessage::Pick(index));
+            let pick = if open && self.spread.strip.is_some() {
+                let name = entry.shortcut.map_or_else(
+                    || label.clone(),
+                    |key| {
+                        enzui_shell::tr!(
+                            "shell-overview-window-shortcut",
+                            "title" => enzui_shell::i18n::argument(&label),
+                            "key" => key
+                        )
+                    },
+                );
+                mouse_area(
+                    focus_button(framed, activate)
+                        .semantics(Semantics::new(Role::Button).label(name))
+                        .id(format!("overview-window-{:x}", entry.window.stable_id).into())
+                        .style_focus(|_, _| Default::default()),
+                )
+            } else {
+                mouse_area(framed).on_press(activate)
+            }
+            .on_enter(Message::Spread(SpreadMessage::Hover(index)))
+            .interaction(iced::mouse::Interaction::Pointer);
             layers.push(pin(pick).x(r.x - RING).y(r.y - RING).into());
             // Every window is named below its picture (app icon and title),
             // so it is recognised without reading its scaled-down chrome; the
@@ -1025,7 +1114,7 @@ impl Shell {
                     iced::widget::row![
                         icon,
                         enz_text(label)
-                            .size_px(enzui_theme::text_scale::effective().apply_px(13.0))
+                            .size_px(enzui_theme::text_scale::effective().apply_px(CAPTION_TEXT))
                             .weight_rung(if selected {
                                 enzui_theme::WeightRung::Semibold
                             } else {
@@ -1037,7 +1126,7 @@ impl Shell {
                     .spacing(6)
                     .align_y(iced::Alignment::Center),
                 )
-                .padding([5, 12])
+                .padding([CAPTION_PADDING_Y, 12.0])
                 .width(Length::Shrink)
                 .style(move |_| container::Style {
                     background: Some(chip_fill.into()),
@@ -1051,7 +1140,7 @@ impl Shell {
                 layers.push(
                     pin(container(chip).center_x(r.width.max(120.0)))
                         .x(r.x + r.width / 2.0 - r.width.max(120.0) / 2.0)
-                        .y(caption_line(index) + 8.0)
+                        .y(caption_line(index) + CAPTION_GAP)
                         .into(),
                 );
             }
@@ -1070,6 +1159,78 @@ mod tests {
     use super::*;
 
     #[test]
+    fn activities_keys_follow_creation_order_and_leave_an_active_query_to_search() {
+        use crate::quick_search::Message as SearchMessage;
+
+        let compositor = enzui_shell::compositor::Compositor::new(
+            std::path::PathBuf::from("/usr/bin/true"),
+            "fixture".into(),
+        )
+        .unwrap();
+        let mut shell = Shell::new(compositor, std::path::PathBuf::from("/")).0;
+        let search = window::Id::unique();
+        shell.activities = true;
+        shell.search.showing = true;
+        shell.search.overview = true;
+        shell.search.started = true;
+        shell.search.window = Some(search);
+        shell.spread.phase = Phase::Open;
+        shell.spread.entries = (1..=12)
+            .rev()
+            .map(|stable_id| {
+                let rect = Rect::new(stable_id as f32 * 50.0, 0.0, 40.0, 40.0);
+                Entry {
+                    window: SpreadWindow {
+                        address: format!("0x{stable_id:x}"),
+                        stable_id,
+                        title: format!("Window {stable_id}"),
+                        class: "fixture".into(),
+                        image: None,
+                        at: [rect.x, rect.y],
+                        size: [rect.width, rect.height],
+                    },
+                    from: rect,
+                    to: rect,
+                    picture: None,
+                    shortcut: None,
+                }
+            })
+            .collect();
+        assign_window_keys(&mut shell.spread.entries);
+        assert!(
+            shell.spread.entries[..2]
+                .iter()
+                .all(|entry| entry.shortcut.is_none())
+        );
+        let digit = |shell: &Shell| {
+            SearchMessage::Key(
+                search,
+                shell.search.model.generation,
+                Key::Character("0".into()),
+                Modifiers::empty(),
+                false,
+            )
+        };
+        shell.search.model.set_query("build".into());
+        let _ = shell.search_message(digit(&shell));
+        assert_eq!(shell.spread.phase, Phase::Open);
+
+        shell.search.model.set_query(String::new());
+        let _ = shell.search_message(digit(&shell));
+        let picked = shell
+            .spread
+            .chosen
+            .map(|index| shell.spread.entries[index].window.stable_id);
+        assert_eq!(picked, Some(10));
+        assert_eq!(shell.spread.phase, Phase::Closing);
+        assert!(!shell.activities);
+        assert!(
+            shell.search.overview,
+            "Search keeps its overview layout until hidden"
+        );
+    }
+
+    #[test]
     fn the_originals_are_hidden_after_the_spread_draws_its_pictures() {
         let compositor = enzui_shell::compositor::Compositor::new(
             std::path::PathBuf::from("/usr/bin/true"),
@@ -1083,6 +1244,7 @@ mod tests {
         let generation = shell.spread.generation;
         let window = SpreadWindow {
             address: "0x1".into(),
+            stable_id: 1,
             title: "Files".into(),
             class: "files".into(),
             image: None,
@@ -1101,6 +1263,7 @@ mod tests {
                     from: place,
                     to: place,
                     picture: Some(image::Handle::from_rgba(1, 1, vec![0; 4])),
+                    shortcut: None,
                 }],
                 strip: None,
             }),

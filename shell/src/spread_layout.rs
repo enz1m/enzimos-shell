@@ -41,8 +41,8 @@ struct Plan {
 }
 
 /// The spread position of each of `windows`, in the same order, inside
-/// `area`, with `gap` between windows and rows before scaling.
-pub fn layout(windows: &[Rect], area: Rect, gap: f32) -> Vec<Rect> {
+/// `area`, with a scaled `gap` and an unscaled `caption` below each row.
+pub fn layout(windows: &[Rect], area: Rect, gap: f32, caption: f32) -> Vec<Rect> {
     if windows.is_empty() || area.width < 1.0 || area.height < 1.0 {
         return windows.to_vec();
     }
@@ -67,7 +67,7 @@ pub fn layout(windows: &[Rect], area: Rect, gap: f32) -> Vec<Rect> {
             .then(rects[a].center().0.total_cmp(&rects[b].center().0))
     });
     let best = (1..=rects.len())
-        .map(|count| plan(&rects, &by_height, count, area, gap))
+        .map(|count| plan(&rects, &by_height, count, area, gap, caption))
         // A row more must make the windows clearly larger.
         .reduce(|best, next| {
             if next.scale > best.scale * 1.02 {
@@ -77,7 +77,7 @@ pub fn layout(windows: &[Rect], area: Rect, gap: f32) -> Vec<Rect> {
             }
         })
         .expect("at least one window");
-    place(&rects, best, area, gap)
+    place(&rects, best, area, gap, caption)
 }
 
 fn finite(value: f32) -> f32 {
@@ -86,7 +86,7 @@ fn finite(value: f32) -> f32 {
 
 // `count` rows filled in order of height on screen: a window starts a new
 // row when more than half of it would pass the row's share of the width.
-fn plan(rects: &[Rect], order: &[usize], count: usize, area: Rect, gap: f32) -> Plan {
+fn plan(rects: &[Rect], order: &[usize], count: usize, area: Rect, gap: f32, caption: f32) -> Plan {
     let total: f32 = rects.iter().map(|r| r.width).sum::<f32>()
         + gap * (rects.len() as f32 - count as f32).max(0.0);
     let share = total / count as f32;
@@ -111,8 +111,9 @@ fn plan(rects: &[Rect], order: &[usize], count: usize, area: Rect, gap: f32) -> 
         row.sort_by(|&a, &b| rects[a].center().0.total_cmp(&rects[b].center().0));
     }
     let (width, height) = extent(rects, &rows, gap);
+    let picture_height = (area.height - rows.len() as f32 * caption).max(1.0);
     Plan {
-        scale: (area.width / width).min(area.height / height).min(1.0),
+        scale: (area.width / width).min(picture_height / height).min(1.0),
         rows,
     }
 }
@@ -130,11 +131,12 @@ fn extent(rects: &[Rect], rows: &[Vec<usize>], gap: f32) -> (f32, f32) {
     (width, height)
 }
 
-fn place(rects: &[Rect], plan: Plan, area: Rect, gap: f32) -> Vec<Rect> {
+fn place(rects: &[Rect], plan: Plan, area: Rect, gap: f32, caption: f32) -> Vec<Rect> {
     let scale = plan.scale;
     let (_, height) = extent(rects, &plan.rows, gap);
     let mut placed = rects.to_vec();
-    let mut y = area.y + (area.height - height * scale) / 2.0;
+    let occupied_height = height * scale + plan.rows.len() as f32 * caption;
+    let mut y = area.y + (area.height - occupied_height).max(0.0) / 2.0;
     for row in &plan.rows {
         let (row_width, row_height) = row_size(rects, row, gap);
         let width = row_width * scale;
@@ -148,7 +150,7 @@ fn place(rects: &[Rect], plan: Plan, area: Rect, gap: f32) -> Vec<Rect> {
             placed[index] = Rect::new(x, y + (row_height * scale - h) / 2.0, w, h);
             x += w + gap * scale;
         }
-        y += (row_height + gap) * scale;
+        y += (row_height + gap) * scale + caption;
     }
     placed
 }

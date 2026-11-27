@@ -117,6 +117,16 @@ pub(crate) struct State {
     pub(super) closed_by: Option<Instant>,
 }
 impl State {
+    pub(crate) fn accepts_overview_keys(&self) -> bool {
+        self.showing
+            && self.model.query.is_empty()
+            && self.preedit.is_none()
+            && self.model.category.is_none()
+            && !self.browse_all_apps
+            && self.alias.is_none()
+            && !self.action_busy
+    }
+
     /// Whether the blank card offers apps. The overview's card keeps to the
     /// field, leaving the windows their room.
     pub(crate) fn blank_apps(&self) -> bool {

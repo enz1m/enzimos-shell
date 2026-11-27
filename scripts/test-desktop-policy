@@ -117,15 +117,20 @@ assert(not pcall(enzui_set_desktop_modes, "false", {}))
 -- The window spread hides a floating desktop's windows and brings them back.
 local front, back, elsewhere = window('0x30'), window('0x31'), window('0x32')
 front.workspace = { id = 1 }; back.workspace = { id = 1 }; elsewhere.workspace = { id = 2 }
+front.stable_id = '18000000'; back.stable_id = '18000001'
 windows = { front, back, elsewhere, controls }
 assert(enzui_set_desktop_modes(false, {}) == "ok")
 assert(enzui_spread_hide({ '0x30', '0x31', '0x32', '0x9' }) == "ok")
 assert(front.opacity == "0" and front.opacity_inactive == "0" and back.opacity == "0")
 assert(elsewhere.opacity == nil and controls.opacity == nil, "only this desktop's app windows")
-assert(enzui_spread_restore('0x31') == "ok")
+assert(enzui_spread_restore(back.stable_id) == "ok")
 assert(front.opacity == "1" and back.opacity_inactive == "1" and focused_window == back and back.raised == "top")
 assert(not config.no_warps, "warps restored after focusing")
 assert(next(enzui_desktop.spread) == nil)
+local closed_id = back.stable_id
+back.stable_id = '18000002'
+focused_window = front
+assert(enzui_spread_restore(closed_id) == "ok" and focused_window == front, "a reused address must not receive focus")
 assert(not pcall(enzui_spread_hide, { 'bad' }))
 assert(not pcall(enzui_spread_restore, 'nope'))
 assert(enzui_set_desktop_modes(false, { [1] = true }) == "ok")

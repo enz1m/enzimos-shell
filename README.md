@@ -5,6 +5,15 @@ enzimOS. The desktop runs on a pinned Hyprland stack and includes Search, floati
 and tiling modes, a window overview, a plugin sidebar, notifications and Control
 Center. Shell and its companion programs use [enzUI](https://github.com/enz1m/enzui).
 
+## Overview keyboard shortcuts
+
+With the Island overview open and Search empty, press a window's badge key to
+focus it and close the overview. Each desktop numbers its windows from oldest to
+newest. The first nine use **1–9**, the tenth uses **0**, and additional windows
+have no digit shortcut. Use the arrow keys to move between any thumbnails and
+press **Enter** to choose one. Once you start a query, digits, arrows and Enter
+work in Search.
+
 ## Build and preview
 
 From a Wayland session, initialize the pinned sources and build the nested desktop.

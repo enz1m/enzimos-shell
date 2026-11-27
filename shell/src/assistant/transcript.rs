@@ -248,8 +248,11 @@ fn estimate(row: &Row) -> f32 {
                 30.0
             }
         }
-        Body::Approval { arguments, reason, .. } => {
-            108.0 + 15.0 * arguments.lines().count().min(6) as f32
+        Body::Approval {
+            arguments, reason, ..
+        } => {
+            108.0
+                + 15.0 * arguments.lines().count().min(6) as f32
                 + if reason.is_empty() { 0.0 } else { 34.0 }
         }
         Body::Note { .. } => 40.0,
@@ -608,6 +611,42 @@ impl Transcript {
                     live.reply = text("content");
                 }
                 self.restart_reply();
+            }
+            "app.capabilities" => {
+                let app = text("app");
+                let installation = match event["installed"].as_bool() {
+                    Some(true) => tr("shell-assistant-app-installed"),
+                    Some(false) => tr("shell-assistant-app-not-installed"),
+                    None => tr("shell-assistant-app-installation-unknown"),
+                };
+                let activity = match event["running"].as_bool() {
+                    Some(true) => tr("shell-assistant-app-running"),
+                    Some(false) => tr("shell-assistant-app-not-running"),
+                    None => tr("shell-assistant-app-running-unknown"),
+                };
+                let functions = event["capabilities"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let functions = if functions.is_empty() {
+                    let missing = tr("shell-assistant-app-capability-missing");
+                    event["missing"].as_str().map_or_else(|| missing.to_owned(), |capability| {
+                        format!("{capability} ({missing})")
+                    })
+                } else {
+                    functions
+                };
+                self.restart_reply();
+                self.push(
+                    "note",
+                    Body::Note {
+                        text: format!("{app} · {installation} · {activity} · {functions}"),
+                        error: false,
+                    },
+                );
             }
             "tool.started" => {
                 self.restart_reply();

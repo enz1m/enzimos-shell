@@ -989,19 +989,28 @@ impl Compositor {
     }
 
     pub async fn open_dock_folder(&self, root: &Path, path: &Path) -> Result<(), String> {
-        drop(session::Target::from_environment()?.connect()?);
+        self.open_files_folder(root, path)
+            .await
+            .map_err(FilesLaunchError::message)
+    }
+
+    pub(crate) async fn open_files_folder(
+        &self,
+        root: &Path,
+        path: &Path,
+    ) -> Result<(), FilesLaunchError> {
         if !path.is_absolute()
             || !tokio::fs::metadata(path)
                 .await
                 .is_ok_and(|meta| meta.is_dir())
         {
-            return Err(tr("shell-dock-folder-unavailable").into());
+            return Err(FilesLaunchError::Folder);
         }
         let desktop_id = crate::catalog::desktop_id("files-app").expect("registered Files app");
         let executable = crate::catalog::executable(root, "files-app");
         let mut command = if executable.is_file() {
             if !crate::parental::program_allowed(&executable) {
-                return Err(tr("shell-this-app-is-not-allowed-on-this-account").into());
+                return Err(FilesLaunchError::Restricted);
             }
             let mut command = scoped(
                 desktop_id,
@@ -1011,16 +1020,50 @@ impl Compositor {
             command
         } else {
             let entry = super::catalogue::installed_entry(desktop_id)
-                .ok_or_else(|| tr("shell-application-is-no-longer-installed"))?;
+                .ok_or(FilesLaunchError::InstalledEntry)?;
             if !crate::parental::entry_allowed(&entry) {
-                return Err(tr("shell-this-app-is-not-allowed-on-this-account").into());
+                return Err(FilesLaunchError::Restricted);
             }
             let mut command = scoped(desktop_id, std::ffi::OsStr::new("/usr/bin/gio"));
             command.args(["launch", "--"]).arg(entry);
             command
         };
+        drop(
+            session::Target::from_environment()
+                .and_then(|target| target.connect())
+                .map_err(FilesLaunchError::Launch)?,
+        );
         command.arg(crate::desktop_portal::uri(path));
-        spawn_desktop_application(command).await
+        spawn_desktop_application(command)
+            .await
+            .map_err(FilesLaunchError::Launch)
+    }
+}
+
+pub(crate) enum FilesLaunchError {
+    Folder,
+    InstalledEntry,
+    Restricted,
+    Launch(String),
+}
+
+impl FilesLaunchError {
+    fn message(self) -> String {
+        match self {
+            Self::Folder => tr("shell-dock-folder-unavailable").into(),
+            Self::InstalledEntry => tr("shell-application-is-no-longer-installed").into(),
+            Self::Restricted => tr("shell-this-app-is-not-allowed-on-this-account").into(),
+            Self::Launch(message) => message,
+        }
+    }
+
+    pub(crate) fn code(&self) -> &'static str {
+        match self {
+            Self::Folder => "folder",
+            Self::InstalledEntry => "app",
+            Self::Restricted => "restricted",
+            Self::Launch(_) => "launch",
+        }
     }
 }
 

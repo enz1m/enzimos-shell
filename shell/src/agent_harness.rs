@@ -663,6 +663,8 @@ pub fn turn_error(code: &str) -> Option<&'static str> {
     let key = match code {
         "gateway-unavailable" => "shell-assistant-gateway-unavailable",
         "local-models-unavailable" => "shell-assistant-local-models-unavailable",
+        "model-out-of-memory" => "shell-assistant-model-out-of-memory",
+        "model-unsupported-architecture" => "shell-assistant-model-unsupported",
         "provider-timeout" => "shell-assistant-provider-timeout",
         "request-unavailable" => "shell-assistant-request-unavailable",
         "invalid-attachments" => "shell-assistant-invalid-attachments",

@@ -5716,3 +5716,13 @@ shell-assistant-web-fetch-tool = Obtener una página web
 shell-assistant-browser-open-tool = Abrir en el navegador
 shell-assistant-browser-read-tool = Leer una página del navegador
 shell-assistant-add-extension-tool = Añadir extensión del asistente
+
+shell-assistant-model-out-of-memory = El modelo superó su límite de memoria. Elige un modelo local más pequeño.
+shell-assistant-model-unsupported = El motor de inferencia instalado no admite la arquitectura de este modelo. Elige un modelo compatible.
+shell-assistant-app-installed = Instalada
+shell-assistant-app-not-installed = No instalada
+shell-assistant-app-installation-unknown = Instalación sin verificar
+shell-assistant-app-running = En ejecución
+shell-assistant-app-not-running = Detenida
+shell-assistant-app-running-unknown = Estado de ejecución sin verificar
+shell-assistant-app-capability-missing = No hay una función compatible con el Asistente

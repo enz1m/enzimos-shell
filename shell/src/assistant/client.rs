@@ -210,14 +210,19 @@ pub(super) async fn request(method: &'static str, fields: Value) -> Result<Value
     }
 }
 
-pub(super) async fn warmup(session: Option<String>) {
+pub(super) async fn warmup(session: Option<String>, choice: Option<Choice>, draft: Option<String>) {
     if mock() {
         return;
     }
     let exchange = async {
         let mut stream = connect().await?;
+        let mut fields = json!({"session_id": session, "draft": draft});
+        if let Some(choice) = choice {
+            fields["model"] = json!(choice.model);
+            fields["provider"] = json!(choice.provider);
+        }
         stream
-            .write_all(&frame("model.warmup", json!({"session_id": session})))
+            .write_all(&frame("model.warmup", fields))
             .await
             .map_err(|error| error.to_string())?;
         line(&mut tokio::io::BufReader::new(stream)).await

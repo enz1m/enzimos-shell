@@ -236,6 +236,9 @@ async fn open(compositor: &Compositor, root: &Path, Open { app, folder }: Open) 
     if app.trim().is_empty() || app.len() > 120 || app.chars().any(char::is_control) {
         return Err(INVALID);
     }
+    if app.eq_ignore_ascii_case("Files") && folder.is_none() {
+        return Err("folder");
+    }
     if let Some(folder) = folder {
         if !app.eq_ignore_ascii_case("Files")
             || folder.is_empty()
@@ -251,9 +254,9 @@ async fn open(compositor: &Compositor, root: &Path, Open { app, folder }: Open) 
             user_folder(&folder).ok_or("folder")?
         };
         compositor
-            .open_dock_folder(root, &path)
+            .open_files_folder(root, &path)
             .await
-            .map_err(|_| "folder")?;
+            .map_err(|error| error.code())?;
         return Ok(json!({"opened":"Files", "folder":path}));
     }
 
@@ -285,7 +288,7 @@ async fn open(compositor: &Compositor, root: &Path, Open { app, folder }: Open) 
     compositor
         .execute_search_target(root, Target::App(target))
         .await
-        .map_err(|_| UNAVAILABLE)?;
+        .map_err(|_| "launch")?;
     Ok(json!({"opened":name}))
 }
 

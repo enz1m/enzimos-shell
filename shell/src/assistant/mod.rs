@@ -63,6 +63,7 @@ pub(crate) enum Message {
     Answered(String, Result<Value, String>),
     Steered(String, Result<Value, String>),
     Edit(text_editor::Action),
+    WarmDraft(String),
     Send,
     Stop,
     NewChat,
@@ -321,7 +322,7 @@ fn list() -> Task<ShellMessage> {
 }
 
 fn warmup(session: Option<String>) -> Task<ShellMessage> {
-    Task::future(client::warmup(session)).discard()
+    Task::future(client::warmup(session, None, None)).discard()
 }
 
 fn export(id: String) -> Task<ShellMessage> {
@@ -562,7 +563,7 @@ impl Shell {
                         return self.assistant_load();
                     }
                     if !was_ready && self.assistant.running.is_none() {
-                        return warmup(self.assistant.session.clone());
+                        return self.assistant_warmup(None);
                     }
                 }
                 Task::none()
@@ -670,7 +671,7 @@ impl Shell {
                         let load = if !self.assistant.loaded {
                             self.assistant_load()
                         } else if self.assistant.running.is_none() {
-                            warmup(self.assistant.session.clone())
+                            self.assistant_warmup(None)
                         } else {
                             Task::none()
                         };
@@ -780,7 +781,14 @@ impl Shell {
                     return Task::none();
                 }
                 match event {
-                    client::TurnEvent::Event(event) => {
+                    client::TurnEvent::Event(mut event) => {
+                        if event["type"] == "app.capabilities"
+                            && event["installed"] != true
+                            && let Some(app_id) = event["app_id"].as_str()
+                        {
+                            let installed = enzui_shell::search::catalogue::installed_entry(app_id).is_some();
+                            event["installed"] = json!(installed);
+                        }
                         if event["type"] == "turn.started"
                             && let Some(model) = event["model"].as_str()
                         {
@@ -854,7 +862,31 @@ impl Shell {
             }
             Message::Edit(action) => {
                 if self.assistant.revision.is_none() || self.assistant.running.is_none() {
+                    let edited = action.is_edit();
                     self.assistant.composer.perform(action);
+                    let draft = self.assistant.composer.text();
+                    if edited
+                        && self.assistant.running.is_none()
+                        && (1..=4096).contains(&draft.trim().len())
+                    {
+                        return perform(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(850)).await;
+                            Message::WarmDraft(draft)
+                        });
+                    }
+                }
+                Task::none()
+            }
+            Message::WarmDraft(draft) => {
+                if self.assistant.running.is_none()
+                    && self.assistant.composer.text() == draft
+                    && self
+                        .assistant
+                        .panel
+                        .as_ref()
+                        .is_some_and(|pane| pane.visible)
+                {
+                    return self.assistant_warmup(Some(draft));
                 }
                 Task::none()
             }
@@ -976,7 +1008,7 @@ impl Shell {
                     .map(|row| row.title.clone())
                     .unwrap_or_default();
                 self.assistant.transcript.clear();
-                Task::batch([revoke, export(id)])
+                Task::batch([revoke, export(id.clone()), warmup(Some(id))])
             }
             Message::Toggled(key) => {
                 self.assistant.transcript.toggle(&key);
@@ -1344,17 +1376,29 @@ impl Shell {
         )
     }
 
+    fn assistant_warmup(&self, draft: Option<String>) -> Task<ShellMessage> {
+        let session = self.assistant.session.clone();
+        let choice = self
+            .assistant
+            .model_picker
+            .selected
+            .clone()
+            .filter(|_| session.is_none());
+        Task::future(client::warmup(session, choice, draft)).discard()
+    }
+
     pub(crate) fn open_assistant(&mut self) -> Task<ShellMessage> {
         self.assistant.shown = false;
         if let Some(pane) = self.assistant.panel.as_mut() {
             pane.visible = true;
+            let window = pane.window;
             return Task::batch([
                 if self.assistant.loaded && self.assistant.running.is_none() {
-                    warmup(self.assistant.session.clone())
+                    self.assistant_warmup(None)
                 } else {
                     Task::none()
                 },
-                window::gain_focus(pane.window),
+                window::gain_focus(window),
                 iced::widget::operation::focus(COMPOSER),
             ]);
         }

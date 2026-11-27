@@ -5751,3 +5751,13 @@ shell-assistant-web-fetch-tool = Fetch a web page
 shell-assistant-browser-open-tool = Open in Browser
 shell-assistant-browser-read-tool = Read Browser page
 shell-assistant-add-extension-tool = Add Assistant extension
+
+shell-assistant-model-out-of-memory = The model exceeded its memory budget. Choose a smaller local model.
+shell-assistant-model-unsupported = The installed inference runtime cannot load this model architecture. Choose a supported model.
+shell-assistant-app-installed = Installed
+shell-assistant-app-not-installed = Not installed
+shell-assistant-app-installation-unknown = Installation unverified
+shell-assistant-app-running = Running
+shell-assistant-app-not-running = Not running
+shell-assistant-app-running-unknown = Running state unverified
+shell-assistant-app-capability-missing = No matching Assistant function

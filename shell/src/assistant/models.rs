@@ -162,9 +162,13 @@ impl Shell {
                 state.selected = choice;
                 state.close();
                 if self.assistant.session.is_some() {
-                    self.assistant_message(Assistant::NewChat)
+                    let reset = self.assistant_message(Assistant::NewChat);
+                    Task::batch([reset, self.assistant_warmup(None)])
                 } else {
-                    iced::widget::operation::focus(COMPOSER)
+                    Task::batch([
+                        iced::widget::operation::focus(COMPOSER),
+                        self.assistant_warmup(None),
+                    ])
                 }
             }
             _ => Task::none(),

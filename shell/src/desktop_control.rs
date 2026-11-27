@@ -79,6 +79,8 @@ pub async fn settings_tool(
                 Some("no_backlight") => "no_backlight",
                 Some("app") => "app",
                 Some("folder") => "folder",
+                Some("launch") => "launch",
+                Some("restricted") => "restricted",
                 Some("limit") => "limit",
                 _ => "unavailable",
             })

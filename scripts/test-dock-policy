@@ -24,10 +24,16 @@ function hl.dispatch(action)
  if action.kind=="move" then
   if action.workspace then action.window.workspace={id=type(action.workspace)=="number" and action.workspace or -9}
   else action.window.at={x=action.x,y=action.y}end
- elseif action.kind=="resize"then action.window.size={x=action.x,y=action.y}end
+ elseif action.kind=="resize"then
+  local w=action.window
+  w.at={x=w.at.x+(w.size.x-action.x)/2,y=w.at.y+(w.size.y-action.y)/2}
+  w.size={x=action.x,y=action.y}
+ end
  return {ok=true}
 end
 dofile(root.."shell-reservations.lua");dofile(root.."dock-policy.lua")
+assert(enzui_dock_place(7,"QA",960,600)=="ok")
+assert(dock.size.x==960 and dock.size.y==600 and dock.at.x==0 and dock.at.y==0)
 local base={left=12,right=12,top=12,bottom=50}
 enzui_apply_reservations(monitor,base)
 enzui_dock_update(7,"QA",{{0,847,240,3},{600,774,240,68}},false,"bottom",76,{600,774,240,68},false)
@@ -68,4 +74,4 @@ local dispatch=hl.dispatch;function hl.dispatch()error("Rejected")end
 assert(not pcall(enzui_dock_action,"0xa",8,"stable","focus") and not warps)
 hl.dispatch=dispatch;warps=true;enzui_dock_action("0xa",8,"stable","focus");assert(warps)
 dock.mapped=false;enzui_apply_reservations(monitor,base);assert(monitor.reserved.bottom==50)
-print("Dock policy: composed reservations, shape, overlap lifecycle, guarded minimize/restore and cursor preservation passed")
+print("Dock policy: anchored resizing, composed reservations, shape, overlap lifecycle, guarded minimize/restore and cursor preservation passed")

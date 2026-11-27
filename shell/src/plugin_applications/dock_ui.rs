@@ -1,4 +1,4 @@
-use crate::{Message, Shell, control_center::TileMenu, window_settings};
+use crate::{Message, Shell, control_center::TileMenu, resize_chrome, window_settings};
 use enzui_core::{
     context_menu::InvocationKind,
     menu_model::{CheckState, EntryId, MenuEntryModel, MenuModel},
@@ -45,6 +45,7 @@ pub(crate) enum Event {
     Hide(u64),
     Click(String),
     DropFolders(FileDrop),
+    Reorder(enzui_core::drag::DropRequest),
     Folders(enzui_shell::plugins::service::Owner, FileDrop, Vec<String>),
     Invoke(String, Origin, ContextMenuEvent),
     Menu(ContextMenuEvent),
@@ -97,6 +98,7 @@ pub(crate) struct State {
     pub hover_body: bool,
     pub hover_sensor: bool,
     pub hide_serial: u64,
+    hide_pending: bool,
     pub hidden: bool,
     pub fullscreen: bool,
     pub error: Option<String>,
@@ -154,6 +156,7 @@ impl Default for State {
             hover_body: false,
             hover_sensor: false,
             hide_serial: 0,
+            hide_pending: false,
             hidden: false,
             fullscreen: false,
             error: None,
@@ -322,6 +325,8 @@ impl Shell {
         self.dock.hovered = false;
         self.dock.hover_body = false;
         self.dock.hover_sensor = false;
+        self.dock.hide_pending = false;
+        self.dock.hide_serial = self.dock.hide_serial.wrapping_add(1);
         self.dock.sent_policy = None;
         self.dock.search_model = MenuModel::new(vec![
             MenuEntryModel::command("open", tr("shell-open")),
@@ -479,15 +484,21 @@ impl Shell {
         self.dock.fullscreen = dock::fullscreen(&geometry, &snapshot.windows);
         if self.dock.fullscreen {
             self.dock.preview.clear();
+            self.dock.menu = None;
+            self.dock.pending = None;
+            self.dock.menu_serial = self.dock.menu_serial.wrapping_add(1);
             self.dock.hovered = false;
             self.dock.hover_body = false;
             self.dock.hover_sensor = false;
+            self.dock.hide_pending = false;
             self.dock.hide_serial = self.dock.hide_serial.wrapping_add(1);
         }
-        self.dock.hidden = (self.dock.fullscreen
-            || dock::obscured(p, &geometry, &snapshot.windows) && !self.dock.hovered)
-            && self.dock.menu.is_none()
-            && self.dock.preview.preview.is_none();
+        self.dock.hidden = self.dock.fullscreen
+            || (dock::obscured(p, &geometry, &snapshot.windows)
+                && !self.dock.hovered
+                && !self.dock.hide_pending
+                && self.dock.menu.is_none()
+                && self.dock.preview.preview.is_none());
         self.dock.geometry = Some(geometry);
     }
     pub(crate) fn dock_subscription(&self) -> Subscription<Message> {
@@ -514,6 +525,7 @@ impl Shell {
                     | Event::Invoke(..)
                     | Event::Search(..)
                     | Event::DropFolders(_)
+                    | Event::Reorder(_)
                     | Event::Folders(..)
             )
         {
@@ -548,7 +560,7 @@ impl Shell {
                         return Task::none();
                     }
                 }
-                let old = self.dock.geometry.clone();
+                let old_screen = self.dock.geometry.as_ref().map(|g| g.screen);
                 self.dock_rebuild();
                 let mut tasks = Vec::new();
                 if self.dock.window.is_none() && !self.dock.opening {
@@ -564,16 +576,16 @@ impl Shell {
                 } else if let (Some(id), Some(geometry)) =
                     (self.dock.window, self.dock.geometry.clone())
                 {
-                    if old.as_ref().is_none_or(|old| {
-                        old.screen != geometry.screen || old.output != geometry.output
-                    }) {
-                        tasks.push(window::resize(id, geometry.screen));
-                    }
+                    let resize = if old_screen == Some(geometry.screen) {
+                        Task::none()
+                    } else {
+                        resize_chrome(id, geometry.screen)
+                    };
                     let compositor = self.compositor.clone();
-                    tasks.push(Task::perform(
+                    tasks.push(resize.chain(Task::perform(
                         async move { compositor.place_dock(&geometry).await },
-                        move |r| message(Event::Done(0, r)),
-                    ));
+                        |r| message(Event::Done(0, r)),
+                    )));
                 }
                 if std::mem::take(&mut self.dock.dirty) {
                     tasks.push(self.dock_refresh());
@@ -617,6 +629,7 @@ impl Shell {
                 }
                 let hovered = self.dock.hover_body || self.dock.hover_sensor;
                 self.dock.hovered = hovered;
+                self.dock.hide_pending = !hovered;
                 self.dock.hide_serial = self.dock.hide_serial.wrapping_add(1);
                 let serial = self.dock.hide_serial;
                 if hovered {
@@ -630,14 +643,15 @@ impl Shell {
                 }
             }
             Event::Hide(serial) => {
-                if serial == self.dock.hide_serial
-                    && !self.dock.hovered
-                    && self.dock.menu.is_none()
-                    && self.dock.preview.preview.is_none()
-                {
+                if serial == self.dock.hide_serial {
+                    self.dock.hide_pending = false;
                     self.dock_rebuild();
                 }
                 Task::none()
+            }
+            Event::Reorder(request) => {
+                self.dock.preview.clear();
+                self.dock_save(Change::ReorderPins(request))
             }
             Event::DropFolders(drop) => {
                 if drop.is_temporary() {
@@ -1008,13 +1022,28 @@ impl Shell {
             })
             .palette;
         let p = &self.dock.preferences;
-        let size = if matches!(origin, Origin::Bar) {
-            f32::from(p.icon_size)
-                .min(f32::from(self.metrics.bar) - 16.0)
-                .max(12.0)
+        let slots = dock::Slots::new(p, self.metrics);
+        let size = slots.icon;
+        let target = slots.target;
+        let radius = if p.style == Style::Desktop
+            && p.highlight_radius == dock::Preferences::default().highlight_radius
+            && matches!(origin, Origin::Bar)
+        {
+            self.metrics.bar_item_radius(7.0).min(target / 2.0)
         } else {
-            f32::from(p.icon_size)
+            f32::from(p.highlight_radius).min(target / 2.0)
         };
+        let indicator_alignment = match (p.position, self.bar) {
+            (Position::Left, _) => iced::Padding::ZERO.left(target - 5.0),
+            (Position::Right, _) => iced::Padding::ZERO.left(3.0),
+            (Position::Bottom, _) | (Position::Bar, enzui_shell::settings::BarEdge::Bottom) => {
+                iced::Padding::ZERO.top(3.0)
+            }
+            _ => iced::Padding::ZERO.top(target - 5.0),
+        };
+        use enzui_widgets::pressable::{PressableStyle, PressableTokens, enz_pressable};
+        let mut pressable = PressableTokens::from_palette(&palette);
+        pressable.card_selected_bg = palette.surface_selected;
         use iced::widget::tooltip::Position as Tooltip;
         let tooltip = match p.position {
             Position::Left => Tooltip::Right,
@@ -1036,37 +1065,50 @@ impl Shell {
             let urgent = badge.urgent || group.windows.iter().any(|window| window.urgent);
             let icon = match &group.image {
                 Some(image) => enzui_shell::icon_theme::source(image).into_element(size),
-                None => {
-                    let color = group
-                        .app
-                        .as_ref()
-                        .and_then(|target| match target {
-                            AppTarget::Prepared(id) => {
-                                enzui_shell::catalog::APPS.iter().find(|app| app.id == id)
-                            }
-                            _ => None,
-                        })
-                        .map_or(palette.text, |app| {
-                            iced::Color::from_rgb8(app.color[0], app.color[1], app.color[2])
-                        });
-                    enzui_widgets::icon::enz_icon(&group.icon)
-                        .size(size)
-                        .tint(color)
-                        .into_element()
-                }
+                None => enzui_widgets::icon::enz_icon(&group.icon)
+                    .size(size)
+                    .tint(palette.text)
+                    .into_element(),
             };
             let icon = container(icon)
-                .center_x(size + 6.0)
-                .center_y(size + 6.0)
+                .center_x(target)
+                .center_y(target)
                 .style(move |_| container::Style {
                     border: iced::Border {
                         width: if urgent { 1.5 } else { 0.0 },
                         color: palette.warning,
-                        radius: f32::from(p.highlight_radius).into(),
+                        radius: radius.into(),
                     },
                     ..Default::default()
                 });
             let mut layers: Vec<Element<'_, Message>> = vec![icon.into()];
+            if running {
+                let length = if group.windows.len() > 1 { 12.0 } else { 4.0 };
+                let marker = container(space())
+                    .width(if vertical { 2.0 } else { length })
+                    .height(if vertical { length } else { 2.0 })
+                    .style(move |_| container::Style {
+                        background: Some(
+                            if active {
+                                palette.accent
+                            } else {
+                                palette.text_muted
+                            }
+                            .into(),
+                        ),
+                        border: iced::Border {
+                            radius: 1.0.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    });
+                let marker = if vertical {
+                    container(marker).center_y(target)
+                } else {
+                    container(marker).center_x(target)
+                };
+                layers.push(marker.padding(indicator_alignment).into());
+            }
             if let Some(label) = badge.label() {
                 use enzui_widgets::badge::{BadgeSizeTokens, BadgeTone, enz_badge};
                 let compact = size < 20.0;
@@ -1084,8 +1126,9 @@ impl Shell {
                     .into_element();
                 layers.push(
                     container(indicator)
-                        .align_right(size + 6.0)
-                        .height(size + 6.0)
+                        .padding(iced::Padding::ZERO.top(2).right(2))
+                        .align_right(target)
+                        .height(target)
                         .align_y(iced::alignment::Vertical::Top)
                         .into(),
                 );
@@ -1095,86 +1138,23 @@ impl Shell {
             } else {
                 tr!("shell-windows-2", "arg0" => group.title.clone(), "arg1" => format!("{:}", group.windows.len()), "arg2" => (if group.pinned { tr("shell-kept-in-dock") } else { "" }).to_owned(), "arg3" => (if badge.count_visible && badge.count > 0 {format!(" · {} unread",badge.count)} else {String::new()}).clone(), "arg4" => (if urgent {tr("shell-needs-attention")} else {""}).to_owned())
             };
-            let button = enzui_widgets::pressable::enz_pressable(
+            let button = enz_pressable(
                 iced::widget::stack(layers)
-                    .width(size + 6.0)
-                    .height(size + 6.0)
+                    .width(target)
+                    .height(target)
                     .into(),
                 message(Event::Click(id.clone())),
             )
-            .style(enzui_widgets::pressable::PressableStyle::Plain)
+            .style(PressableStyle::Plain)
+            .tokens(pressable)
+            .width(target)
             .padding(0)
-            .radius(f32::from(p.highlight_radius))
+            .radius(radius)
             .selected(active)
             .aria_label(label)
             .id(format!("dock-app-{id}").into())
             .enabled(group.builtin.is_some() || group.app.is_some() || running)
             .into_element();
-            let dots = (0..if running {
-                group.windows.len().min(3)
-            } else {
-                1
-            })
-                .map(|_| {
-                    container(space())
-                        .width(3)
-                        .height(3)
-                        .style(move |_| container::Style {
-                            background: running.then_some(
-                                if active {
-                                    palette.accent
-                                } else {
-                                    palette.text_muted
-                                }
-                                .into(),
-                            ),
-                            border: iced::Border {
-                                radius: 1.5.into(),
-                                ..Default::default()
-                            },
-                            ..Default::default()
-                        })
-                        .into()
-                })
-                .collect::<Vec<Element<'_, Message>>>();
-            let dots: Element<'_, Message> = if vertical {
-                column(dots).spacing(2).into()
-            } else {
-                row(dots).spacing(2).into()
-            };
-            let marker: Element<'_, Message> = container(dots)
-                .center_x(if vertical { 3.0 } else { size + 6.0 })
-                .center_y(if vertical { size + 6.0 } else { 3.0 })
-                .into();
-            let button: Element<'_, Message> = match p.position {
-                Position::Left => row![button, marker]
-                    .spacing(1)
-                    .width(size + 10.0)
-                    .height(size + 6.0)
-                    .into(),
-                Position::Right => row![marker, button]
-                    .spacing(1)
-                    .width(size + 10.0)
-                    .height(size + 6.0)
-                    .into(),
-                Position::Bottom => column![marker, button]
-                    .spacing(1)
-                    .width(size + 6.0)
-                    .height(size + 10.0)
-                    .into(),
-                Position::Bar if self.bar == enzui_shell::settings::BarEdge::Bottom => {
-                    column![marker, button]
-                        .spacing(1)
-                        .width(size + 6.0)
-                        .height(size + 10.0)
-                        .into()
-                }
-                _ => column![button, marker]
-                    .spacing(1)
-                    .width(size + 6.0)
-                    .height(size + 10.0)
-                    .into(),
-            };
             let hover_id = id.clone();
             let leave_id = id.clone();
             let scroll_id = id.clone();
@@ -1200,26 +1180,58 @@ impl Shell {
             } else {
                 enzui_widgets::tooltip::enz_tooltip(button.into(), group.title.clone(), tooltip)
             };
-            buttons.push(
+            buttons.push((
+                group.id.clone(),
                 enz_context_menu_host(button, &entry.model, &self.dock.closed, move |event| {
                     message(Event::Invoke(id.clone(), origin, event))
                 })
                 .into(),
-            );
+            ));
         }
         if buttons.is_empty() {
-            buttons.push(
+            let add = container(
                 enz_toolbar_icon("plus", Message::ShowLauncher)
                     .tokens(ToolbarIconTokens::from_palette(&palette))
                     .aria_label(tr("shell-search-for-an-application-to-keep-in-the-dock"))
                     .into_element(),
-            );
+            )
+            .center_x(target)
+            .center_y(target)
+            .into();
+            return if matches!(origin, Origin::Bar) {
+                self.dock_folder_target(add)
+            } else {
+                add
+            };
         }
-        let spacing = f32::from(p.icon_spacing(self.metrics));
-        let icons: Element<'_, Message> = if vertical {
-            column(buttons).spacing(spacing).into()
+        let pinned = p.pins.len().min(buttons.len());
+        let icons = if pinned > 1 {
+            let others = buttons.split_off(pinned);
+            let list = enzui_widgets::reorder_list::enz_reorder_list(buttons, |request| {
+                message(Event::Reorder(request))
+            })
+            .spacing(slots.spacing)
+            .row_radius(radius)
+            .drag_through_children(true);
+            let span = slots.span(pinned);
+            let list = if vertical {
+                list.width(Length::Fixed(target))
+                    .height(Length::Fixed(span))
+            } else {
+                list.horizontal()
+                    .width(Length::Fixed(span))
+                    .height(Length::Fixed(target))
+            };
+            let mut items = vec![list.into_element()];
+            items.extend(others.into_iter().map(|(_, button)| button));
+            items
         } else {
-            row(buttons).spacing(spacing).into()
+            buttons.into_iter().map(|(_, button)| button).collect()
+        };
+        let icons: Element<'_, Message> = if vertical {
+            column(icons).spacing(slots.spacing).into()
+        } else {
+            row(icons).spacing(slots.spacing).into()
         };
         if matches!(origin, Origin::Bar) {
             self.dock_folder_target(icons)
@@ -1268,7 +1280,7 @@ impl Shell {
         let mut layers: Vec<Element<'_, Message>> =
             vec![space().width(Length::Fill).height(Length::Fill).into()];
         if p.position != Position::Bar {
-            if !self.dock.hidden {
+            {
                 let icons = self.dock_icons(Origin::Dock, g.vertical);
                 let width = (g.body.width - 2.0 * g.padding[1]).max(1.0);
                 let height = (g.body.height - 2.0 * g.padding[0]).max(1.0);
@@ -1289,10 +1301,25 @@ impl Shell {
                 } else {
                     radius
                 };
-                let rim = if self.light {
-                    iced::Color::from_rgba(0.0, 0.0, 0.0, 0.08)
+                let shadow = if p.style == Style::Desktop
+                    && self.metrics.islands.is_some()
+                    && glass.is_none()
+                    && self.desired_settings.bar_shadow > 0
+                {
+                    let (opacity, reach) = enzui_shell::desktop_frame::island_shadow_look(
+                        self.desired_settings.bar_shadow,
+                        self.chrome_light(),
+                    );
+                    iced::Shadow {
+                        color: iced::Color {
+                            a: opacity,
+                            ..palette.shadow
+                        },
+                        blur_radius: reach,
+                        offset: iced::Vector::ZERO,
+                    }
                 } else {
-                    iced::Color::from_rgba(1.0, 1.0, 1.0, 0.06)
+                    iced::Shadow::default()
                 };
                 let body = self.dock_folder_target(
                     container(scroll.into_element())
@@ -1305,11 +1332,17 @@ impl Shell {
                             border: iced::Border {
                                 radius,
                                 width: f32::from(glass.is_some()),
-                                color: rim,
+                                color: palette.border,
                             },
+                            shadow,
                             ..Default::default()
                         })
                         .into(),
+                );
+                let body = enzui_widgets::motion::motion(
+                    body,
+                    !self.dock.hidden,
+                    enzui_widgets::motion::MotionEffect::Fade,
                 );
                 layers.push(
                     container(
@@ -1321,18 +1354,25 @@ impl Shell {
                     .into(),
                 );
             }
-            let sensor = container(space())
-                .width(g.sensor.width)
-                .height(g.sensor.height);
-            layers.push(
-                container(
-                    mouse_area(sensor)
-                        .on_enter(message(Event::Hover(true, false)))
-                        .on_exit(message(Event::Hover(false, false))),
+            if !self.dock.fullscreen
+                && matches!(
+                    p.visibility,
+                    dock::Visibility::Always | dock::Visibility::Overlap
                 )
-                .padding(iced::Padding::ZERO.top(g.sensor.y).left(g.sensor.x))
-                .into(),
-            );
+            {
+                let sensor = container(space())
+                    .width(g.sensor.width)
+                    .height(g.sensor.height);
+                layers.push(
+                    container(
+                        mouse_area(sensor)
+                            .on_enter(message(Event::Hover(true, false)))
+                            .on_exit(message(Event::Hover(false, false))),
+                    )
+                    .padding(iced::Padding::ZERO.top(g.sensor.y).left(g.sensor.x))
+                    .into(),
+                );
+            }
         }
         if let Some(preview) = self.dock_preview_view() {
             layers.push(preview);

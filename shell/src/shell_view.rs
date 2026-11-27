@@ -995,23 +995,16 @@ impl Shell {
             return if self.dock_active()
                 && self.dock.preferences.position == enzui_shell::dock::Position::Bar
             {
-                let width = self
-                    .bar_geometry
-                    .as_ref()
-                    .map_or(1440.0, |(_, g)| g.size.width);
-                let icon = f32::from(self.dock.preferences.icon_size)
-                    .min(f32::from(self.metrics.bar) - 16.0)
-                    .max(12.0);
-                let wanted = self.dock.entries.len().max(1) as f32
-                    * (icon + 6.0 + f32::from(self.dock.preferences.icon_spacing(self.metrics)));
+                let side_padding = self
+                    .metrics
+                    .islands
+                    .filter(|style| !style.joined_bar)
+                    .map_or(0, |style| style.padding);
                 Some(
-                    enzui_widgets::scroll_view::enz_scroll_view(
-                        self.dock_icons(crate::dock_ui::Origin::Bar, false),
-                    )
-                    .axis(enzui_widgets::scroll_view::Axis::Horizontal)
-                    .width(wanted.min((width / 3.0 - 180.0).max(48.0)))
-                    .height(f32::from(self.metrics.bar))
-                    .into_element(),
+                    container(self.dock_icons(crate::dock_ui::Origin::Bar, false))
+                        .padding([0, side_padding])
+                        .center_y(f32::from(self.metrics.bar))
+                        .into(),
                 )
             } else {
                 None
@@ -1195,6 +1188,20 @@ impl Shell {
             .height(f32::from(self.metrics.bar));
         for (section, item) in items {
             if let Some(item) = item {
+                let zone_limit = if section == Section::Middle
+                    && self.dock_active()
+                    && self.dock.preferences.position == enzui_shell::dock::Position::Bar
+                    && self.dock.surface_element.as_ref().is_some_and(|(_, dock)| {
+                        self.desired_settings
+                            .layout
+                            .items(section)
+                            .iter()
+                            .any(|item| item.enabled() && item.id() == dock)
+                    }) {
+                    width
+                } else {
+                    limit
+                };
                 let view = container(
                     enz_scroll_view(item)
                         .axis(Axis::Horizontal)
@@ -1204,7 +1211,7 @@ impl Shell {
                         .backdrop(self.tokens().palette.surface)
                         .into_element(),
                 )
-                .width(Length::Shrink.max(limit))
+                .width(Length::Shrink.max(zone_limit))
                 .into();
                 zones = match section {
                     Section::Start => zones.start(view),

@@ -14,8 +14,12 @@ function enzui_dock_place(owner,output,width,height)
     for _,m in ipairs(hl.get_monitors()) do if m.name==output then monitor=m end end
     assert(monitor and width>0 and height>0 and width<=16384 and height<=16384,"Dock output unavailable")
     local function checked(action) local result=hl.dispatch(action);assert(result and result.ok,"Dock placement rejected") end
-    if w.at.x~=monitor.x or w.at.y~=monitor.y then checked(hl.dsp.window.move({window=w,x=monitor.x,y=monitor.y})) end
-    if w.size.x~=width or w.size.y~=height then checked(hl.dsp.window.resize({window=w,x=width,y=height})) end
+    -- Resizing a floating toplevel preserves its center.
+    local resized=w.size.x~=width or w.size.y~=height
+    if resized then checked(hl.dsp.window.resize({window=w,x=width,y=height})) end
+    if resized or w.at.x~=monitor.x or w.at.y~=monitor.y then
+        checked(hl.dsp.window.move({window=w,x=monitor.x,y=monitor.y}))
+    end
     checked(hl.dsp.window.alter_zorder({window=w,mode="top"}))
     return "ok"
 end

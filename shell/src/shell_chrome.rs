@@ -92,11 +92,13 @@ impl Shell {
                     OutputChange::Rescaled => {
                         self.quiet = false;
                         self.bar_output_stale = true;
-                        if self.chrome_styled
-                            && !self.bar_style_fade
-                            && self.rescale_hold.is_none_or(|hold| hold.placing)
-                        {
-                            self.update_bar_preferences()
+                        if self.rescale_hold.is_none_or(|hold| hold.placing) {
+                            let bar = if self.chrome_styled && !self.bar_style_fade {
+                                self.update_bar_preferences()
+                            } else {
+                                Task::none()
+                            };
+                            Task::batch([bar, self.dock_refresh()])
                         } else {
                             Task::none()
                         }
@@ -1664,11 +1666,12 @@ impl Shell {
             ..hold
         });
         self.bar_output_stale = true;
-        if self.chrome_styled && !self.bar_style_fade {
+        let bar = if self.chrome_styled && !self.bar_style_fade {
             self.update_bar_preferences()
         } else {
             Task::none()
-        }
+        };
+        Task::batch([bar, self.dock_refresh()])
     }
 
     /// Ends a rescale hold; the chrome fades back in with the frame and rail.

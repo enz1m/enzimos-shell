@@ -83,15 +83,9 @@ pub enum Change {
     PinFolders(Vec<String>),
     UnpinFolder(String),
     Move(String, i8),
+    ReorderPins(enzui_core::drag::DropRequest),
 }
 impl Preferences {
-    pub fn icon_spacing(&self, metrics: crate::settings::Metrics) -> u16 {
-        metrics
-            .islands
-            .filter(|_| self.style == Style::Desktop)
-            .map_or(self.spacing, |style| style.gap)
-    }
-
     pub fn in_bar(&self, bar: crate::settings::BarEdge) -> bool {
         self.position == Position::Bar
             || matches!(
@@ -176,6 +170,13 @@ impl Preferences {
                 }
             }
             Change::UnpinFolder(uri) => next.folders.retain(|known| known != uri),
+            Change::ReorderPins(request) => {
+                use enzui_core::drag::{ItemId, reorder};
+                let order: Vec<_> = next.pins.iter().cloned().map(ItemId::new).collect();
+                if let Ok(diff) = reorder(&order, &request.items, request.slot) {
+                    next.pins = diff.order.into_iter().map(|id| id.0).collect();
+                }
+            }
             Change::Move(id, step) => {
                 if let Some(index) = next.pins.iter().position(|known| known == id) {
                     let to = (index as isize + isize::from(*step))
@@ -558,6 +559,34 @@ pub fn groups(
     }
     result
 }
+#[derive(Clone, Copy, Debug)]
+pub struct Slots {
+    pub icon: f32,
+    pub target: f32,
+    pub spacing: f32,
+}
+
+impl Slots {
+    pub fn new(p: &Preferences, metrics: crate::settings::Metrics) -> Self {
+        let requested = f32::from(p.icon_size);
+        let (icon, target) = if p.position == Position::Bar {
+            let target = f32::from(metrics.bar_item_height());
+            (requested.min(target - 12.0), target)
+        } else {
+            (requested, (requested + 14.0).max(36.0))
+        };
+        Self {
+            icon,
+            target,
+            spacing: f32::from(p.spacing),
+        }
+    }
+
+    pub fn span(self, count: usize) -> f32 {
+        count as f32 * self.target + count.saturating_sub(1) as f32 * self.spacing
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Geometry {
     pub screen: Size,
@@ -593,10 +622,25 @@ pub fn geometry(
             })
         },
     );
-    let slot = f32::from(p.icon_size) + 6.0;
-    let thickness = (slot + 16.0).max(island.map_or(0.0, |style| f32::from(style.height)));
-    let cross_padding = ((thickness - slot - 4.0) / 2.0).floor();
-    let axis_padding = island.map_or(6.0, |style| f32::from(style.padding));
+    let slots = Slots::new(p, metrics);
+    let chrome_thickness = match (island, vertical) {
+        (Some(style), true) => f32::from(style.rail),
+        (Some(style), false) => f32::from(style.height),
+        (None, true) if framed => f32::from(metrics.rail),
+        (None, false) if framed => f32::from(metrics.bar),
+        _ => 0.0,
+    };
+    let spacing = enzui_theme::SpacingScale::default();
+    let thickness = (slots.target + spacing.xs()).max(chrome_thickness);
+    let cross_padding = (thickness - slots.target) / 2.0;
+    let axis_padding = island.map_or(spacing.space5, |style| f32::from(style.padding));
+    let span_inset = island.map_or(inset, |style| {
+        f32::from(if vertical {
+            style.edge_gap
+        } else {
+            style.side_gap
+        })
+    });
     let padding = if vertical {
         [axis_padding, cross_padding]
     } else {
@@ -615,11 +659,15 @@ pub fn geometry(
     };
     let left = if vertical {
         usable_edge(edge_left)
+    } else if island.is_some() {
+        edge_left.max(span_inset)
     } else {
         edge_left
     };
     let right = if vertical {
         usable_edge(edge_right)
+    } else if island.is_some() {
+        edge_right.max(span_inset)
     } else {
         edge_right
     };
@@ -635,15 +683,18 @@ pub fn geometry(
         0.0
     };
     let available = if vertical {
-        screen.height - top - bottom - 2.0 * inset
+        screen.height - top - bottom - 2.0 * span_inset
     } else {
-        screen.width - left - right - 2.0 * inset
+        if island.is_some() {
+            screen.width - left - right
+        } else {
+            screen.width - left - right - 2.0 * span_inset
+        }
     };
-    let spacing = f32::from(p.icon_spacing(metrics));
-    let span = if p.style == Style::Panel || island.is_some_and(|style| style.joined_bar) {
+    let span = if p.style == Style::Panel {
         available
     } else {
-        (count.max(1) as f32 * (slot + spacing) - spacing + 2.0 * axis_padding).min(available)
+        (slots.span(count.max(1)) + 2.0 * axis_padding).min(available)
     }
     .max(1.0);
     let body = match p.position {
@@ -705,10 +756,10 @@ pub fn geometry(
         _ => 0.0,
     };
     let radius = if framed {
-        f32::from(metrics.radius)
+        f32::from(metrics.radius).min(thickness / 2.0)
     } else if let Some(style) = island {
-        if style.radius >= style.height / 2 {
-            thickness / 2.0
+        if f32::from(style.radius) >= f32::from(style.height) / 2.0 {
+            thickness.min(span) / 2.0
         } else {
             f32::from(style.radius)
         }
@@ -747,7 +798,12 @@ pub fn input_regions(
 ) -> Vec<(Rectangle, f32)> {
     let mut regions = Vec::new();
     if preferences.enabled && preferences.position != Position::Bar {
-        if !fullscreen {
+        if !fullscreen
+            && matches!(
+                preferences.visibility,
+                Visibility::Always | Visibility::Overlap
+            )
+        {
             regions.push((geometry.sensor, 0.0));
         }
         if !hidden {
@@ -1033,8 +1089,10 @@ impl crate::compositor::Compositor {
         };
         let reserve = if preferences.enabled
             && preferences.position != Position::Bar
-            && preferences.visibility == Visibility::Never
-        {
+            && matches!(
+                preferences.visibility,
+                Visibility::Never | Visibility::Fullscreen
+            ) {
             geometry.reserve
         } else {
             0.0
@@ -1100,6 +1158,43 @@ mod tests {
             urgent: false,
             minimized: workspace < 0,
         }
+    }
+
+    #[test]
+    fn matched_dock_keeps_joined_bar_insets_without_spanning_the_output() {
+        use crate::{
+            settings::{BarEdge, Metrics},
+            shell_style::Islands,
+        };
+        let islands = Islands {
+            joined_bar: true,
+            edge_gap: 10,
+            side_gap: 20,
+            ..Islands::default()
+        };
+        let metrics = Metrics {
+            bar: islands.height,
+            islands: Some(islands),
+            ..Metrics::default()
+        };
+        let preferences = Preferences {
+            enabled: true,
+            ..Preferences::default()
+        };
+        let screen = Size::new(960.0, 600.0);
+        let dock = geometry(&preferences, 6, screen, BarEdge::Top, metrics, (20, 20));
+
+        assert_eq!(
+            dock.body.width,
+            Slots::new(&preferences, metrics).span(6) + 32.0
+        );
+        assert_eq!(dock.body.center_x(), screen.width / 2.0);
+        assert_eq!(dock.body.y + dock.body.height, screen.height - 10.0);
+        assert_eq!(dock.radius, dock.body.height / 2.0);
+        assert_eq!(
+            input_regions(&dock, &preferences, false, false, None),
+            vec![(dock.body, dock.radius)]
+        );
     }
 
     #[test]

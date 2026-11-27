@@ -1,3 +1,4 @@
+pub(crate) mod dock_scroll;
 use crate::{Message, Shell};
 use enzui_shell::i18n::tr;
 use enzui_shell::tr;

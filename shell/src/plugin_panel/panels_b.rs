@@ -188,18 +188,20 @@ impl Shell {
                 self.clipboard_clear();
                 self.plugin.notifications.clear();
                 self.plugin.catalog_serial = None;
+                self.dock.search_offer = None;
                 self.plugin.layout_requests.clear();
                 self.plugin.gestures.clear();
                 self.plugin.theme = None;
                 self.update_frame();
                 self.force_close_plugin()
             }
-            Message::Event(Event::Catalog(serial)) => {
+            Message::Event(Event::Catalog(serial, dock_offer)) => {
                 if self.plugin.catalog_serial == Some(serial) {
                     self.quiet = true;
                     return Task::none();
                 }
                 self.plugin.catalog_serial = Some(serial);
+                self.dock.search_offer = dock_offer;
                 self.reconcile_plugin_layout()
             }
             Message::Event(Event::Started {

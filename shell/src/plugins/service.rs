@@ -54,7 +54,7 @@ pub enum Event {
     Connected(mpsc::Sender<Command>),
     Unavailable(String),
     Available,
-    Catalog(u64),
+    Catalog(u64, Option<Box<Record>>),
     Started {
         owner: Owner,
         manifest: Arc<Manifest>,
@@ -82,7 +82,7 @@ impl std::fmt::Debug for Event {
             Self::Connected(_) => "PluginConnected",
             Self::Unavailable(_) => "PluginUnavailable",
             Self::Available => "PluginAvailable",
-            Self::Catalog(_) => "PluginCatalog",
+            Self::Catalog(..) => "PluginCatalog",
             Self::Started { .. } => "PluginStarted",
             Self::Snapshot { .. } => "PluginSnapshot",
             Self::Removed(_) => "PluginRemoved",
@@ -318,12 +318,17 @@ async fn sync(
     next: &mut u64,
     events: &mpsc::Sender<ActorEvent>,
     output: &mut Sink,
-) -> Result<u64, String> {
+) -> Result<(u64, Option<Box<Record>>), String> {
     pool.reap();
     let read = store.clone();
     let Registry { entries, serial } = tokio::task::spawn_blocking(move || read.registry())
         .await
         .map_err(|_| tr("shell-plugin-state-reader-ended"))??;
+    let dock_offer = entries
+        .iter()
+        .find(|record| record.dock_can_enable_from_search())
+        .cloned()
+        .map(Box::new);
     blocked.retain(|id, _| entries.iter().any(|r| r.id() == id));
     let removed: Vec<_> = actors
         .iter()
@@ -416,7 +421,7 @@ async fn sync(
         )
         .await?;
     }
-    Ok(serial)
+    Ok((serial, dock_offer))
 }
 fn initialized_store(
     root: PathBuf,
@@ -477,8 +482,8 @@ async fn run(
             }
             .await;
             match result {
-                Ok(serial) => {
-                    emit(&mut output, Event::Catalog(serial)).await?;
+                Ok((serial, dock_offer)) => {
+                    emit(&mut output, Event::Catalog(serial, dock_offer)).await?;
                     if unavailable {
                         emit(&mut output, Event::Available).await?;
                     }

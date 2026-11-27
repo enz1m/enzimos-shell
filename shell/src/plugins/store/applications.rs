@@ -10,7 +10,53 @@ use enzui_shell::i18n::tr;
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, fs};
 
+impl Record {
+    pub(crate) fn dock_can_enable_from_search(&self) -> bool {
+        if self.id != applications::DOCK_PLUGIN
+            || (self.enabled && self.config["visible"] != false)
+            || !self.grants.contains(&Permission::Applications)
+            || !self.grants.contains(&Permission::Bar)
+        {
+            return false;
+        }
+        static DIGEST: std::sync::OnceLock<Option<[u8; 32]>> = std::sync::OnceLock::new();
+        *DIGEST.get_or_init(|| applications::package().ok().map(|package| package.digest()))
+            == Some(self.digest)
+    }
+}
+
 impl Store {
+    pub fn enable_dock_and_pin(&self, offer: &Record, id: String) -> Result<Record, String> {
+        self.transaction(|state| {
+            let active = state.entries.iter().filter(|record| record.enabled).count();
+            let record = state
+                .entries
+                .iter_mut()
+                .find(|record| {
+                    record.dock_can_enable_from_search()
+                        && record.digest == offer.digest
+                        && record.activation == offer.activation
+                })
+                .ok_or_else(|| tr("shell-plugin-changed-reload-settings"))?;
+            if !record.enabled && active >= super::super::budget::MAX_WORKERS {
+                return Err(tr("shell-active-plugin-limit-reached").into());
+            }
+            let package = self.package(record)?;
+            record.config = applications::edit(
+                package.manifest(),
+                &record.config,
+                &crate::dock::Change::EnableAndPin(id),
+            )?;
+            record.config_revision = state.serial;
+            if !record.enabled {
+                record.enabled = true;
+                record.activation = state.serial;
+            }
+            record.fault = None;
+            Ok(record.clone())
+        })
+    }
+
     pub(super) fn initialize_applications_locked(&self) -> Result<bool, String> {
         let marker = self.root.join("defaults-app-dock-v1.json");
         match fs::symlink_metadata(&marker) {

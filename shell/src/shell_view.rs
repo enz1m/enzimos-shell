@@ -1239,9 +1239,10 @@ impl Shell {
                     .backdrop(self.tokens().palette.surface)
                     .into_element();
                 let scroll = if has_dock {
-                    enzui_widgets::scroll_view::publish_geometry_of(
+                    crate::plugin_applications::dock_scroll::dock_scroll(
                         scroll,
                         self.dock.bar_scroll.clone(),
+                        true,
                     )
                 } else {
                     scroll

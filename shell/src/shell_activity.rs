@@ -54,6 +54,31 @@ impl Shell {
         self.desired_settings.activity_status
     }
 
+    pub(crate) fn dock_progress(&self, desktop_id: &str, launcher_entry: Option<u8>) -> Option<u8> {
+        if !self.activity_enabled() {
+            return None;
+        }
+        let app_id = desktop_id.strip_suffix(".desktop")?;
+        let Some(snapshot) = &self.activity.snapshot else {
+            return launcher_entry;
+        };
+        let mut jobs = snapshot
+            .jobs
+            .iter()
+            .filter(|job| job.app_id == app_id && job.outcome.is_none());
+        let Some(job) = jobs.next() else {
+            return launcher_entry;
+        };
+        if jobs.next().is_some()
+            || job.work.state == activity::State::Paused
+            || (job.work.visibility != activity::Visibility::Always
+                && (!self.activity.windows_current || self.activity.windows.is_origin(job)))
+        {
+            return None;
+        }
+        activity::fraction(job).map(|fraction| (fraction * 100.0).round() as u8)
+    }
+
     pub(crate) fn activity_subscription(&self) -> Subscription<Message> {
         let Some(socket) = activity::socket().filter(|_| self.activity_enabled()) else {
             return Subscription::none();

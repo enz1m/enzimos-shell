@@ -189,3 +189,52 @@ fn store_behaviour() {
         assert!(!store.refresh_bundled(&fixture("other", "2")).unwrap());
     }
 }
+
+#[test]
+fn search_opt_in_persists_the_pin_and_activation_together() {
+    let temp = tempfile::tempdir().unwrap();
+    let (store, _) = attached(temp.path());
+    store.initialize_defaults().unwrap();
+    let record = store
+        .registry()
+        .unwrap()
+        .entries
+        .into_iter()
+        .find(Record::dock_can_enable_from_search)
+        .unwrap();
+    let id = "app:desktop/org.example.New.desktop".to_owned();
+
+    assert!(
+        store
+            .enable_dock_and_pin(&record, "invalid".into())
+            .is_err()
+    );
+    let saved = store
+        .registry()
+        .unwrap()
+        .entries
+        .into_iter()
+        .find(|current| current.id() == record.id())
+        .unwrap();
+    assert!(!saved.enabled());
+    assert_eq!(saved.config(), record.config());
+
+    store.enable_dock_and_pin(&record, id.clone()).unwrap();
+    let saved = store
+        .registry()
+        .unwrap()
+        .entries
+        .into_iter()
+        .find(|current| current.id() == record.id())
+        .unwrap();
+    assert!(saved.enabled());
+    assert_eq!(saved.config()["visible"], true);
+    let mut expected = record.config()["pins"].as_array().unwrap().clone();
+    expected.push(id.into());
+    assert_eq!(saved.config()["pins"], Value::Array(expected));
+    assert!(
+        store
+            .enable_dock_and_pin(&record, "app:other".into())
+            .is_err()
+    );
+}

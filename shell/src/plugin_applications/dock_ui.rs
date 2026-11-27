@@ -35,6 +35,7 @@ use std::{
 };
 
 const FIND_APPS_WIDTH: f32 = 132.0;
+const MENU_WINDOWS: usize = 16;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Origin {
@@ -67,6 +68,7 @@ pub(crate) enum Event {
     IconBounds(u64, String, Origin, Option<iced::Rectangle>),
     Done(u64, Result<(), String>),
     Search(Box<enzui_shell::search::Item>, ContextMenuEvent),
+    SearchSaved(Result<(), String>),
 }
 fn message(event: Event) -> Message {
     Message::Dock(event)
@@ -147,6 +149,8 @@ pub(crate) struct State {
         (u32, u32),
         bool,
     )>,
+    search_saving: bool,
+    pub search_offer: Option<Box<enzui_shell::plugins::store::Record>>,
     pub search_item: Option<enzui_shell::search::Item>,
     pub search_state: ContextMenuState,
 }
@@ -204,6 +208,8 @@ impl Default for State {
             pending: None,
             sent_policy: None,
             layout: None,
+            search_saving: false,
+            search_offer: None,
             search_item: None,
             search_state: ContextMenuState::closed(),
         }
@@ -284,6 +290,48 @@ fn window_indicator<'a>(
         Position::Right => mark.align_right(target),
         Position::Top => mark.align_top(target),
         _ => mark.align_bottom(target),
+    }
+    .into()
+}
+
+fn progress_mark(
+    percent: u8,
+    edge: Position,
+    target: f32,
+    width: f32,
+    palette: &enzui_theme::Palette,
+) -> Element<'static, Message> {
+    let line = |height, color| {
+        container(space())
+            .width(2.0)
+            .height(height)
+            .style(move |_| container::Style {
+                background: Some(iced::Background::Color(color)),
+                border: iced::Border::default().rounded(1.0),
+                ..Default::default()
+            })
+    };
+    let mut layers = vec![line(14.0, palette.border_strong).into()];
+    if percent > 0 {
+        layers.push(
+            container(line(14.0 * f32::from(percent) / 100.0, palette.accent))
+                .align_bottom(14.0)
+                .into(),
+        );
+    }
+    let mark = container(iced::widget::stack(layers)).center_y(target);
+    match edge {
+        Position::Left => mark
+            .align_bottom(target)
+            .padding(iced::Padding::ZERO.right(3.0).bottom(5.0))
+            .align_right(width),
+        Position::Right => mark
+            .align_bottom(target)
+            .padding(iced::Padding::ZERO.left(3.0).bottom(5.0))
+            .align_left(width),
+        _ => mark
+            .padding(iced::Padding::ZERO.left(3.0))
+            .align_left(width),
     }
     .into()
 }
@@ -375,6 +423,21 @@ fn group_icon<'a>(
         .into()
 }
 
+fn window_row(window: &dock::Window, snapshot: &Snapshot) -> MenuEntryModel {
+    let item =
+        MenuEntryModel::command(format!("window:{}", window.target.stable_id), &window.title)
+            .check(if window.active {
+                CheckState::Checked
+            } else {
+                CheckState::Unchecked
+            });
+    if let Some(context) = crate::dock_hover::window_context(window, snapshot) {
+        item.description(context)
+    } else {
+        item
+    }
+}
+
 fn model(group: &Group, p: &dock::Preferences, snapshot: &Snapshot) -> MenuModel {
     if let Some(builtin) = &group.builtin {
         let mut rows = vec![MenuEntryModel::command("open", &group.title)];
@@ -393,20 +456,18 @@ fn model(group: &Group, p: &dock::Preferences, snapshot: &Snapshot) -> MenuModel
         return MenuModel::new(rows);
     }
     let mut rows = Vec::new();
-    for w in group.windows.iter().take(16) {
-        let window = MenuEntryModel::command(format!("window:{}", w.target.stable_id), &w.title)
-            .check(if w.active {
-                CheckState::Checked
-            } else {
-                CheckState::Unchecked
-            });
-        rows.push(
-            if let Some(context) = crate::dock_hover::window_context(w, snapshot) {
-                window.description(context)
-            } else {
-                window
-            },
-        );
+    rows.extend(
+        group
+            .windows
+            .iter()
+            .take(MENU_WINDOWS)
+            .map(|window| window_row(window, snapshot)),
+    );
+    if group.windows.len() > MENU_WINDOWS {
+        rows.push(MenuEntryModel::submenu(
+            "more-windows",
+            tr("shell-dock-more-windows"),
+        ));
     }
     if !group.windows.is_empty() {
         rows.push(MenuEntryModel::separator("windows"));
@@ -1021,7 +1082,6 @@ impl Shell {
                 Event::Click(_)
                     | Event::Launch(_)
                     | Event::Invoke(..)
-                    | Event::Search(..)
                     | Event::DropFolders(_)
                     | Event::DropOnApp(..)
                     | Event::Reorder(_)
@@ -1090,11 +1150,22 @@ impl Shell {
                     Ok(snapshot) => {
                         if self.dock.snapshot.as_ref().is_some_and(|old| {
                             old.output_id != snapshot.output_id
+                                || old.output != snapshot.output
                                 || old.screen != snapshot.screen
                                 || old.scale != snapshot.scale
                         }) {
                             self.dock.preview.clear();
                             self.dock.preview.clear_cache();
+                            self.dock.menu = None;
+                            self.dock.pending = None;
+                            self.dock.keyboard = None;
+                            self.dock.menu_serial = self.dock.menu_serial.wrapping_add(1);
+                            self.dock.hovered = false;
+                            self.dock.hover_body = false;
+                            self.dock.hover_sensor = false;
+                            self.dock.touches.clear();
+                            self.dock.hide_pending = false;
+                            self.dock.hide_serial = self.dock.hide_serial.wrapping_add(1);
                         }
                         self.dock.snapshot = Some(snapshot);
                     }
@@ -1394,6 +1465,15 @@ impl Shell {
                     );
                     model = MenuModel::new(rows).with_submenu("layout", layout);
                 }
+                if let Some(snapshot) = self.dock.snapshot.as_ref()
+                    && entry.group.windows.len() > MENU_WINDOWS
+                {
+                    let windows = entry.group.windows[MENU_WINDOWS..]
+                        .iter()
+                        .map(|window| window_row(window, snapshot))
+                        .collect();
+                    model = model.with_submenu("more-windows", MenuModel::new(windows));
+                }
                 self.dock.menu = Some(Menu {
                     id,
                     origin,
@@ -1464,6 +1544,16 @@ impl Shell {
                 }
             }
             Event::Search(item, event) => self.dock_search_menu(*item, event),
+            Event::SearchSaved(result) => {
+                self.dock.search_saving = false;
+                match result {
+                    Ok(()) => {
+                        self.plugin_command(enzui_shell::plugins::service::Command::Refresh);
+                    }
+                    Err(error) => self.notice = Some(error),
+                }
+                Task::none()
+            }
         }
     }
     fn dock_open_menu(
@@ -1576,13 +1666,16 @@ impl Shell {
         let compositor = self.compositor.clone();
         Task::perform(
             async move {
-                for window in windows.into_iter().take(64) {
+                let mut result = Ok(());
+                for window in windows {
                     if !authority.load(std::sync::atomic::Ordering::Acquire) {
                         return Err(tr("shell-plugin-authority-changed").into());
                     }
-                    compositor.dock_window_action(window, action).await?;
+                    if let Err(error) = compositor.dock_window_action(window, action).await {
+                        result = Err(error);
+                    }
                 }
-                Ok(())
+                result
             },
             move |result| message(Event::Done(serial, result)),
         )
@@ -1724,6 +1817,18 @@ impl Shell {
             _ => Tooltip::Top,
         };
         let pinned = self.dock.pinned;
+        let desktop_ids = self
+            .dock
+            .entries
+            .iter()
+            .filter_map(|entry| enzui_shell::launcher_badges::group_id(&entry.group))
+            .fold(
+                std::collections::HashMap::<_, usize>::new(),
+                |mut counts, id| {
+                    *counts.entry(id).or_default() += 1;
+                    counts
+                },
+            );
         let mut buttons = Vec::new();
         let mut favorites: Vec<_> = self.dock.entries[..pinned].iter().collect();
         if let Some(order) = &self.dock.pending_pin_order {
@@ -1756,8 +1861,10 @@ impl Shell {
             };
             let active = group.windows.iter().any(|w| w.active);
             let running = !group.windows.is_empty();
-            let badge = enzui_shell::launcher_badges::group_id(group)
-                .and_then(|id| self.dock.badges.get(&id))
+            let desktop_id = enzui_shell::launcher_badges::group_id(group);
+            let badge = desktop_id
+                .as_ref()
+                .and_then(|id| self.dock.badges.get(id))
                 .copied()
                 .unwrap_or_default();
             let urgent = badge.urgent || group.windows.iter().any(|window| window.urgent);
@@ -1883,6 +1990,13 @@ impl Shell {
                 };
                 layers.push(notification);
             }
+            let progress = desktop_id
+                .as_ref()
+                .filter(|id| desktop_ids.get(*id) == Some(&1))
+                .and_then(|id| self.dock_progress(id, badge.progress));
+            if let Some(percent) = progress {
+                layers.push(progress_mark(percent, edge, target, width, &palette));
+            }
             let label = if group.builtin.is_some() {
                 group.title.clone()
             } else {
@@ -1895,6 +2009,9 @@ impl Shell {
                 }
                 if urgent {
                     label.push_str(tr("shell-needs-attention"));
+                }
+                if let Some(percent) = progress {
+                    label.push_str(&tr!("shell-dock-progress", "percent" => percent));
                 }
                 label
             };
@@ -2206,9 +2323,10 @@ impl Shell {
                 };
                 let framed = g.framed;
                 let body = self.dock_folder_target(
-                    container(enzui_widgets::scroll_view::publish_geometry_of(
+                    container(crate::plugin_applications::dock_scroll::dock_scroll(
                         scroll.into_element(),
                         self.dock.dock_scroll.clone(),
+                        !g.vertical,
                     ))
                     .padding(g.padding)
                     .center_x(g.body.width)
@@ -2301,7 +2419,9 @@ impl Shell {
         item: &enzui_shell::search::Item,
         action: Element<'a, Message>,
     ) -> Element<'a, Message> {
-        if !self.dock_active() || !matches!(item.target, Some(Target::App(_))) {
+        if !matches!(item.target, Some(Target::App(_)))
+            || (!self.dock_active() && !self.dock_can_offer_opt_in())
+        {
             return action;
         }
         let state = if self
@@ -2320,6 +2440,47 @@ impl Shell {
         })
         .into()
     }
+    fn dock_can_offer_opt_in(&self) -> bool {
+        !self.dock.search_saving
+            && self.dock.search_offer.is_some()
+            && self.dock_owner().is_none_or(|claim| {
+                claim.owner.id == enzui_shell::plugins::applications::DOCK_PLUGIN
+            })
+    }
+
+    fn dock_enable_from_search(&mut self, item: enzui_shell::search::Item) -> Task<Message> {
+        if !self.dock_can_offer_opt_in() {
+            return Task::none();
+        }
+        let Some((offer, settings)) = self
+            .dock
+            .search_offer
+            .clone()
+            .zip(self.settings_store.clone())
+        else {
+            return Task::none();
+        };
+        let id = item
+            .dock_pin_id(|id| {
+                offer.config()["pins"]
+                    .as_array()
+                    .is_some_and(|pins| pins.iter().any(|pin| pin == id))
+            })
+            .to_owned();
+        self.dock.search_saving = true;
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let store = enzui_shell::plugins::store::Store::for_settings(settings)?;
+                    store.enable_dock_and_pin(&offer, id).map(|_| ())
+                })
+                .await
+                .map_err(|_| tr("shell-application-surface-writer-stopped").to_owned())?
+            },
+            |result| message(Event::SearchSaved(result)),
+        )
+    }
+
     fn dock_search_menu(
         &mut self,
         item: enzui_shell::search::Item,
@@ -2329,21 +2490,40 @@ impl Shell {
             if !matches!(item.target, Some(Target::App(_))) {
                 return Task::none();
             }
-            let pinned = self.dock.preferences.pins.contains(&item.id);
+            let active = self.dock_active();
+            if !active && !self.dock_can_offer_opt_in() {
+                return Task::none();
+            }
+            let pin_id =
+                item.dock_pin_id(|id| self.dock.preferences.pins.iter().any(|pin| pin == id));
+            let pinned = active && self.dock.preferences.pins.iter().any(|id| id == pin_id);
+            let can_pin = if active {
+                pinned || self.dock.preferences.pins.len() < 32
+            } else {
+                self.dock
+                    .search_offer
+                    .as_ref()
+                    .and_then(|record| record.config()["pins"].as_array())
+                    .is_some_and(|pins| {
+                        let contains = |id: &str| pins.iter().any(|pin| pin == id);
+                        pins.len() < 32 || contains(item.dock_pin_id(contains))
+                    })
+            };
             self.dock.search_model = MenuModel::new(vec![
                 MenuEntryModel::command("open", tr("shell-open")),
                 MenuEntryModel::command(
-                    "pin",
+                    if active { "pin" } else { "enable-and-pin" },
                     if pinned {
                         tr("shell-remove-from-dock")
-                    } else if self.dock.preferences.enabled {
+                    } else if active {
                         tr("shell-keep-in-dock")
                     } else {
-                        tr("shell-keep-application-in-dock")
+                        tr("shell-enable-dock-and-pin")
                     },
                 )
-                .enabled(pinned || self.dock.preferences.pins.len() < 32),
-                MenuEntryModel::command("settings", tr("shell-plugin-settings")),
+                .icon(if pinned { "pin-off" } else { "pin" })
+                .enabled(can_pin),
+                MenuEntryModel::command("settings", tr("shell-dock-settings")),
             ]);
             let restore = if self.search.app_tiles_visible() {
                 iced::advanced::widget::Id::from(format!("quick-app-{}", item.id))
@@ -2374,20 +2554,19 @@ impl Shell {
             .as_ref()
             .map(enzui_core::menu_model::EntryId::as_str)
         {
-            Some("pin") => {
-                let pinned = self.dock.preferences.pins.contains(&item.id);
-                let change = if !pinned && !self.dock.preferences.enabled {
-                    Change::EnableAndPin(item.id)
-                } else {
-                    Change::Pin(item.id, !pinned)
-                };
-                self.dock_save(change)
+            Some("pin") if self.dock_active() => {
+                let id =
+                    item.dock_pin_id(|id| self.dock.preferences.pins.iter().any(|pin| pin == id));
+                let pinned = self.dock.preferences.pins.iter().any(|pin| pin == id);
+                self.dock_save(Change::Pin(id.to_owned(), !pinned))
             }
+            Some("enable-and-pin") => self.dock_enable_from_search(item),
             Some("open") => {
                 let ticket = self.search.model.ticket(&item);
                 self.search_message(crate::quick_search::Message::Activate(ticket))
             }
-            Some("settings") => self.dock_plugin_settings(),
+            Some("settings") if self.dock_active() => self.dock_plugin_settings(),
+            Some("settings") => Task::done(Message::SettingsPage("section/dock/enabled")),
             _ => Task::none(),
         };
         if !self.dock.search_state.is_open() {

@@ -83,6 +83,7 @@ pub struct Item {
     pub image: Option<std::path::PathBuf>,
     pub(crate) theme_icon: Option<String>,
     pub(crate) file_target: Option<AppTarget>,
+    pub(crate) legacy_dock_pin: Option<String>,
     pub target: Option<Target>,
     /// The app a result comes from, heading its group.
     pub source: Option<Arc<str>>,
@@ -115,10 +116,18 @@ impl Item {
             image: None,
             theme_icon: None,
             file_target: None,
+            legacy_dock_pin: None,
             target,
             source: None,
         }
     }
+    pub fn dock_pin_id(&self, contains: impl Fn(&str) -> bool) -> &str {
+        self.legacy_dock_pin
+            .as_deref()
+            .filter(|id| contains(id) && !contains(&self.id))
+            .unwrap_or(&self.id)
+    }
+
     /// Whether this result can launch an installed application.
     pub fn is_installed_app(&self) -> bool {
         matches!(self.target, Some(Target::App(_)))

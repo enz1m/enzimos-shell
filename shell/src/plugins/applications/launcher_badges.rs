@@ -14,6 +14,8 @@ pub struct Badge {
     pub count: u64,
     pub count_visible: bool,
     pub urgent: bool,
+    pub progress: Option<u8>,
+    progress_visible: bool,
 }
 impl Badge {
     pub fn label(self) -> Option<String> {
@@ -40,7 +42,11 @@ pub fn desktop_id(uri: &str) -> Option<&str> {
     .then_some(id)
 }
 pub fn group_id(group: &crate::dock::Group) -> Option<String> {
-    if let Some(id) = group.id.strip_prefix("app:desktop/") {
+    if let Some(id) = group
+        .id
+        .strip_prefix("app:desktop/")
+        .or_else(|| group.id.strip_prefix("app:flatpak/"))
+    {
         return desktop_id(&format!("application://{id}")).map(str::to_owned);
     }
     match group.app.as_ref()? {
@@ -59,6 +65,8 @@ struct Patch {
     count: Option<u64>,
     visible: Option<bool>,
     urgent: Option<bool>,
+    progress: Option<u8>,
+    progress_visible: Option<bool>,
 }
 fn patch(properties: &HashMap<String, OwnedValue>) -> Option<Patch> {
     if properties.len() > 32 {
@@ -78,10 +86,25 @@ fn patch(properties: &HashMap<String, OwnedValue>) -> Option<Patch> {
         .map(bool::try_from)
         .transpose()
         .ok()?;
-    (count.is_some() || visible.is_some() || urgent.is_some()).then_some(Patch {
+    let progress = properties
+        .get("progress")
+        .and_then(|value| f64::try_from(value).ok())
+        .filter(|value| (0.0..=1.0).contains(value))
+        .map(|value| (value * 100.0).round() as u8);
+    let progress_visible = properties
+        .get("progress-visible")
+        .and_then(|value| bool::try_from(value).ok());
+    (count.is_some()
+        || visible.is_some()
+        || urgent.is_some()
+        || progress.is_some()
+        || progress_visible.is_some())
+    .then_some(Patch {
         count,
         visible,
         urgent,
+        progress,
+        progress_visible,
     })
 }
 impl State {
@@ -104,6 +127,15 @@ impl State {
         if let Some(urgent) = patch.urgent {
             badge.urgent = urgent;
         }
+        if let Some(progress) = patch.progress {
+            badge.progress = Some(progress);
+        }
+        if let Some(visible) = patch.progress_visible {
+            badge.progress_visible = visible;
+            if !visible {
+                badge.progress = None;
+            }
+        }
         *badge != previous
     }
     fn remove(&mut self, sender: &str) -> bool {
@@ -113,12 +145,21 @@ impl State {
     }
     fn snapshot(&self) -> Snapshot {
         let mut result: Snapshot = BTreeMap::new();
+        let mut progress_publishers = std::collections::BTreeSet::new();
         for ((_, id), badge) in &self.entries {
-            if !badge.urgent && (!badge.count_visible || badge.count == 0) {
+            let progress = badge.progress.filter(|_| badge.progress_visible);
+            if !badge.urgent && (!badge.count_visible || badge.count == 0) && progress.is_none() {
                 continue;
             }
             let value = result.entry(id.clone()).or_default();
             value.urgent |= badge.urgent;
+            if progress.is_some() {
+                value.progress = if progress_publishers.insert(id) {
+                    progress
+                } else {
+                    None
+                };
+            }
             if badge.count_visible {
                 value.count = value.count.max(badge.count);
                 value.count_visible = true;

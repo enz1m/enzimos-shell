@@ -239,7 +239,10 @@ impl Preferences {
     }
 }
 pub fn valid_app_id(id: &str) -> bool {
-    if let Some(name) = id.strip_prefix("app:desktop/") {
+    if let Some(name) = id
+        .strip_prefix("app:desktop/")
+        .or_else(|| id.strip_prefix("app:flatpak/"))
+    {
         return name.len() <= 220
             && name.ends_with(".desktop")
             && name
@@ -401,11 +404,8 @@ pub(crate) fn match_app<'a>(
     }
     let current = client["class"].as_str().unwrap_or_default();
     let initial = client["initialClass"].as_str().unwrap_or_default();
-    let mut best = None;
-    let mut best_score = 0;
-    for app in apps {
-        let score = app
-            .classes
+    let score = |app: &App| {
+        app.classes
             .iter()
             .enumerate()
             .map(|(i, known)| {
@@ -422,25 +422,44 @@ pub(crate) fn match_app<'a>(
                 }
             })
             .max()
-            .unwrap_or_default();
-        if score > best_score {
-            best = Some(app);
-            best_score = score;
-        } else if score == best_score {
-            best = None;
-        }
+            .unwrap_or_default()
+    };
+    let best_score = apps.iter().map(score).max().unwrap_or_default();
+    let mut matching = apps
+        .iter()
+        .filter(|app| best_score > 0 && score(app) == best_score);
+    let best = matching.next();
+    if best.is_some() && matching.next().is_none() {
+        return best;
     }
-    best.or_else(|| {
-        let cgroup = std::fs::read_to_string(format!("/proc/{}/cgroup", target.pid)).ok()?;
-        let (_, id) = crate::window_feed::unit_of(&cgroup)?;
-        let mut matches = apps.iter().filter(|app| {
-            app.classes
-                .first()
-                .is_some_and(|known| same_class(known, &id))
+
+    let proc = std::path::PathBuf::from(format!("/proc/{}", target.pid));
+    let cgroup = std::fs::read_to_string(proc.join("cgroup")).ok()?;
+    if let Some((unit, id)) = crate::window_feed::unit_of(&cgroup) {
+        let flatpak = unit.starts_with("app-flatpak-");
+        let mut matching = apps.iter().filter(|app| {
+            app.item.id.starts_with("app:flatpak/") == flatpak
+                && (best_score == 0 || score(app) == best_score)
+                && app
+                    .classes
+                    .first()
+                    .is_some_and(|known| same_class(known, &id))
         });
-        let app = matches.next()?;
-        matches.next().is_none().then_some(app)
-    })
+        let best = matching.next()?;
+        return matching.next().is_none().then_some(best);
+    }
+    best?;
+    let root = proc.join("root");
+    let flatpak = match std::fs::metadata(root.join(".flatpak-info")) {
+        Ok(info) => info.is_file(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && root.is_dir() => false,
+        Err(_) => return None,
+    };
+    let mut matching = apps.iter().filter(|app| {
+        app.item.id.starts_with("app:flatpak/") == flatpak && score(app) == best_score
+    });
+    let best = matching.next()?;
+    matching.next().is_none().then_some(best)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -501,7 +520,26 @@ pub fn groups(
     let pixels = (icon_size * scale).round() as u32;
     // Client enumeration follows compositor z-order; focus must not reorder
     // dock slots, hover cards or the next window in a cycling sequence.
-    let mut ordered: Vec<_> = windows.iter().map(|w| (w.group_id(), w)).collect();
+    let is_pinned = |id: &str| preferences.pins.iter().any(|pin| pin == id);
+    let legacy_pins: std::collections::HashMap<_, _> = apps
+        .iter()
+        .filter_map(|app| {
+            let pin = app.item.dock_pin_id(is_pinned);
+            (pin != app.item.id).then_some((app.item.id.as_str(), pin))
+        })
+        .collect();
+    let mut ordered: Vec<_> = windows
+        .iter()
+        .map(|window| {
+            let id = window.group_id();
+            let id = if let Some(&pin) = legacy_pins.get(id.as_str()) {
+                pin.to_owned()
+            } else {
+                id
+            };
+            (id, window)
+        })
+        .collect();
     ordered.sort_by(|(_, left), (_, right)| stable_window_order(left, right));
     let ids = preferences.pins.iter().cloned().chain(
         ordered
@@ -518,7 +556,9 @@ pub fn groups(
         if result.len() == 64 || !seen.insert(id.clone()) {
             continue;
         }
-        let app = apps.iter().find(|app| app.item.id == id);
+        let app = apps
+            .iter()
+            .find(|app| app.item.dock_pin_id(is_pinned) == id);
         let own: Vec<Window> = ordered
             .iter()
             .filter(|(known, w)| {
@@ -545,7 +585,10 @@ pub fn groups(
                     })
                 })
                 .unwrap_or_else(|| {
-                    id.trim_start_matches("app:")
+                    id.rsplit('/')
+                        .next()
+                        .unwrap_or(&id)
+                        .trim_start_matches("app:")
                         .trim_end_matches(".desktop")
                         .to_owned()
                 }),

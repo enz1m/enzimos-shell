@@ -1,7 +1,7 @@
 use super::{AppTarget, Category, Item, Target};
 use enzui_shell::i18n::tr;
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::Read,
     os::unix::fs::MetadataExt,
@@ -60,9 +60,14 @@ pub(crate) fn shown_in(only: Option<&str>, not: Option<&str>, current: &str) -> 
     };
     only.is_none_or(listed) && !not.is_some_and(listed)
 }
-// The entry's item, its program, and whether it is a Flatpak export.
-enum EntryPurpose {
-    Launcher,
+#[derive(Default)]
+struct SeenEditions {
+    native: bool,
+    flatpak: bool,
+}
+
+enum EntryPurpose<'a> {
+    Launcher(&'a mut BTreeMap<String, SeenEditions>),
     Identity,
 }
 
@@ -79,7 +84,7 @@ fn exec_accepts_files(exec: &str) -> bool {
 fn desktop_entry(
     path: &Path,
     id: &str,
-    purpose: EntryPurpose,
+    purpose: EntryPurpose<'_>,
 ) -> Option<(Item, Option<PathBuf>, bool)> {
     let identity = FileIdentity::capture(path).ok()?;
     if identity.size > 65536 {
@@ -110,9 +115,25 @@ fn desktop_entry(
             fields.entry(key.trim()).or_insert_with(|| value.trim());
         }
     }
+    let flatpak = fields.contains_key("X-Flatpak");
+    let launcher = if let EntryPurpose::Launcher(seen) = purpose {
+        // A hidden entry masks later entries of its own edition.
+        let editions = seen.entry(id.to_owned()).or_default();
+        let seen = if flatpak {
+            &mut editions.flatpak
+        } else {
+            &mut editions.native
+        };
+        if std::mem::replace(seen, true) {
+            return None;
+        }
+        true
+    } else {
+        false
+    };
     if fields.get("Type") != Some(&"Application")
         || fields.get("Hidden") == Some(&"true")
-        || (matches!(purpose, EntryPurpose::Launcher) && fields.get("NoDisplay") == Some(&"true"))
+        || (launcher && fields.get("NoDisplay") == Some(&"true"))
         || (!fields.contains_key("Exec") && fields.get("DBusActivatable") != Some(&"true"))
         || !shown_in(
             fields.get("OnlyShowIn").copied(),
@@ -156,7 +177,11 @@ fn desktop_entry(
         .map(PathBuf::from)
         .filter(|program| program.is_absolute());
     let mut item = Item::new(
-        format!("app:desktop/{id}"),
+        if flatpak {
+            format!("app:flatpak/{id}")
+        } else {
+            format!("app:desktop/{id}")
+        },
         Category::Apps,
         title,
         comment,
@@ -179,7 +204,7 @@ fn desktop_entry(
             _ => None,
         };
     }
-    Some((item, program, fields.contains_key("X-Flatpak")))
+    Some((item, program, flatpak))
 }
 pub fn scan(root: &Path, directories: &[PathBuf]) -> Vec<Item> {
     scan_cancellable(
@@ -235,7 +260,7 @@ pub fn scan_cancellable(
             .with_image(app.themed_icon(48)),
         );
     }
-    let mut seen = BTreeSet::new();
+    let mut seen = BTreeMap::new();
     let mut flatpaks = Vec::new();
     let mut inspected = 0;
     for directory in directories.iter().take(8) {
@@ -269,29 +294,13 @@ pub fn scan_cancellable(
             else {
                 continue;
             };
-            let twin = twins.contains(id);
-            if !twin && !seen.insert(id.to_owned()) {
-                continue;
-            }
             let Some((mut item, program, flatpak)) =
-                desktop_entry(&path, id, EntryPurpose::Launcher)
+                desktop_entry(&path, id, EntryPurpose::Launcher(&mut seen))
             else {
                 continue;
             };
-            // A catalog app installed natively and as a Flatpak, in either
-            // folder order: the native one stays the catalog app and the
-            // Flatpak is listed as one.
-            if twin {
-                if !seen.insert(if flatpak {
-                    format!("flatpak:{id}")
-                } else {
-                    id.to_owned()
-                }) {
-                    continue;
-                }
-                if flatpak {
-                    tr("shell-flatpak-version").clone_into(&mut item.subtitle);
-                }
+            if flatpak && twins.contains(id) {
+                tr("shell-flatpak-version").clone_into(&mut item.subtitle);
             }
             // Match native apps by executable identity so installed metadata preserves their
             // native launch route.
@@ -328,6 +337,12 @@ pub fn scan_cancellable(
     // from the system says so in its name: two rows reading "Firefox" cannot
     // be told apart.
     for index in flatpaks {
+        if let Some(name) = result[index].id.strip_prefix("app:flatpak/") {
+            let old_id = format!("app:desktop/{name}");
+            if result.iter().all(|item| item.id != old_id) {
+                result[index].legacy_dock_pin = Some(old_id);
+            }
+        }
         if result.iter().enumerate().any(|(other, item)| {
             other != index && item.target.is_some() && item.title == result[index].title
         }) {
@@ -342,11 +357,11 @@ pub fn scan_cancellable(
 fn without_absent_twins(
     mut result: Vec<Item>,
     absent: &[(usize, String)],
-    seen: &BTreeSet<String>,
+    seen: &BTreeMap<String, SeenEditions>,
 ) -> Vec<Item> {
     let mut drop: Vec<usize> = absent
         .iter()
-        .filter(|(_, id)| seen.contains(id))
+        .filter(|(_, id)| seen.contains_key(id))
         .map(|(index, _)| *index)
         .collect();
     drop.sort_unstable();
@@ -732,8 +747,28 @@ mod tests {
                 ),
             )
             .unwrap();
+            let twin = "org.example.Shared.desktop";
+            for (path, fields) in [(&native, ""), (&flatpak, "X-Flatpak=org.example.Shared\n")] {
+                fs::write(
+                    path.join(twin),
+                    format!(
+                        "[Desktop Entry]\nType=Application\nName=Shared\nExec=example\n{fields}"
+                    ),
+                )
+                .unwrap();
+            }
             for order in [[&flatpak, &native], [&native, &flatpak]] {
                 let items = scan(root.path(), &[order[0].clone(), order[1].clone()]);
+                assert!(
+                    items
+                        .iter()
+                        .any(|item| item.id == format!("app:desktop/{twin}"))
+                );
+                let flatpak_twin = items
+                    .iter()
+                    .find(|item| item.id == format!("app:flatpak/{twin}"))
+                    .unwrap();
+                assert!(flatpak_twin.legacy_dock_pin.is_none());
                 let files: Vec<_> = items
                     .iter()
                     .filter(|item| item.title.starts_with("Files"))
@@ -746,7 +781,7 @@ mod tests {
                 );
                 // App rows show no second line, so the name carries the label.
                 assert!(
-                    files.iter().any(|item| item.id.starts_with("app:desktop/")
+                    files.iter().any(|item| item.id.starts_with("app:flatpak/")
                         && item.title == "Files (Flatpak)"
                         && item.subtitle == tr("shell-flatpak-version")),
                     "{order:?}"

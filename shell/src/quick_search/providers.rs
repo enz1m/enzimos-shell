@@ -41,14 +41,20 @@ pub(crate) fn matched(declarations: Vec<Declaration>, apps: &[Item]) -> Vec<Prov
         .into_iter()
         .filter_map(|declaration| {
             let stem = declaration.desktop_id.strip_suffix(".desktop")?.to_owned();
-            let app = apps.iter().find(|app| {
-                app.id == format!("app:desktop/{}", declaration.desktop_id)
-                    || app
-                        .id
-                        .strip_prefix("app:")
-                        .and_then(native_desktop_id)
-                        .is_some_and(|id| id == stem)
-            })?;
+            let app = apps
+                .iter()
+                .find(|app| {
+                    app.id == format!("app:desktop/{}", declaration.desktop_id)
+                        || app
+                            .id
+                            .strip_prefix("app:")
+                            .and_then(native_desktop_id)
+                            .is_some_and(|id| id == stem)
+                })
+                .or_else(|| {
+                    apps.iter()
+                        .find(|app| app.id == format!("app:flatpak/{}", declaration.desktop_id))
+                })?;
             Some(Provider {
                 label: Arc::from(app.title.as_str()),
                 icon: app.icon.clone(),

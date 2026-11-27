@@ -10,8 +10,12 @@ static SP<Render::ITexture> wallpaperTexture() {
     const auto& layers = output->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND];
     for (auto it = layers.rbegin(); it != layers.rend(); ++it) {
         auto layer = it->lock();
-        if (!layer || !layer->mapped() || (layer->m_namespace != "enzui-wallpaper" && layer->m_namespace != "wallpaper") ||
-            layer->m_monitor.lock() != output)
+        if (!layer || !layer->mapped() || layer->m_monitor.lock() != output)
+            continue;
+        // The live layer stays in place and renders its own desktop parallax.
+        if (layer->m_namespace == "enzui-live-wallpaper")
+            return {};
+        if (layer->m_namespace != "enzui-wallpaper" && layer->m_namespace != "wallpaper")
             continue;
         auto resource = layer->m_layerSurface.lock();
         auto surface = resource ? resource->m_surface.lock() : nullptr;
@@ -46,8 +50,10 @@ static void paintWorkspaceTransition() {
     }
     const auto texture = wallpaperTexture();
     wallpaperSourceReady = bool(texture);
-    if (!texture)
+    if (!texture) {
+        wallpaperPrevious.reset();
         return;
+    }
     const double width = output->m_size.x;
     const double height = output->m_size.y;
     if (width < 320 || height < 200)

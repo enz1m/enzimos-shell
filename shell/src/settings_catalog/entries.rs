@@ -984,6 +984,20 @@ pub static ENTRIES: &[Entry] = &[
     ),
     entry!(
         Shell,
+        "dock/material",
+        "shell-dock-material",
+        "shell-dock",
+        "shell-dock-search-material"
+    ),
+    entry!(
+        Shell,
+        "dock/indicator",
+        "shell-dock-indicator",
+        "shell-dock",
+        "shell-dock-search-indicator"
+    ),
+    entry!(
+        Shell,
         "dock/visibility",
         "shell-dock-visibility",
         "shell-dock",

@@ -84,13 +84,18 @@ impl Shell {
         let style = self
             .chrome_glass()
             .filter(|_| self.metrics.islands.is_some());
-        let Some(_style) = style else {
+        if style.is_none()
+            && self
+                .bar_dock_material()
+                .and_then(|material| material.glass(None))
+                .is_none()
+        {
             if let Some(input) = &self.bar_glass {
                 input.clear_glass();
             }
             self.bar_glass_on = false;
             return Task::none();
-        };
+        }
         let Some(input) = self.bar_glass.clone() else {
             if self.bar_glass_pending || !self.bar_ready {
                 return Task::none();
@@ -116,7 +121,7 @@ impl Shell {
         };
         // The bar's draw wrapper sends material state immediately before its buffer commit.
         // Sending it here races the redraw, leaving the old tint until another bar commit.
-        self.bar_glass_on = input.glass_supported();
+        self.bar_glass_on = style.is_some() && input.glass_supported();
         Task::none()
     }
 

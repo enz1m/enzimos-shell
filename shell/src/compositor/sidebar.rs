@@ -15,6 +15,7 @@ impl Compositor {
         motion: crate::motion::Policy,
         behavior: Option<crate::sidebar_preferences::Preferences>,
         pin_scope: crate::sidebar_preferences::PinScope,
+        dock_shares_edge: bool,
     ) -> Result<crate::sidebar::Snapshot, String> {
         let native = self.request(&["--batch","repl return (hl.plugin and hl.plugin.enzui_pointer_events and hl.plugin.enzui_pointer_events.version and hl.plugin.enzui_pointer_events.version()) or 0"]).await?;
         if native.trim() != "1" {
@@ -35,7 +36,7 @@ impl Compositor {
             "bottom"
         };
         let lua = format!(
-            "{}\n{}\n{}\n{}\n{}\n{}\n{}\nenzui_install_workspace_keys();assert(enzui_sidebar_configure({},\"{side}\",\"{bar}\",{},{},{},{},\"{}\",{enabled}).ok);enzui_install_sidebar()",
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}\nenzui_install_workspace_keys();assert(enzui_sidebar_configure({},\"{side}\",\"{bar}\",{},{},{},{},\"{}\",{enabled},{dock_shares_edge}).ok);enzui_install_sidebar()",
             include_str!("../../../config/shell-metrics.lua"),
             include_str!("../../../config/sidebar-visibility.lua"),
             include_str!("../../../config/shell-reservations.lua"),

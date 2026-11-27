@@ -2,7 +2,7 @@
   "format": 1,
   "id": "app-dock",
   "name": "App dock",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Optional application dock with grouped windows, folder favorites and desktop shortcuts.",
   "permissions": [
     "shell.bar",
@@ -58,6 +58,44 @@
         "panel": "Edge panel",
         "minimal": "Icons only",
         "desktop": "Match desktop"
+      }
+    },
+    {
+      "key": "material",
+      "label": "Dock material",
+      "kind": "choice",
+      "default": "panels",
+      "choices": [
+        "panels",
+        "glass",
+        "frosted",
+        "solid"
+      ],
+      "labels": {
+        "panels": "Follow panels",
+        "glass": "Glass",
+        "frosted": "Frosted",
+        "solid": "Solid"
+      }
+    },
+    {
+      "key": "indicator",
+      "label": "Open window indicator",
+      "kind": "choice",
+      "default": "dashes",
+      "choices": [
+        "dots",
+        "dashes",
+        "glow",
+        "count",
+        "none"
+      ],
+      "labels": {
+        "dots": "Dots",
+        "dashes": "Dashes",
+        "glow": "Glow",
+        "count": "Window count",
+        "none": "None"
       }
     },
     {

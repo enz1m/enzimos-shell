@@ -90,6 +90,7 @@ pub fn window_glass<'a, Message: 'a>(
         content: content.into(),
         glass: glass.clone(),
         fixed_regions: None,
+        extra: None,
     })
 }
 
@@ -99,10 +100,21 @@ pub fn fixed_glass<'a, Message: 'a>(
     glass: WindowGlass,
     regions: Vec<(Rectangle, f32)>,
 ) -> Element<'a, Message> {
+    fixed_glass_with_extra(content, glass, regions, None)
+}
+
+/// Draws fixed regions with an optional independently styled glass region.
+pub fn fixed_glass_with_extra<'a, Message: 'a>(
+    content: Element<'a, Message>,
+    glass: WindowGlass,
+    regions: Vec<(Rectangle, f32)>,
+    extra: Option<(Rectangle, f32, MaterialStyle)>,
+) -> Element<'a, Message> {
     Element::new(Root {
         content,
         glass,
         fixed_regions: Some(regions),
+        extra,
     })
 }
 
@@ -184,6 +196,7 @@ struct Root<'a, Message> {
     content: Element<'a, Message>,
     glass: WindowGlass,
     fixed_regions: Option<Vec<(Rectangle, f32)>>,
+    extra: Option<(Rectangle, f32, MaterialStyle)>,
 }
 
 impl<Message> Root<'_, Message> {
@@ -390,6 +403,29 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Root<'_, Message>
         );
         let placed = PLACED.with(|cell| cell.replace(outer));
         if let Some(input) = input {
+            if let Some((bounds, radius, extra)) = self.extra {
+                let reduced = self.glass.reduced_motion;
+                let panes = material
+                    .into_iter()
+                    .zip(placed)
+                    .flat_map(|(style, placed)| {
+                        let tokens = crate::reveal::glass_tokens(style, reduced);
+                        placed.panes.into_iter().map(move |pane| (pane, tokens))
+                    });
+                let region = crate::surface_input::GlassRegion {
+                    bounds,
+                    radius,
+                    tint: self.glass.tint,
+                };
+                let tokens = crate::reveal::glass_tokens(extra, reduced);
+                if !input.mixed_glass_regions(
+                    panes.take(31).chain([(region, tokens)]),
+                    self.glass.shadow,
+                ) {
+                    input.clear_glass();
+                }
+                return;
+            }
             match (material, placed) {
                 (Some(style), Some(placed)) if !placed.panes.is_empty() => {
                     let tokens = crate::reveal::glass_tokens(style, self.glass.reduced_motion);

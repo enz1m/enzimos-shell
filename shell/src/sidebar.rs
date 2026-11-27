@@ -305,7 +305,7 @@ impl Snapshot {
     pub fn source_rect(&self) -> Rect {
         self.canvas.unwrap_or(self.rail)
     }
-    pub fn icon_center(&self, index: usize, slot: u16, scroll: f32) -> i32 {
+    pub fn icon_center(&self, index: usize, slot: u16, scroll: f32, top_aligned: bool) -> i32 {
         let count = (self.entries.len()
             + usize::from(!self.error.is_empty())
             + usize::from(self.drop_add && !self.entries.is_empty()))
@@ -313,7 +313,11 @@ impl Snapshot {
         let slot = f32::from(slot);
         let block = count as f32 * slot + (count - 1) as f32 * 6.0;
         let available = self.rail.height as f32 - 16.0;
-        let top = 8.0 + ((available - block) / 2.0).max(0.0);
+        let top = if top_aligned {
+            8.0
+        } else {
+            8.0 + ((available - block) / 2.0).max(0.0)
+        };
         let scroll = if scroll.is_finite() {
             scroll.clamp(0.0, (block - available).max(0.0))
         } else {

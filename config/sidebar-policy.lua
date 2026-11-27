@@ -90,8 +90,9 @@ local function geometry(entry,anchor)
         local available=bottom-top
         local slot=metrics.rail-4
         local count=math.max(1,#entries+(has_error and 1 or 0)+(adding() and #entries>0 and 1 or 0))
-        local rail_h=math.min(available,#entries==0 and not has_error and 120 or 16+count*slot+(count-1)*6)
-        local rail_y=math.floor(m.y+top+(available-rail_h)/2+0.5)
+        local rail_available=s.dock_shares_edge and math.floor(available/2) or available
+        local rail_h=math.min(rail_available,#entries==0 and not has_error and 120 or 16+count*slot+(count-1)*6)
+        local rail_y=math.floor(m.y+top+(s.dock_shares_edge and 0 or (available-rail_h)/2)+0.5)
         local rail_x=s.side=="left" and m.x+style.side_gap or m.x+w-style.side_gap-metrics.rail
         local inset=math.max(6,math.ceil(style.radius*(1-math.sqrt(0.5))))
         local aw,ah,fits=fit_pane(desired_w,desired_h,
@@ -117,7 +118,10 @@ local function geometry(entry,anchor)
     local slot=metrics.rail-4
     local count=math.max(1,#entries+(has_error and 1 or 0))
     local rail_h=h-metrics.bar-metrics.frame
-    local group_top=8+math.max(0,(rail_h-16-count*slot-(count-1)*6)/2)
+    if s.dock_shares_edge then
+        rail_h=math.min(math.floor(rail_h/2),math.max(96,16+count*slot+(count-1)*6))
+    end
+    local group_top=8+(s.dock_shares_edge and 0 or math.max(0,(rail_h-16-count*slot-(count-1)*6)/2))
     local anchor=anchor or (m.y+top+group_top+(index-1)*(slot+6)+slot/2)
     local bottom=m.y+h-(s.bar=="bottom" and metrics.bar or metrics.frame)
     local ay=math.max(m.y+top+6,math.min(anchor-ah/2,bottom-6-ah))
@@ -172,7 +176,8 @@ local function update_visibility(g)
     local previous_error=visible_error()
     s.fullscreen=fullscreen
     local in_output=point.x>=m.x and point.x<m.x+enzui_output_w(m) and point.y>=(g.canvas_y or m.y) and point.y<(g.canvas_y or m.y)+(g.canvas_h or enzui_output_h(m))
-    local edge=in_output and (s.side=="left" and point.x<m.x+3 or s.side=="right" and point.x>=m.x+enzui_output_w(m)-3)
+    local edge_in_band=not s.dock_shares_edge or (point.y>=g.rail_y and point.y<g.rail_y+g.rail_h)
+    local edge=in_output and edge_in_band and (s.side=="left" and point.x<m.x+3 or s.side=="right" and point.x>=m.x+enzui_output_w(m)-3)
     local body=in_output and point.y>=g.rail_y-12 and point.y<g.rail_y+g.rail_h+12 and
         (s.side=="left" and point.x<g.rail_x+g.rail_w+8 or s.side=="right" and point.x>=g.rail_x-8)
     local entries=visible_entries()
@@ -537,6 +542,7 @@ local function at_drop(point,g)
         local m=g.monitor
         local top=m.y+(s.bar=="top" and enzui_bar_band(s.metrics) or s.metrics.islands.edge_gap)
         local bottom=m.y+enzui_output_h(m)-(s.bar=="bottom" and enzui_bar_band(s.metrics) or s.metrics.islands.edge_gap)
+        if s.dock_shares_edge then bottom=top+math.floor((bottom-top)/2) end
         local left=s.side=="left" and m.x or g.rail_x-24
         local right=s.side=="left" and g.rail_x+g.rail_w+24 or m.x+enzui_output_w(m)
         return point.y>=top and point.y<bottom and point.x>=left and point.x<right
@@ -899,8 +905,9 @@ tick_once=function()
     if reveal~=s.reveal then s.reveal=reveal;emit() end
     pocket_hint(reveal,reveal and g and at_drop(hl.get_cursor_pos(),g))
 end
-function enzui_sidebar_configure(output,side,bar,owner,metrics,motion,behavior,pin_scope,enabled)
+function enzui_sidebar_configure(output,side,bar,owner,metrics,motion,behavior,pin_scope,enabled,dock_shares_edge)
     if enabled==nil then enabled=true end
+    assert(dock_shares_edge==nil or type(dock_shares_edge)=="boolean","Invalid shared dock edge")
     assert(type(enabled)=="boolean","Invalid sidebar enabled state")
     metrics=enzui_resolve_metrics(metrics)
     pin_scope=pin_scope or "shared"
@@ -949,7 +956,9 @@ function enzui_sidebar_configure(output,side,bar,owner,metrics,motion,behavior,p
         return {ok=false}
     end
     if s.owner~=owner then enzui_sidebar_cancel_drag() end
-    if s.bar~=bar or s.side~=side or resized then s.anchor=nil end
+    dock_shares_edge=enabled and dock_shares_edge==true
+    if s.bar~=bar or s.side~=side or resized or s.dock_shares_edge~=dock_shares_edge then s.anchor=nil end
+    s.dock_shares_edge=dock_shares_edge
     s.output=output;s.side=side;s.bar=bar;s.owner=owner;s.heartbeat=0;s.metrics=metrics;s.rail_input=nil;s.behavior=behavior;s.viewport_key=nil;s.native_tiling=nil;s.pin_scope=pin_scope;s.enabled=enabled
     if not enabled then
         s.reveal=false;s.keyboard_reveal=nil;s.pending=nil;s.next_show=nil

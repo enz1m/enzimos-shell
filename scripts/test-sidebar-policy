@@ -411,6 +411,10 @@ assert(enzui_sidebar_snapshot():find('"scene_version":8',1,true))
 assert(rail_source.islands and rail_source.client_shape and rail_source.x==12 and rail_source.y==50 and rail_source.w==40 and rail_source.h==840 and rail_source.frame==0)
 assert(enzui_sidebar_snapshot():find('"rail":[12,444,40,52]',1,true))
 assert(enzui_sidebar_snapshot():find('"canvas":[12,50,40,840]',1,true))
+assert(enzui_sidebar_configure("TEST","left","top",888,floating,nil,nil,nil,true,true).ok)
+assert(enzui_sidebar_snapshot():find('"rail":[12,50,40,52]',1,true))
+assert(enzui_sidebar_configure("TEST","left","top",888,floating).ok)
+assert(enzui_sidebar_snapshot():find('"rail":[12,444,40,52]',1,true))
 local sized_entry=enzui_sidebar.entries[1];local positioned=enzui_sidebar.positioned
 sized_entry.pending_size={x=4000,y=4000};enzui_sidebar.positioned=sized_entry.id
 local pane_w,pane_h=enzui_sidebar_snapshot():match('"pane":%[%-?%d+,%-?%d+,(%d+),(%d+)%]')

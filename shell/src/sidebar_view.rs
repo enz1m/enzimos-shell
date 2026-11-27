@@ -19,6 +19,7 @@ pub(crate) fn rail<'a>(shell: &'a Shell, state: &'a Snapshot) -> Element<'a, Mes
         return iced::widget::space().into();
     }
     let p = shell.window_tokens(shell.sidebar_rail).palette;
+    let shared_edge = shell.dock_shares_sidebar();
     let dropping = shell.metrics.islands.is_some() && state.reveal;
     let hovered = dropping && state.drop_hover;
     let mut icon_tokens = shell.window_icon_tokens(shell.sidebar_rail);
@@ -43,7 +44,12 @@ pub(crate) fn rail<'a>(shell: &'a Shell, state: &'a Snapshot) -> Element<'a, Mes
         let label = tr!("shell-miniapp", "arg0" => (if shown { enzui_shell::i18n::tr("shell-hide") } else { enzui_shell::i18n::tr("shell-show") }).to_owned(), "arg1" => name.to_owned());
         let press = Message::SidebarAction(Action::Toggle(
             entry.id,
-            state.icon_center(index, shell.metrics.rail_slot(), shell.sidebar_scroll),
+            state.icon_center(
+                index,
+                shell.metrics.rail_slot(),
+                shell.sidebar_scroll,
+                shell.metrics.islands.is_none() && shared_edge,
+            ),
         ));
         let glyph = match &entry.image {
             Some(path) => {
@@ -160,6 +166,15 @@ pub(crate) fn rail<'a>(shell: &'a Shell, state: &'a Snapshot) -> Element<'a, Mes
             slot: f32::from(shell.metrics.rail_slot()),
             scroll: shell.sidebar_scroll,
             target_height: state.rail.height as f32,
+            top_aligned: shared_edge,
+            radius: shell
+                .metrics
+                .islands
+                .filter(|style| {
+                    shared_edge && f32::from(style.radius) < f32::from(style.height) / 2.0
+                })
+                .map(|style| f32::from(style.radius)),
+            outline: shared_edge.then_some(p.border),
             show_marker: state.drop_add,
             interactive: state.visible()
                 && !shell.sidebar_input_failed
@@ -197,7 +212,11 @@ pub(crate) fn rail<'a>(shell: &'a Shell, state: &'a Snapshot) -> Element<'a, Mes
     .padding([8, 2])
     .width(u32::from(shell.metrics.rail))
     .height(Length::Fill)
-    .align_y(iced::Alignment::Center);
+    .align_y(if shared_edge {
+        iced::alignment::Vertical::Top
+    } else {
+        iced::alignment::Vertical::Center
+    });
     let content = container(content)
         .padding(iced::Padding {
             left: if state.side == SidebarEdge::Right && shell.metrics.islands.is_none() {

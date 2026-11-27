@@ -21,6 +21,9 @@ choice!(Position, Bottom, [Bar => ("bar",tr("shell-in-the-bar")), Top => ("top",
 choice!(Style, Desktop, [Desktop => ("desktop",tr("shell-dock-match-desktop")), Island => ("island",tr("shell-island")), Panel => ("panel",tr("shell-edge-panel")), Minimal => ("minimal",tr("shell-icons-only"))]);
 choice!(Visibility, Never, [Never => ("never",tr("shell-always-visible")), Always => ("always",tr("shell-autohide")), Overlap => ("overlap",tr("shell-hide-when-windows-overlap")), Fullscreen => ("fullscreen",tr("shell-hide-for-fullscreen-apps"))]);
 
+choice!(Material, Panels, [Panels => ("panels",tr("shell-dock-follow-panels")), Glass => ("glass",tr("shell-glass")), Frosted => ("frosted",tr("shell-dock-frosted")), Solid => ("solid",tr("shell-dock-solid"))]);
+choice!(Indicator, Dashes, [Dots => ("dots",tr("shell-dock-dots")), Dashes => ("dashes",tr("shell-dock-dashes")), Glow => ("glow",tr("shell-dock-glow")), Count => ("count",tr("shell-dock-count")), None => ("none",tr("shell-none"))]);
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
@@ -28,6 +31,8 @@ pub struct Preferences {
     pub position: Position,
     pub style: Style,
     pub visibility: Visibility,
+    pub material: Material,
+    pub indicator: Indicator,
     pub icon_size: u16,
     pub spacing: u16,
     pub radius: u16,
@@ -49,6 +54,8 @@ impl Default for Preferences {
             position: Position::Bottom,
             style: Style::Desktop,
             visibility: Visibility::Never,
+            material: Material::default(),
+            indicator: Indicator::default(),
             icon_size: 24,
             spacing: 4,
             radius: 12,
@@ -85,7 +92,31 @@ pub enum Change {
     Move(String, i8),
     ReorderPins(enzui_core::drag::DropRequest),
 }
+impl Material {
+    pub fn glass(
+        self,
+        panels: Option<enzui_theme::MaterialStyle>,
+    ) -> Option<enzui_theme::MaterialStyle> {
+        use enzui_theme::MaterialStyle;
+        match self {
+            Self::Panels => panels,
+            Self::Glass => Some(MaterialStyle::FlatFrosted),
+            Self::Frosted => Some(MaterialStyle::Frosted),
+            Self::Solid => None,
+        }
+    }
+}
+
 impl Preferences {
+    pub fn shares_sidebar(&self, side: crate::settings::SidebarEdge) -> bool {
+        use crate::settings::SidebarEdge;
+        self.enabled
+            && matches!(
+                (self.position, side),
+                (Position::Left, SidebarEdge::Left) | (Position::Right, SidebarEdge::Right)
+            )
+    }
+
     pub fn in_bar(&self, bar: crate::settings::BarEdge) -> bool {
         self.position == Position::Bar
             || matches!(
@@ -567,11 +598,16 @@ pub struct Slots {
 }
 
 impl Slots {
-    pub fn new(p: &Preferences, metrics: crate::settings::Metrics) -> Self {
+    pub fn new(p: &Preferences, metrics: crate::settings::Metrics, shares_sidebar: bool) -> Self {
         let requested = f32::from(p.icon_size);
         let (icon, target) = if p.position == Position::Bar {
             let target = f32::from(metrics.bar_item_height());
             (requested.min(target - 12.0), target)
+        } else if shares_sidebar {
+            (
+                requested,
+                (requested + 8.0).max(f32::from(metrics.rail_slot())),
+            )
         } else {
             (requested, (requested + 14.0).max(36.0))
         };
@@ -580,6 +616,10 @@ impl Slots {
             target,
             spacing: f32::from(p.spacing),
         }
+    }
+
+    pub fn separator_span(self) -> f32 {
+        1.0 + self.spacing
     }
 
     pub fn span(self, count: usize) -> f32 {
@@ -603,15 +643,17 @@ pub struct Geometry {
 }
 pub fn geometry(
     p: &Preferences,
-    count: usize,
+    span: f32,
     screen: Size,
     bar: crate::settings::BarEdge,
     metrics: crate::settings::Metrics,
     edges: (u32, u32),
+    shares_sidebar: bool,
 ) -> Geometry {
     let vertical = matches!(p.position, Position::Left | Position::Right);
-    let framed = p.style == Style::Desktop && metrics.islands.is_none();
-    let island = metrics.islands.filter(|_| p.style == Style::Desktop);
+    let matches_desktop = p.style == Style::Desktop || shares_sidebar;
+    let framed = matches_desktop && metrics.islands.is_none();
+    let island = metrics.islands.filter(|_| matches_desktop);
     let inset = island.map_or_else(
         || if framed { 0.0 } else { f32::from(p.margin) },
         |style| {
@@ -622,7 +664,7 @@ pub fn geometry(
             })
         },
     );
-    let slots = Slots::new(p, metrics);
+    let slots = Slots::new(p, metrics, shares_sidebar);
     let chrome_thickness = match (island, vertical) {
         (Some(style), true) => f32::from(style.rail),
         (Some(style), false) => f32::from(style.height),
@@ -657,14 +699,18 @@ pub fn geometry(
             edge
         }
     };
-    let left = if vertical {
+    let left = if shares_sidebar {
+        0.0
+    } else if vertical {
         usable_edge(edge_left)
     } else if island.is_some() {
         edge_left.max(span_inset)
     } else {
         edge_left
     };
-    let right = if vertical {
+    let right = if shares_sidebar {
+        0.0
+    } else if vertical {
         usable_edge(edge_right)
     } else if island.is_some() {
         edge_right.max(span_inset)
@@ -682,7 +728,12 @@ pub fn geometry(
     } else {
         0.0
     };
-    let available = if vertical {
+    let end_inset = island.map_or(frame, |style| f32::from(style.edge_gap));
+    let band_end = screen.height - bottom.max(end_inset);
+    // The compositor gives the sidebar the upper half of the same band.
+    let available = if shares_sidebar {
+        ((band_end - top.max(end_inset)) / 2.0).floor() - spacing.sm()
+    } else if vertical {
         screen.height - top - bottom - 2.0 * span_inset
     } else {
         if island.is_some() {
@@ -694,19 +745,24 @@ pub fn geometry(
     let span = if p.style == Style::Panel {
         available
     } else {
-        (slots.span(count.max(1)) + 2.0 * axis_padding).min(available)
+        (span.max(slots.target) + 2.0 * axis_padding).min(available)
     }
     .max(1.0);
+    let y = if shares_sidebar {
+        band_end - span
+    } else {
+        top + (screen.height - top - bottom - span) / 2.0
+    };
     let body = match p.position {
         Position::Left => Rectangle {
             x: left + inset,
-            y: top + (screen.height - top - bottom - span) / 2.0,
+            y,
             width: thickness,
             height: span,
         },
         Position::Right => Rectangle {
             x: screen.width - right - inset - thickness,
-            y: top + (screen.height - top - bottom - span) / 2.0,
+            y,
             width: thickness,
             height: span,
         },
@@ -1182,11 +1238,19 @@ mod tests {
             ..Preferences::default()
         };
         let screen = Size::new(960.0, 600.0);
-        let dock = geometry(&preferences, 6, screen, BarEdge::Top, metrics, (20, 20));
+        let dock = geometry(
+            &preferences,
+            Slots::new(&preferences, metrics, false).span(6),
+            screen,
+            BarEdge::Top,
+            metrics,
+            (20, 20),
+            false,
+        );
 
         assert_eq!(
             dock.body.width,
-            Slots::new(&preferences, metrics).span(6) + 32.0
+            Slots::new(&preferences, metrics, false).span(6) + 32.0
         );
         assert_eq!(dock.body.center_x(), screen.width / 2.0);
         assert_eq!(dock.body.y + dock.body.height, screen.height - 10.0);

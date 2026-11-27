@@ -13,6 +13,7 @@ pub(super) struct SidebarConfiguration {
     pub(super) enabled: bool,
     pub(super) behavior: enzui_shell::sidebar_preferences::Preferences,
     pub(super) pin_scope: enzui_shell::sidebar_preferences::PinScope,
+    pub(super) dock_shares_edge: bool,
 }
 
 #[derive(Debug, Clone)]

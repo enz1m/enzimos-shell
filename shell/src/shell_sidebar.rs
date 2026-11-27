@@ -7,6 +7,14 @@ use iced::{Task, window};
 const RAIL_SETTLE: std::time::Duration = std::time::Duration::from_millis(40);
 
 impl Shell {
+    pub(crate) fn dock_shares_sidebar(&self) -> bool {
+        self.desired_settings.sidebar_enabled
+            && self
+                .dock
+                .preferences
+                .shares_sidebar(self.desired_settings.sidebar)
+    }
+
     pub(crate) fn sidebar_configuration(&self) -> SidebarConfiguration {
         SidebarConfiguration {
             side: self.desired_settings.sidebar,
@@ -16,6 +24,7 @@ impl Shell {
             enabled: self.desired_settings.sidebar_enabled,
             behavior: self.desired_settings.sidebar_behavior,
             pin_scope: self.desired_settings.sidebar_pin_scope,
+            dock_shares_edge: self.dock_shares_sidebar(),
         }
     }
 
@@ -57,6 +66,7 @@ impl Shell {
                             config.motion,
                             Some(config.behavior),
                             config.pin_scope,
+                            config.dock_shares_edge,
                         )
                         .await
                 } else if let Some(action) = action {
@@ -180,7 +190,15 @@ impl Shell {
     }
 
     pub(crate) fn desktop_edges(&self) -> (u32, u32) {
-        self.frame_appearance_value().edges()
+        let mut appearance = self.frame_appearance_value();
+        if self.dock_shares_sidebar() {
+            appearance.sidebar = self
+                .sidebar
+                .as_ref()
+                .filter(|state| state.visible())
+                .map(|state| state.side);
+        }
+        appearance.edges()
     }
 
     pub(crate) fn frame_appearance_value(&self) -> desktop_frame::Appearance {
@@ -188,6 +206,7 @@ impl Shell {
             let [r, g, b, _] = color.into_rgba8();
             [r, g, b]
         });
+        let shared_edge = self.dock_shares_sidebar();
         let mut appearance = desktop_frame::Appearance {
             light: self.chrome_light(),
             surface: chrome.or_else(|| {
@@ -206,7 +225,7 @@ impl Shell {
             sidebar: self
                 .sidebar
                 .as_ref()
-                .filter(|s| s.visible())
+                .filter(|s| !shared_edge && s.visible())
                 .map(|s| s.side),
             // On the frame the rail window paints its side whenever it is
             // there, a frame-wide strip of it while hidden.
@@ -214,7 +233,10 @@ impl Shell {
                 .sidebar
                 .as_ref()
                 .filter(|s| {
-                    s.enabled && self.sidebar_rail.is_some() && self.metrics.islands.is_none()
+                    !shared_edge
+                        && s.enabled
+                        && self.sidebar_rail.is_some()
+                        && self.metrics.islands.is_none()
                 })
                 .map(|s| s.side),
             ..Default::default()

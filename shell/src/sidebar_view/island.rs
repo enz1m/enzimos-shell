@@ -16,6 +16,9 @@ pub(super) struct Rail<'a> {
     pub slot: f32,
     pub scroll: f32,
     pub target_height: f32,
+    pub top_aligned: bool,
+    pub radius: Option<f32>,
+    pub outline: Option<iced::Color>,
     pub show_marker: bool,
     pub interactive: bool,
     pub color: iced::Color,
@@ -85,17 +88,25 @@ impl Rail<'_> {
             .clamp(1.0, size.height.max(1.0));
         Rectangle {
             x: 0.0,
-            y: ((size.height - height) / 2.0).round(),
+            y: if self.top_aligned {
+                0.0
+            } else {
+                ((size.height - height) / 2.0).round()
+            },
             width: size.width,
             height,
         }
+    }
+    fn radius(&self, bounds: Rectangle) -> f32 {
+        let maximum = bounds.width.min(bounds.height) / 2.0;
+        self.radius.unwrap_or(maximum).min(maximum)
     }
     fn frame(&self, state: &State, size: Size) -> enzui_shell::reveal::Frame {
         let clip = self.body(state, size);
         enzui_shell::reveal::Frame {
             extended: true,
             translation: Vector::ZERO,
-            fills: vec![(clip, (clip.width.min(clip.height) / 2.0).into())],
+            fills: vec![(clip, self.radius(clip).into())],
             corners: Vec::new(),
             clip,
         }
@@ -138,14 +149,24 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Rail<'_> {
         let body = self.body(state, size);
         let marker = State::sample(&state.marker, state.frame).clamp(0.0, 1.0);
         let natural = self.count as f32 * (self.slot + 6.0) - 6.0;
-        let overflow = natural + self.slot + 22.0 > size.height;
+        let capacity = if self.top_aligned {
+            (size.height / 2.0).floor()
+        } else {
+            size.height
+        };
+        let overflow = natural + self.slot + 22.0 > capacity;
         let footer = if overflow && self.count > 0 {
             (self.slot + 6.0) * marker
         } else {
             0.0
         };
         let content_height = (body.height - 16.0 - footer).max(0.0);
-        let top = if self.count == 1 && state.center_single && !self.show_marker && marker == 0.0 {
+        let top = if !self.top_aligned
+            && self.count == 1
+            && state.center_single
+            && !self.show_marker
+            && marker == 0.0
+        {
             (size.height - self.slot) / 2.0
         } else {
             body.y + 8.0
@@ -165,7 +186,7 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Rail<'_> {
         );
         let glyph = tree.children[1].size;
         let marker_y = if self.count == 0 {
-            (size.height - glyph.height) / 2.0
+            body.y + (body.height - glyph.height) / 2.0
         } else if overflow {
             body.y + body.height - 8.0 - self.slot * marker
         } else {
@@ -236,6 +257,7 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Rail<'_> {
         let state = tree.state.downcast_ref::<State>();
         let bounds = layout.bounds();
         let frame = self.frame(state, bounds.size());
+        let radius = self.radius(frame.clip);
         let mut glazed = false;
         if let Some(input) = &self.input {
             let _commit = input.commit_together();
@@ -246,12 +268,7 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Rail<'_> {
             }
             // No shadow: the scene clips the rail to its own box.
             glazed = match &self.glass {
-                Some(tokens) => input.glass(
-                    &[(frame.clip, frame.clip.width.min(frame.clip.height) / 2.0)],
-                    tokens,
-                    self.color,
-                    None,
-                ),
+                Some(tokens) => input.glass(&[(frame.clip, radius)], tokens, self.color, None),
                 None => {
                     input.clear_glass();
                     false
@@ -262,17 +279,22 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Rail<'_> {
             return;
         };
         let offset = Vector::new(bounds.x, bounds.y);
-        if !glazed {
+        if !glazed || self.outline.is_some() {
             renderer.fill_quad(
                 renderer::Quad {
                     bounds: frame.clip + offset,
                     border: iced::Border {
-                        radius: (frame.clip.width / 2.0).into(),
-                        ..Default::default()
+                        radius: radius.into(),
+                        width: f32::from(self.outline.is_some()),
+                        color: self.outline.unwrap_or(iced::Color::TRANSPARENT),
                     },
                     ..Default::default()
                 },
-                self.color,
+                if glazed {
+                    iced::Color::TRANSPARENT
+                } else {
+                    self.color
+                },
             );
         }
         let marker = State::sample(&state.marker, state.frame).clamp(0.0, 1.0);

@@ -93,9 +93,16 @@ impl Store {
     pub(super) fn upgrade_applications_locked(&self) -> Result<bool, String> {
         const BUNDLED_V1: &str = "2e25a35e0f3048e5a6c8f10ee841f6b66b197f07df6b93d0d704b86346bae4d7";
 
+        const BUNDLED_V1_1: &str =
+            "eea15915617416f8a4f72e7895fe1cdffcf2d7b718cf93412a6630b912b96a09";
+
         let mut registry = self.registry()?;
         let Some(record) = registry.entries.iter_mut().find(|record| {
-            record.id == applications::DOCK_PLUGIN && fingerprint(record.digest) == BUNDLED_V1
+            record.id == applications::DOCK_PLUGIN
+                && matches!(
+                    fingerprint(record.digest).as_str(),
+                    BUNDLED_V1 | BUNDLED_V1_1
+                )
         }) else {
             return Ok(false);
         };
@@ -106,14 +113,18 @@ impl Store {
                 config[&spec.key] = previous.clone();
             }
         }
-        if config["style"] == "island"
+        let legacy = fingerprint(record.digest) == BUNDLED_V1;
+        if legacy
+            && config["style"] == "island"
             && config["spacing"] == 4
             && config["radius"] == 12
             && config["margin"] == 8
         {
             config["style"] = "desktop".into();
         }
-        config["hover_previews"] = true.into();
+        if legacy {
+            config["hover_previews"] = true.into();
+        }
         package.manifest().validate_config(&config)?;
         registry.serial = registry
             .serial

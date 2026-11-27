@@ -1033,7 +1033,10 @@ impl SettingsApp {
             let key = spec.key.clone();
             let dock = id == enzui_shell::plugins::applications::DOCK_PLUGIN;
             let route = dock.then(|| format!("dock/{key}"));
-            let label = match route.as_deref().and_then(enzui_shell::settings_catalog::find) {
+            let label = match route
+                .as_deref()
+                .and_then(enzui_shell::settings_catalog::find)
+            {
                 Some(entry) => entry.title(),
                 None => &spec.label,
             };
@@ -1106,7 +1109,7 @@ impl SettingsApp {
                     choices, labels, ..
                 } => {
                     let choice_label = |value: &str| {
-                        use enzui_shell::dock::{Position, Style, Visibility};
+                        use enzui_shell::dock::{Indicator, Material, Position, Style, Visibility};
                         let translated = if dock {
                             match key.as_str() {
                                 "position" => Position::ALL
@@ -1117,6 +1120,14 @@ impl SettingsApp {
                                     .iter()
                                     .find(|s| s.key() == value)
                                     .map(|s| s.label()),
+                                "material" => Material::ALL
+                                    .iter()
+                                    .find(|m| m.key() == value)
+                                    .map(|m| m.label()),
+                                "indicator" => Indicator::ALL
+                                    .iter()
+                                    .find(|i| i.key() == value)
+                                    .map(|i| i.label()),
                                 "visibility" => Visibility::ALL
                                     .iter()
                                     .find(|v| v.key() == value)
@@ -1290,11 +1301,37 @@ mod tests {
 
         let (_root, mut app, _) = fixture();
         let store = app.plugins.store.as_ref().unwrap();
+        let mut manifest: Value = serde_json::from_str(include_str!(
+            "../../examples/plugins/app-dock/manifest.json"
+        ))
+        .unwrap();
+        manifest["version"] = json!("1.1.0");
+        manifest["program"] = json!(include_str!("../../examples/plugins/app-dock/main.py"));
+        manifest["settings"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|spec| !matches!(spec["key"].as_str(), Some("material" | "indicator")));
+        let previous = Package::parse(&serde_json::to_vec(&manifest).unwrap()).unwrap();
+        store
+            .install(
+                &previous,
+                None,
+                previous.manifest().permissions.clone(),
+                true,
+            )
+            .unwrap();
+        store
+            .configure("app-dock", previous.digest(), "position", json!("left"))
+            .unwrap();
         store.initialize_defaults().unwrap();
         app.plugins.data = Some(read(store).unwrap());
         i18n::canonical(|| {
-            let (_, package) = app.plugins.dock().unwrap();
-            let groups = settings_catalog::search_groups("Dock", |_, _| true);
+            let (record, package) = app.plugins.dock().unwrap();
+            assert!(app.plugins.enabled(record));
+            assert_eq!(app.plugins.config(record, "position"), json!("left"));
+            assert_eq!(app.plugins.config(record, "material"), json!("panels"));
+            assert_eq!(app.plugins.config(record, "indicator"), json!("dashes"));
+                        let groups = settings_catalog::search_groups("Dock", |_, _| true);
             let dock = &groups[0];
             assert_eq!(
                 dock.destination,

@@ -175,7 +175,6 @@ impl Shell {
             Message::BarGeometry(epoch, serial, geometry) => {
                 if self.bar_busy
                     || epoch != self.bar_applied_epoch
-                    || self.metrics.islands.is_none()
                     || !geometry.valid()
                     // A serial orders the measurements of one epoch only. The
                     // islands' observer starts counting again when the bar is

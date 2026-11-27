@@ -7,7 +7,7 @@ use std::{collections::BTreeSet, sync::Arc};
 pub const MAX_PACKAGE_BYTES: usize = 1024 * 1024;
 pub const MAX_PROGRAM_BYTES: usize = 512 * 1024;
 pub const MAX_ELEMENTS: usize = 8;
-pub const MAX_SETTINGS: usize = 18;
+pub const MAX_SETTINGS: usize = 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Permission {

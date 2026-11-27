@@ -380,14 +380,22 @@ impl SurfaceInput {
         tokens: &enzui_theme::MaterialTokens,
         shadow: Option<(f32, f32, f32)>,
     ) -> bool {
+        self.mixed_glass_regions(regions.iter().map(|region| (*region, *tokens)), shadow)
+    }
+
+    pub(crate) fn mixed_glass_regions(
+        &self,
+        regions: impl IntoIterator<Item = (GlassRegion, enzui_theme::MaterialTokens)>,
+        shadow: Option<(f32, f32, f32)>,
+    ) -> bool {
         let bytes: Vec<u8> = regions
-            .iter()
+            .into_iter()
             .take(32)
-            .flat_map(|region| {
-                let tuned = crate::reveal::glass_tweaks().apply(shell_frost(tokens, region.tint));
+            .flat_map(|(region, tokens)| {
+                let tuned = crate::reveal::glass_tweaks().apply(shell_frost(&tokens, region.tint));
                 let t = &tuned;
                 let rect = region.bounds;
-                let tint = light_frost_tint(tokens, region.tint)
+                let tint = light_frost_tint(&tokens, region.tint)
                     .into_rgba8()
                     .map(|channel| f32::from(channel) / 255.0);
                 [

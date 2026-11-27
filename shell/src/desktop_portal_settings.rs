@@ -364,10 +364,32 @@ impl Appearance {
     }
 }
 
-struct PreferenceChanges(Arc<tokio::sync::Notify>);
+struct PreferenceChanges {
+    changed: Arc<tokio::sync::Notify>,
+    paths: Arc<[std::path::PathBuf]>,
+}
+
 impl enzui_core::file_tree_watch::EventSink for PreferenceChanges {
-    fn push(&self, _: enzui_core::file_tree_watch::RawEvent) {
-        self.0.notify_one();
+    fn push(&self, event: enzui_core::file_tree_watch::RawEvent) {
+        use enzui_core::file_tree_watch::{DirectoryChange, RawEventKind};
+
+        let relevant =
+            |path: &std::path::Path| self.paths.iter().any(|target| target.starts_with(path));
+        let changed = match event.kind {
+            RawEventKind::Change(DirectoryChange::Renamed { from, to }) => {
+                relevant(&from) || relevant(&to)
+            }
+            RawEventKind::Change(
+                DirectoryChange::Created(path)
+                | DirectoryChange::Deleted(path)
+                | DirectoryChange::Modified(path),
+            ) => relevant(&path),
+            RawEventKind::Overflow | RawEventKind::Vanished => true,
+            RawEventKind::ProbeFailed(_) => false,
+        };
+        if changed {
+            self.changed.notify_one();
+        }
     }
 }
 
@@ -383,6 +405,7 @@ pub(super) async fn follow(
     let mut paths = ThemePaths::from_env().candidates();
     paths.extend(crate::settings::Store::from_environment().map(|store| store.path().to_owned()));
     paths.extend(crate::location::path());
+    let paths: Arc<[_]> = paths.into();
     let stamp = || {
         paths
             .iter()
@@ -397,28 +420,34 @@ pub(super) async fn follow(
             .collect::<Vec<_>>()
     };
     let changed = Arc::new(tokio::sync::Notify::new());
-    // Atomic saves replace the inode, so subscribe to directories.
-    let parents: std::collections::BTreeSet<_> =
-        paths.iter().filter_map(|path| path.parent()).collect();
+    // Watch the nearest existing directory so absent theme roots do not require polling.
     let watcher = enzui_core::file_tree_watch::native_directory_watch();
-    let watches: Vec<_> = parents
-        .iter()
-        .filter_map(|parent| {
-            watcher
-                .as_ref()?
-                .watch(
-                    parent,
-                    enzui_core::file_tree_watch::WatchToken::standalone(),
-                    Arc::new(PreferenceChanges(Arc::clone(&changed))),
-                )
-                .ok()
-        })
-        .collect();
-    let fallback = std::time::Duration::from_millis(if watches.len() == parents.len() {
-        60_000
-    } else {
-        750
-    });
+    let install_watches = || {
+        let parents: std::collections::BTreeSet<_> = paths
+            .iter()
+            .filter_map(|path| path.ancestors().skip(1).find(|parent| parent.is_dir()))
+            .collect();
+        let sink: Arc<dyn enzui_core::file_tree_watch::EventSink> = Arc::new(PreferenceChanges {
+            changed: Arc::clone(&changed),
+            paths: Arc::clone(&paths),
+        });
+        let watches: Vec<_> = parents
+            .iter()
+            .filter_map(|parent| {
+                watcher
+                    .as_ref()?
+                    .watch(
+                        parent,
+                        enzui_core::file_tree_watch::WatchToken::standalone(),
+                        Arc::clone(&sink),
+                    )
+                    .ok()
+            })
+            .collect();
+        let complete = watches.len() == parents.len();
+        (watches, complete)
+    };
+    let mut watches = install_watches();
     let lockdown = connection
         .object_server()
         .interface::<_, super::portal_lockdown::Lockdown>(PATH)
@@ -427,11 +456,18 @@ pub(super) async fn follow(
     let mut seen = None;
     changed.notify_one();
     loop {
+        let fallback = std::time::Duration::from_millis(if watches.1 { 60_000 } else { 750 });
         tokio::select! {
-            () = changed.notified() => {},
-            () = tokio::time::sleep(fallback) => {},
+            () = changed.notified() => {
+                tokio::time::sleep(std::time::Duration::from_millis(8)).await;
+                watches = install_watches();
+            }
+            () = tokio::time::sleep(fallback) => {
+                if !watches.1 {
+                    watches = install_watches();
+                }
+            }
         }
-        tokio::time::sleep(std::time::Duration::from_millis(8)).await;
         let now = stamp();
         if Some(&now) == seen.as_ref() {
             continue;

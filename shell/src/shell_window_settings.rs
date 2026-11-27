@@ -54,6 +54,7 @@ pub(super) fn window_settings(app_id: &str, width: f32, height: f32) -> window::
         exit_on_close_request: false,
         platform_specific: window::settings::PlatformSpecific {
             application_id: app_id.into(),
+            app_drawn_decorations: true,
             ..Default::default()
         },
         ..Default::default()

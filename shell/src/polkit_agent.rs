@@ -554,14 +554,33 @@ pub async fn run(
 
 /// Exits with the parent shell to prevent duplicate session agents.
 pub fn exit_with_parent() {
+    use rustix::{
+        event::{PollFd, PollFlags, poll},
+        io::Errno,
+        process::{Pid, PidfdFlags, pidfd_open},
+    };
+
     let parent = std::os::unix::process::parent_id();
+    let descriptor = Pid::from_raw(parent.cast_signed())
+        .and_then(|pid| pidfd_open(pid, PidfdFlags::empty()).ok());
+    if std::os::unix::process::parent_id() != parent {
+        std::process::exit(0);
+    }
     std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(std::time::Duration::from_secs(1));
-            if std::os::unix::process::parent_id() != parent {
-                std::process::exit(0);
+        if let Some(descriptor) = descriptor {
+            let mut fds = [PollFd::new(&descriptor, PollFlags::IN)];
+            loop {
+                match poll(&mut fds, None) {
+                    Ok(_) => std::process::exit(0),
+                    Err(Errno::INTR) => (),
+                    Err(_) => break,
+                }
             }
         }
+        while std::os::unix::process::parent_id() == parent {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        std::process::exit(0);
     });
 }
 

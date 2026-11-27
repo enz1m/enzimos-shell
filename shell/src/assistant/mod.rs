@@ -4,7 +4,9 @@ use enzui_shell::{
     agent_harness::{self, ApprovalMode, Screenshots},
     i18n::tr,
 };
+mod attachments;
 mod client;
+mod resize;
 mod transcript;
 mod view;
 
@@ -31,6 +33,13 @@ pub(crate) struct SessionRow {
 #[derive(Debug, Clone)]
 pub(crate) enum Message {
     Service(client::Service),
+    Attachments(attachments::Message),
+    Resize(resize::Message),
+    Regenerate,
+    EditLast,
+    CancelEdit,
+    HistorySearch(String),
+    Shortcuts(bool),
     TriggerPlaced(u64, Result<(String, TriggerLayout), String>),
     Hover(bool),
     HideDue(u64),
@@ -100,10 +109,22 @@ pub(crate) struct Pane {
     pub started: bool,
 }
 
+struct EditLast {
+    draft: text_editor::Content,
+}
+
+struct RevisionRun {
+    original: Transcript,
+    prompt: String,
+    started: bool,
+}
+
 pub(crate) struct Running {
     pub serial: u64,
     pub since: Instant,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
+    revision: Option<RevisionRun>,
+    completed: Option<u64>,
 }
 
 #[derive(Default)]
@@ -119,6 +140,7 @@ pub(crate) struct State {
     pub panel: Option<Pane>,
     panel_serial: u64,
     panel_opening: bool,
+    resize: resize::State,
     pub service: Option<Result<(), String>>,
     /// The model the service answers with, for the composer.
     pub model: String,
@@ -133,7 +155,14 @@ pub(crate) struct State {
     pub title: String,
     pub transcript: Transcript,
     pub composer: text_editor::Content,
-    drafts: HashMap<Option<String>, text_editor::Content>,
+    drafts: HashMap<Option<String>, (text_editor::Content, Vec<attachments::Attachment>)>,
+    files: Vec<attachments::Attachment>,
+    last_files: Vec<attachments::Attachment>,
+    attachment_loader: attachments::State,
+    revision: Option<EditLast>,
+    completed: Option<u64>,
+    history_search: String,
+    shortcuts: bool,
     steering: bool,
     pub export_failed: bool,
     pub running: Option<Running>,
@@ -160,18 +189,55 @@ impl State {
     }
 
     fn switch_draft(&mut self, next: Option<String>) {
-        let restored = self.drafts.remove(&next).unwrap_or_default();
-        let previous = std::mem::replace(&mut self.composer, restored);
-        if !previous.text().trim().is_empty() {
-            self.drafts.insert(self.session.clone(), previous);
+        self.cancel_edit();
+        self.attachment_loader.cancel();
+        let (composer, files) = self.drafts.remove(&next).unwrap_or_default();
+        let previous = std::mem::replace(&mut self.composer, composer);
+        let previous_files = std::mem::replace(&mut self.files, files);
+        if !previous.text().trim().is_empty() || !previous_files.is_empty() {
+            self.drafts
+                .insert(self.session.clone(), (previous, previous_files));
         }
+        self.completed = None;
+        self.last_files.clear();
         self.session = next;
+    }
+
+    fn cancel_edit(&mut self) {
+        if let Some(edit) = self.revision.take() {
+            self.composer = edit.draft;
+        }
     }
 
     fn clear_sent_draft(&mut self, prompt: &str) {
         if self.composer.text().trim() == prompt {
             self.composer = text_editor::Content::new();
         }
+    }
+
+    fn attachments_available(&self) -> bool {
+        self.files.len() < attachments::MAX_FILES
+            && self.running.is_none()
+            && !self.approval_busy
+            && !self.attachment_loader.busy()
+            && self.revision.is_none()
+            && !self.history
+            && !self.shortcuts
+    }
+
+    fn revision_allowed(&self) -> bool {
+        self.completed.is_some()
+            && self.session.is_some()
+            && self.running.is_none()
+            && !self.approval_busy
+            && !self.steering
+            && !self.confirming_full_send
+            && !self.export_failed
+            && !self.attachment_loader.busy()
+    }
+
+    fn can_revise(&self) -> bool {
+        self.revision.is_none() && self.revision_allowed()
     }
 
     pub(crate) fn owns(&self, id: window::Id) -> bool {
@@ -203,7 +269,8 @@ fn revoke_desktop_control(session: Option<String>) -> Task<ShellMessage> {
     Task::future(async move {
         use enzui_shell::desktop_control::{Request, request};
         let _ = request(&session, Request::Revoke).await;
-    }).discard()
+    })
+    .discard()
 }
 
 fn rows(value: &Value) -> Vec<SessionRow> {
@@ -240,7 +307,11 @@ fn export(id: String) -> Task<ShellMessage> {
     perform(async move {
         let result = async {
             let resumed = client::request("session.resume", json!({"session_id": id})).await?;
-            let mut exported = client::request("session.export", json!({"session_id": id})).await?;
+            let mut exported = client::request(
+                "session.export",
+                json!({"session_id": id, "items_only": true}),
+            )
+            .await?;
             exported["approval_mode"] = resumed["approval_mode"].clone();
             exported["screenshots"] = resumed["screenshots"].clone();
             Ok(exported)
@@ -257,6 +328,8 @@ impl Shell {
         }
         iced::Subscription::batch([
             client::service().map(|state| message(Message::Service(state))),
+            self.assistant.attachment_loader.subscription(),
+            self.assistant.resize.subscription(),
             if self.assistant.running.is_some() {
                 iced::time::every(Duration::from_millis(500)).map(|_| message(Message::Tick))
             } else {
@@ -317,6 +390,36 @@ impl Shell {
 
     pub(crate) fn assistant_message(&mut self, msg: Message) -> Task<ShellMessage> {
         match msg {
+            Message::Attachments(event) => self.assistant_attachments(event),
+            Message::Resize(event) => self.assistant_resize(event),
+            Message::Shortcuts(show) => {
+                self.assistant.shortcuts = show;
+                Task::none()
+            }
+            Message::HistorySearch(query) => {
+                self.assistant.history_search = query;
+                Task::none()
+            }
+            Message::Regenerate => self.assistant_revise(None),
+            Message::EditLast => {
+                if self.assistant.can_revise()
+                    && let Some((prompt, _)) = self.assistant.transcript.last_user()
+                {
+                    let draft = std::mem::replace(
+                        &mut self.assistant.composer,
+                        text_editor::Content::with_text(prompt),
+                    );
+                    self.assistant.revision = Some(EditLast { draft });
+                    self.assistant.error = None;
+                    return iced::widget::operation::focus(COMPOSER);
+                }
+                Task::none()
+            }
+            Message::CancelEdit if self.assistant.running.is_none() => {
+                self.assistant.cancel_edit();
+                iced::widget::operation::focus(COMPOSER)
+            }
+            Message::CancelEdit => Task::none(),
             Message::Service(state) => {
                 let ready = matches!(state, client::Service::Ready(_));
                 self.assistant.service = Some(match state {
@@ -417,11 +520,13 @@ impl Shell {
                     }
                     Ok(geometry) => {
                         let size = self.assistant_window(&geometry);
-                        let (id, open) = window::open(crate::window_settings(
+                        let mut settings = crate::window_settings(
                             "dev.enzui.AssistantPanel",
                             size.width,
                             size.height,
-                        ));
+                        );
+                        settings.resizable = true;
+                        let (id, open) = window::open(settings);
                         self.assistant.viewport = (geometry.height - 125.0).max(200.0);
                         self.assistant.panel = Some(Pane {
                             window: id,
@@ -487,6 +592,7 @@ impl Shell {
                     Ok(value) => {
                         self.assistant.approval_mode = ApprovalMode::read(&value["approval_mode"]);
                         self.assistant.screenshots = Screenshots::read(&value["screenshots"]);
+                        self.assistant.completed = value["last_turn_revision"].as_u64();
                         self.assistant
                             .transcript
                             .load(value["items"].as_array().map_or(&[][..], Vec::as_slice));
@@ -515,7 +621,8 @@ impl Shell {
                     Ok(id) => {
                         self.assistant.session = Some(id.clone());
                         self.assistant.clear_sent_draft(&prompt);
-                        self.assistant_start(id, prompt)
+                        let files = std::mem::take(&mut self.assistant.files);
+                        self.assistant_start(id, prompt, files, None)
                     }
                     Err(error) => {
                         self.assistant.error = Some(error);
@@ -539,10 +646,40 @@ impl Shell {
                         {
                             model.clone_into(&mut self.assistant.model);
                         }
+                        if event["type"] == "turn.started"
+                            && event["replacing"] == true
+                            && let Some(revision) = self
+                                .assistant
+                                .running
+                                .as_mut()
+                                .and_then(|run| run.revision.as_mut())
+                        {
+                            self.assistant.transcript.replace_last(&revision.prompt);
+                            revision.started = true;
+                        }
+                        if event["type"] == "turn.completed"
+                            && event["status"] == "completed"
+                            && let Some(run) = self.assistant.running.as_mut()
+                        {
+                            run.completed = event["sequence"].as_u64();
+                        }
                         self.assistant.transcript.apply(&event);
                         Task::none()
                     }
                     client::TurnEvent::Finished(result) => {
+                        let run = self.assistant.running.take().expect("turn serial matched");
+                        let completed = matches!(&result, Ok(status) if status == "completed");
+                        if let Some(revision) = run.revision
+                            && (!completed || !revision.started)
+                        {
+                            self.assistant.transcript = revision.original;
+                            self.assistant.error = result.err();
+                            return iced::widget::operation::focus(COMPOSER);
+                        }
+                        self.assistant.completed = run.completed.filter(|_| completed);
+                        if completed {
+                            self.assistant.cancel_edit();
+                        }
                         match result {
                             Ok(status) if status == "cancelled" => {
                                 self.assistant
@@ -556,7 +693,6 @@ impl Shell {
                             Ok(_) => self.assistant.transcript.finish(None),
                             Err(error) => self.assistant.transcript.fail(&error),
                         }
-                        self.assistant.running = None;
                         Task::batch([list(), iced::widget::operation::focus(COMPOSER)])
                     }
                 }
@@ -577,19 +713,46 @@ impl Shell {
                 Task::none()
             }
             Message::Edit(action) => {
-                self.assistant.composer.perform(action);
+                if self.assistant.revision.is_none() || self.assistant.running.is_none() {
+                    self.assistant.composer.perform(action);
+                }
                 Task::none()
             }
             Message::Send => {
                 let text = self.assistant.composer.text().trim().to_owned();
+                if self.assistant.revision.is_some() {
+                    return if text.is_empty() {
+                        Task::none()
+                    } else {
+                        self.assistant_revise(Some(text))
+                    };
+                }
+                if text.is_empty() && !self.assistant.files.is_empty() {
+                    return self
+                        .assistant_send(tr("shell-assistant-describe-attachments").to_owned());
+                }
                 if text.is_empty() {
                     return Task::none();
                 }
                 self.assistant_send(text)
             }
-            Message::Suggest(prompt) => self.assistant_send(prompt.to_owned()),
-            Message::Retry => match self.assistant.transcript.last_prompt() {
-                Some(prompt) if self.assistant.running.is_none() => self.assistant_send(prompt),
+            Message::Suggest(prompt) => {
+                self.assistant.composer = text_editor::Content::with_text(prompt);
+                iced::widget::operation::focus(COMPOSER)
+            }
+            Message::Retry => match (
+                self.assistant.session.clone(),
+                self.assistant.transcript.last_prompt(),
+            ) {
+                (Some(session), Some(prompt))
+                    if self.assistant.running.is_none()
+                        && !self.assistant.approval_busy
+                        && !self.assistant.confirming_full_send
+                        && !self.assistant.steering
+                        && !self.assistant.export_failed =>
+                {
+                    self.assistant_start(session, prompt, self.assistant.last_files.clone(), None)
+                }
                 _ => Task::none(),
             },
             Message::Stop => {
@@ -614,19 +777,23 @@ impl Shell {
                 if self.assistant.session.is_some() {
                     self.assistant.switch_draft(None);
                 }
+                self.assistant.completed = None;
                 self.assistant.loaded = true;
                 self.assistant.export_failed = false;
                 self.assistant_new_approval();
                 self.assistant.title = String::new();
                 self.assistant.transcript.clear();
+                self.assistant.shortcuts = false;
                 self.assistant.history = false;
                 self.assistant.error = None;
                 Task::batch([revoke, iced::widget::operation::focus(COMPOSER)])
             }
             Message::History(open) => {
                 self.assistant.history = open;
+                self.assistant.shortcuts = false;
                 if open {
-                    list()
+                    self.assistant.history_search.clear();
+                    Task::batch([list(), iced::widget::operation::focus("assistant-search")])
                 } else {
                     iced::widget::operation::focus(COMPOSER)
                 }
@@ -886,6 +1053,7 @@ impl Shell {
             || self.assistant.confirming_full_send
             || self.assistant.steering
             || self.assistant.export_failed
+            || self.assistant.attachment_loader.busy()
         {
             return Task::none();
         }
@@ -911,7 +1079,8 @@ impl Shell {
         match self.assistant.session.clone() {
             Some(session) => {
                 self.assistant.clear_sent_draft(&text);
-                self.assistant_start(session, text)
+                let files = std::mem::take(&mut self.assistant.files);
+                self.assistant_start(session, text, files, None)
             }
             None => {
                 self.assistant.transcript.clear();
@@ -925,16 +1094,54 @@ impl Shell {
         }
     }
 
-    fn assistant_start(&mut self, session: String, prompt: String) -> Task<ShellMessage> {
+    fn assistant_revise(&mut self, edited: Option<String>) -> Task<ShellMessage> {
+        let state = &self.assistant;
+        if !state.can_revise()
+            && !(edited.is_some() && state.revision.is_some() && state.revision_allowed())
+        {
+            return Task::none();
+        }
+        let (Some(session), Some((last, _)), Some(expected)) = (
+            state.session.clone(),
+            state.transcript.last_user(),
+            state.completed,
+        ) else {
+            return Task::none();
+        };
+        let prompt = edited.unwrap_or_else(|| last.to_owned());
+        self.assistant_start(session, prompt, Vec::new(), Some(expected))
+    }
+
+    fn assistant_start(
+        &mut self,
+        session: String,
+        prompt: String,
+        files: Vec<attachments::Attachment>,
+        expected: Option<u64>,
+    ) -> Task<ShellMessage> {
         self.assistant.away = false;
         self.assistant.turn_serial += 1;
         let serial = self.assistant.turn_serial;
-        self.assistant.transcript.begin(&prompt);
+        let revision = expected.as_ref().map(|_| RevisionRun {
+            original: self.assistant.transcript.clone(),
+            prompt: prompt.clone(),
+            started: false,
+        });
+        if revision.is_none() {
+            self.assistant.completed = None;
+            self.assistant.transcript.begin(
+                &prompt,
+                files.iter().map(|file| file.name.to_string()).collect(),
+            );
+            self.assistant.last_files = files.clone();
+        }
         let (stop, cancelled) = tokio::sync::oneshot::channel();
         self.assistant.running = Some(Running {
             serial,
             since: Instant::now(),
             stop: Some(stop),
+            revision,
+            completed: None,
         });
         self.assistant.now = Some(Instant::now());
         self.assistant.error = None;
@@ -947,11 +1154,23 @@ impl Shell {
         }
         let mode = self.assistant.approval_mode;
         let screenshots = self.assistant.screenshots;
+        let (method, payload) = if let Some(expected) = expected {
+            (
+                "turn.revise",
+                json!({"session_id": session, "prompt": prompt, "expected_revision": expected,
+                "approval_mode": mode.wire(), "screenshots": screenshots.wire()}),
+            )
+        } else {
+            (
+                "turn.start",
+                json!({"session_id": session, "prompt": prompt, "attachments": files.iter().map(attachments::Attachment::wire).collect::<Vec<_>>(),
+                "approval_mode": mode.wire(), "screenshots": screenshots.wire()}),
+            )
+        };
         Task::batch([
-            Task::run(
-                client::turn(session, prompt, mode, screenshots, cancelled),
-                move |event| message(Message::Turn(serial, event)),
-            ),
+            Task::run(client::turn(method, payload, cancelled), move |event| {
+                message(Message::Turn(serial, event))
+            }),
             iced::widget::operation::focus(COMPOSER),
             iced::widget::operation::snap_to(
                 TRANSCRIPT,
@@ -993,17 +1212,20 @@ impl Shell {
             self.bar,
             self.desired_settings.assistant_corner,
         );
+        let width = self.desired_settings.assistant_width;
         perform(async move {
             Message::PanelPrepared(
                 serial,
                 compositor
-                    .prepare_assistant_panel(metrics, bar, corner)
+                    .prepare_assistant_panel(metrics, bar, corner, width)
                     .await,
             )
         })
     }
 
     pub(crate) fn close_assistant(&mut self) -> Task<ShellMessage> {
+        self.assistant.attachment_loader.cancel();
+        self.assistant.resize.drag = None;
         self.assistant.panel_opening = false;
         if self.assistant.history {
             self.assistant.history = false;
@@ -1019,6 +1241,8 @@ impl Shell {
     }
 
     pub(crate) fn force_close_assistant(&mut self) -> Task<ShellMessage> {
+        self.assistant.attachment_loader.cancel();
+        self.assistant.resize.drag = None;
         self.assistant.panel_opening = false;
         let Some(pane) = self.assistant.panel.take() else {
             return Task::none();
@@ -1083,8 +1307,14 @@ impl Shell {
             self.desired_settings.assistant_corner,
         );
         let trigger = self.assistant.owns_trigger(id);
+        let width = self.desired_settings.assistant_width;
         // Once now and once more after the first frames have settled.
-        Task::batch([Duration::ZERO, Duration::from_millis(400)].map(|delay| {
+        let delays = if trigger {
+            vec![Duration::ZERO, Duration::from_millis(400)]
+        } else {
+            vec![Duration::ZERO]
+        };
+        Task::batch(delays.into_iter().map(|delay| {
             let compositor = compositor.clone();
             perform(async move {
                 tokio::time::sleep(delay).await;
@@ -1105,7 +1335,7 @@ impl Shell {
                 } else {
                     Message::Placed(
                         compositor
-                            .prepare_assistant_panel(metrics, bar, corner)
+                            .prepare_assistant_panel(metrics, bar, corner, width)
                             .await
                             .map(drop),
                     )
@@ -1116,9 +1346,13 @@ impl Shell {
 
     pub(crate) fn assistant_escape(&mut self, id: window::Id) -> Task<ShellMessage> {
         if self.assistant.owns_panel(id) {
-            if self.assistant.history {
+            if self.assistant.history || self.assistant.shortcuts {
                 self.assistant.history = false;
+                self.assistant.shortcuts = false;
                 return iced::widget::operation::focus(COMPOSER);
+            }
+            if self.assistant.revision.is_some() && self.assistant.running.is_none() {
+                return self.assistant_message(Message::CancelEdit);
             }
             return self.close_assistant();
         }

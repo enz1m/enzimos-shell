@@ -209,10 +209,8 @@ pub(crate) enum TurnEvent {
 
 // The turn's event stream; its connection lives as long as the stream.
 pub(super) fn turn(
-    session: String,
-    prompt: String,
-    mode: ApprovalMode,
-    screenshots: Screenshots,
+    method: &'static str,
+    payload: Value,
     cancelled: tokio::sync::oneshot::Receiver<()>,
 ) -> impl iced::futures::Stream<Item = TurnEvent> {
     iced::stream::channel(
@@ -221,10 +219,7 @@ pub(super) fn turn(
             let exchange = async {
                 let mut stream = connect().await?;
                 stream
-                    .write_all(&frame(
-                        "turn.start",
-                        json!({"session_id": session, "prompt": prompt, "approval_mode": mode.wire(), "screenshots": screenshots.wire()}),
-                    ))
+                    .write_all(&frame(method, payload))
                     .await
                     .map_err(|_| tr("shell-the-assistant-did-not-accept-the-message"))?;
                 let mut reader = tokio::io::BufReader::new(stream);

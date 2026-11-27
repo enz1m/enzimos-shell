@@ -647,6 +647,10 @@ pub fn turn_error(code: &str) -> Option<&'static str> {
         "local-models-unavailable" => "shell-assistant-local-models-unavailable",
         "provider-timeout" => "shell-assistant-provider-timeout",
         "request-unavailable" => "shell-assistant-request-unavailable",
+        "invalid-attachments" => "shell-assistant-invalid-attachments",
+        "attachment-vision-required" => "shell-assistant-attachment-vision-required",
+        "local-context-limit" => "shell-assistant-local-context-limit",
+        "stale-turn-revision" => "shell-assistant-stale-revision",
         _ => return None,
     };
     Some(tr(key))

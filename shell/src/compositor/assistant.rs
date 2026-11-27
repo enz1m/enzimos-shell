@@ -6,8 +6,7 @@ use crate::settings::{AssistantCorner, BarEdge, Metrics};
 use enzui_shell::i18n::tr;
 use iced::{Rectangle, Size};
 
-/// The assistant panel's preferred body size.
-pub(super) const PANEL_BODY: Size = Size::new(460.0, 720.0);
+const PANEL_HEIGHT: f32 = 720.0;
 /// The islands button's diameter.
 pub const ISLAND_BUTTON: f32 = 44.0;
 /// The frame tab's body, before its join into the frame.
@@ -345,6 +344,7 @@ impl Compositor {
         metrics: Metrics,
         bar: BarEdge,
         corner: AssistantCorner,
+        preferred_width: u16,
     ) -> Result<ControlGeometry, String> {
         let output = self.desktop_output().await?;
         control_geometry(&output)?;
@@ -353,8 +353,13 @@ impl Compositor {
             .ok_or_else(|| tr("shell-missing-output"))?
             .to_owned();
         let (width, height, origin_x, origin_y) = screen(&output)?;
-        let (rect, attachment) =
-            panel_layout(Size::new(width, height), metrics, bar, corner, PANEL_BODY)?;
+        let (rect, attachment) = panel_layout(
+            Size::new(width, height),
+            metrics,
+            bar,
+            corner,
+            Size::new(preferred_width.into(), PANEL_HEIGHT),
+        )?;
         let (x, y, w, h) = shadowed(
             rect.x,
             f64::from(rect.y),

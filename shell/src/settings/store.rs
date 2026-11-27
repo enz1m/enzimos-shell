@@ -155,6 +155,10 @@ impl Store {
                     value["controller_notifications"] = enabled.into();
                 }
                 Change::AssistantCorner(corner) => value["assistant_corner"] = corner.key().into(),
+                Change::AssistantWidth(width) => {
+                    value["assistant_width"] =
+                        super::model::clamp_assistant_width(width.into()).into();
+                }
                 Change::ThemeScheme(ref id) => {
                     if crate::theme_palette::Scheme::from_id_str(id).is_none() {
                         return Err(tr("shell-invalid-theme-style").into());

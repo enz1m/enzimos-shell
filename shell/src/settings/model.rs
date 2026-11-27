@@ -4,6 +4,14 @@ use std::sync::Arc;
 
 use super::{BarEdge, Metric, Metrics, QuickAction, SidebarEdge};
 
+pub(super) const DEFAULT_ASSISTANT_WIDTH: u16 = 460;
+pub const MIN_ASSISTANT_WIDTH: u16 = 360;
+pub const MAX_ASSISTANT_WIDTH: u16 = 720;
+
+pub(super) fn clamp_assistant_width(width: u64) -> u16 {
+    width.clamp(MIN_ASSISTANT_WIDTH.into(), MAX_ASSISTANT_WIDTH.into()) as u16
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub light: bool,
@@ -21,6 +29,7 @@ pub struct Settings {
     /// A short notification when a game controller connects.
     pub controller_notifications: bool,
     pub assistant_corner: super::AssistantCorner,
+    pub assistant_width: u16,
     /// The shadow of the bar, islands and frame, 0 (off, the default) to 4.
     pub bar_shadow: u8,
     /// The shadow of panels opened from the bar, 0 (off) to 4.
@@ -84,6 +93,7 @@ impl Default for Settings {
             assistant_enabled: true,
             controller_notifications: true,
             assistant_corner: super::AssistantCorner::BottomRight,
+            assistant_width: DEFAULT_ASSISTANT_WIDTH,
             bar_shadow: 0,
             panel_shadow: 2,
             panel_glass: 0,
@@ -156,6 +166,9 @@ impl Settings {
             Change::AssistantEnabled(value) => self.assistant_enabled = value,
             Change::ControllerNotifications(value) => self.controller_notifications = value,
             Change::AssistantCorner(value) => self.assistant_corner = value,
+            Change::AssistantWidth(value) => {
+                self.assistant_width = clamp_assistant_width(value.into())
+            }
             Change::BarShadow(value) => self.bar_shadow = value.min(4),
             Change::PanelGlass(value) => {
                 // A new material shows its own look; fine-tuning starts over.
@@ -279,6 +292,7 @@ pub enum Change {
     AssistantEnabled(bool),
     ControllerNotifications(bool),
     AssistantCorner(super::AssistantCorner),
+    AssistantWidth(u16),
     BarShadow(u8),
     PanelGlass(u8),
     PanelShadow(u8),
@@ -471,6 +485,9 @@ pub(super) fn parse(value: &serde_json::Value) -> Result<Settings, String> {
                 .and_then(super::AssistantCorner::from_key)
                 .ok_or_else(|| tr("shell-invalid-assistant-corner"))?,
         },
+        assistant_width: value["assistant_width"]
+            .as_u64()
+            .map_or(DEFAULT_ASSISTANT_WIDTH, clamp_assistant_width),
         // An earlier on/off choice reads as Small.
         bar_shadow: match value.get("bar_shadow") {
             None | Some(serde_json::Value::Bool(false)) => 0,

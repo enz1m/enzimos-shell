@@ -1,5 +1,5 @@
 use super::{
-    COMPOSER, Message, Screenshots, TRANSCRIPT, message,
+    COMPOSER, Message, Screenshots, TRANSCRIPT, attachments, message, resize,
     transcript::{Body, Decision, Row, ToolStatus},
 };
 use crate::{Message as ShellMessage, Shell, region};
@@ -10,6 +10,7 @@ use enzui_widgets::{
     button::{ButtonKind, ButtonSize, enz_button},
     code_block::enz_code_block,
     composer::enz_composer,
+    file_drop::enz_file_drop_target_with_receipt,
     frame_clock::{enz_frame_clock, frame_clock_phase},
     icon::enz_icon,
     markdown::{self, enz_markdown_blocks},
@@ -18,6 +19,7 @@ use enzui_widgets::{
     spinner::enz_spinner,
     tail_follow::enz_tail_follow,
     text::enz_text,
+    text_field::enz_text_field,
     toolbar_icon::enz_toolbar_icon,
     virtual_list::enz_virtual_list_with_geometry,
 };
@@ -43,9 +45,10 @@ fn mix(a: Color, b: Color, t: f32) -> Color {
 fn tool_icon(tool: &str) -> &'static str {
     match tool {
         "run_command" => "terminal",
-        "read_file" => "eye",
-        "write_file" => "file-pen",
-        "search_files" => "folder-search",
+        "file_read" | "read_file" => "eye",
+        "file_write" | "write_file" => "file-pen",
+        "files_list" | "search_files" => "folder-search",
+        "screenshot" => "camera",
         "render_chart" => "chart-column",
         "web_search" => "globe",
         _ => "wrench",
@@ -83,12 +86,18 @@ impl Shell {
         let corner = self.desired_settings.assistant_corner;
         let mut popup = self.popup(
             id,
-            pane.visible,
+            pane.visible && !self.assistant.attachment_loader.choosing(),
             pane.geometry.attachment,
             message(Message::Hidden(id)),
         );
         popup.bottom = corner.bottom();
-        Some(region::popup(self.assistant_panel(), popup))
+        let panel = enz_file_drop_target_with_receipt(self.assistant_panel(), |drop| {
+            message(Message::Attachments(attachments::Message::Drop(drop)))
+        })
+        .enabled(pane.visible && self.assistant.attachments_available())
+        .copy_only(true)
+        .key((self.assistant.session.as_deref(), self.assistant.history));
+        Some(region::popup(panel.into(), popup))
     }
 
     fn assistant_trigger(&self, id: iced::window::Id) -> Element<'_, ShellMessage> {
@@ -322,7 +331,9 @@ impl Shell {
         let palette = self.tokens().palette;
         let state = &self.assistant;
         let header = self.assistant_header();
-        let body: Element<'_, ShellMessage> = if state.history {
+        let body: Element<'_, ShellMessage> = if state.shortcuts {
+            self.assistant_shortcuts()
+        } else if state.history {
             self.assistant_history(&palette)
         } else if state.transcript.is_empty() && state.running.is_none() {
             self.assistant_empty(&palette)
@@ -331,7 +342,7 @@ impl Shell {
         };
         let body = motion(body, true, MotionEffect::Fade);
         let mut content = column![header, container(body).height(Length::Fill)].spacing(4);
-        if !state.history {
+        if !state.history && !state.shortcuts {
             if let Some(error) = &state.error {
                 content = content.push(
                     container(
@@ -384,7 +395,7 @@ impl Shell {
         let (left, right) = attachment.insets(radius);
         let far = attachment.join(radius);
         let bottom = self.desired_settings.assistant_corner.bottom();
-        container(content)
+        let content = container(content)
             .padding(Padding {
                 top: 10.0 + if bottom { far } else { 0.0 },
                 right: 12.0 + right,
@@ -392,20 +403,62 @@ impl Shell {
                 left: 12.0 + left,
             })
             .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+            .height(Length::Fill);
+        let right_side = self.desired_settings.assistant_corner.right();
+        let grip = mouse_area(
+            container(
+                container(space().width(2).height(26)).style(move |_| container::Style {
+                    background: Some(mix(palette.surface, palette.text, 0.23).into()),
+                    border: iced::Border {
+                        radius: 1.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+            )
+            .center_x(10)
+            .center_y(Length::Fill),
+        )
+        .on_press_at(|position| message(Message::Resize(resize::Message::Start(position.x))))
+        .interaction(iced::mouse::Interaction::ResizingHorizontally);
+        let grip = container(grip).width(Length::Fill).height(Length::Fill);
+        let grip = if right_side {
+            grip.align_left(Length::Fill)
+        } else {
+            grip.align_right(Length::Fill)
+        };
+        let mut layers = stack![content, grip];
+        if let Some(width) = state.resize.preview(right_side) {
+            layers = layers.push(
+                container(
+                    enz_text(format!("{width} px"))
+                        .size_px(SMALL)
+                        .into_element(),
+                )
+                .center_x(Length::Fill)
+                .center_y(Length::Fill),
+            );
+        }
+        layers.into()
     }
 
     fn assistant_header(&self) -> Element<'_, ShellMessage> {
         let state = &self.assistant;
-        let title = if state.history {
+        let title = if state.shortcuts {
+            tr("shell-assistant-shortcuts").to_owned()
+        } else if state.history {
             tr("shell-chats").to_owned()
         } else if state.title.is_empty() {
             tr("shell-new-chat").to_owned()
         } else {
             state.title.clone()
         };
-        let leading = if state.history {
+        let leading = if state.shortcuts {
+            enz_toolbar_icon("arrow-left", message(Message::Shortcuts(false)))
+                .tokens(self.icon_tokens())
+                .aria_label(tr("shell-back-to-the-chat"))
+                .into_element()
+        } else if state.history {
             enz_toolbar_icon("arrow-left", message(Message::History(false)))
                 .tokens(self.icon_tokens())
                 .id("assistant-back".into())
@@ -436,6 +489,12 @@ impl Shell {
             } else {
                 space().width(Length::Shrink).into()
             },
+            enz_toolbar_icon("keyboard", message(Message::Shortcuts(!state.shortcuts)))
+                .tokens(self.icon_tokens())
+                .id("assistant-shortcuts".into())
+                .aria_label(tr("shell-assistant-shortcuts"))
+                .tooltip(tr("shell-assistant-shortcuts"))
+                .into_element(),
             enz_toolbar_icon("square-pen", message(Message::NewChat))
                 .tokens(self.icon_tokens())
                 .id("assistant-new".into())
@@ -453,6 +512,41 @@ impl Shell {
         .align_y(Alignment::Center)
         .height(Length::Fixed(34.0))
         .into()
+    }
+
+    fn assistant_shortcuts(&self) -> Element<'_, ShellMessage> {
+        let mut content = column![].spacing(10);
+        for key in [
+            "shell-assistant-shortcut-send",
+            "shell-assistant-shortcut-newline",
+            "shell-assistant-shortcut-close",
+            "shell-assistant-shortcut-tab",
+            "shell-assistant-resize",
+        ] {
+            content = content.push(enz_text(tr(key)).size_px(BODY).into_element());
+        }
+        content
+            .push(
+                row![
+                    enz_button(
+                        tr("shell-assistant-narrow"),
+                        message(Message::Resize(resize::Message::Step(false)))
+                    )
+                    .kind(ButtonKind::Secondary)
+                    .size(ButtonSize::Sm)
+                    .into_element(),
+                    enz_button(
+                        tr("shell-assistant-widen"),
+                        message(Message::Resize(resize::Message::Step(true)))
+                    )
+                    .kind(ButtonKind::Secondary)
+                    .size(ButtonSize::Sm)
+                    .into_element(),
+                ]
+                .spacing(6),
+            )
+            .padding(12)
+            .into()
     }
 
     fn assistant_empty(&self, palette: &Palette) -> Element<'_, ShellMessage> {
@@ -552,7 +646,16 @@ impl Shell {
         let state = &self.assistant;
         let muted = palette.text_muted;
         let mut list = column![].spacing(2);
+        let query = state.history_search.trim().to_lowercase();
+        let mut matches = 0;
         for session in &state.sessions {
+            if !query.is_empty()
+                && !session.title.to_lowercase().contains(&query)
+                && !session.preview.to_lowercase().contains(&query)
+            {
+                continue;
+            }
+            matches += 1;
             let active = state.session.as_deref() == Some(session.id.as_str());
             let content = column![
                 row![
@@ -597,18 +700,36 @@ impl Shell {
                 .into_element(),
             );
         }
-        if state.sessions.is_empty() {
+        if matches == 0 {
             list = list.push(
-                enz_text(tr("shell-no-chats-yet"))
-                    .size_px(SMALL)
-                    .color(muted)
-                    .into_element(),
+                enz_text(tr(if query.is_empty() {
+                    "shell-no-chats-yet"
+                } else {
+                    "shell-assistant-no-chat-matches"
+                }))
+                .size_px(SMALL)
+                .color(muted)
+                .into_element(),
             );
         }
-        enzui_widgets::scroll_view::enz_scroll_view(list)
-            .height(Length::Fill)
-            .scrollbar_tokens(self.tokens().scrollbar)
-            .into()
+        column![
+            enz_text_field(
+                "",
+                tr("shell-assistant-search-chats"),
+                &state.history_search,
+                |value| message(Message::HistorySearch(value))
+            )
+            .id("assistant-search".into())
+            .aria_label(tr("shell-assistant-search-chats"))
+            .into_element(),
+            enzui_widgets::scroll_view::enz_scroll_view(list)
+                .height(Length::Fill)
+                .scrollbar_tokens(self.tokens().scrollbar)
+                .into_element(),
+        ]
+        .spacing(8)
+        .height(Length::Fill)
+        .into()
     }
 
     fn assistant_transcript(&self, palette: &Palette) -> Element<'_, ShellMessage> {
@@ -616,6 +737,7 @@ impl Shell {
         let palette = palette.clone();
         let elevated = palette.surface_elevated;
         let running = state.running.is_some();
+        let can_revise = state.can_revise();
         let last = state.transcript.rows.len() as u64;
         let geometry = state.transcript.geometry();
         let viewport = state.viewport.max(200.0);
@@ -626,7 +748,7 @@ impl Shell {
         };
         let list =
             enz_virtual_list_with_geometry(&state.transcript, geometry, move |index, row: &Row| {
-                assistant_row(row, &palette, running, index + 1 == last)
+                assistant_row(row, &palette, running, index + 1 == last, can_revise)
             })
             .scroll_offset(offset)
             .viewport_height(viewport)
@@ -774,9 +896,15 @@ impl Shell {
         let running = state.running.is_some();
         let empty = state.composer.text().trim().is_empty();
         let muted = palette.text_muted;
+        let model_name = if state.model == "local" || state.model.is_empty() {
+            tr("shell-assistant-model-auto")
+        } else {
+            state.model.as_str()
+        };
         let model = row![
             enz_icon("cpu").size(13.0).tint(muted).into_element(),
-            enz_text(state.model.clone())
+            enz_text(model_name)
+                .ellipsis(iced::widget::text::Ellipsis::End)
                 .size_px(TINY)
                 .color(muted)
                 .into_element()
@@ -810,10 +938,34 @@ impl Shell {
             .enabled(!running && !state.approval_busy)
             .into_element(),
         ];
+        leading.push(
+            enz_toolbar_icon(
+                "paperclip",
+                message(Message::Attachments(attachments::Message::Pick)),
+            )
+            .tokens(self.icon_tokens())
+            .id("assistant-attach".into())
+            .aria_label(tr("shell-assistant-attach-files"))
+            .tooltip(tr("shell-assistant-attachment-limits"))
+            .enabled(state.attachments_available())
+            .into_element(),
+        );
         if state.screenshots != Screenshots::Off {
             leading.push(enz_icon("camera").size(13.0).tint(muted).into_element());
-        } else if !state.model.is_empty() && state.approval_mode != ApprovalMode::WorkspaceEdits {
+        } else if state.approval_mode != ApprovalMode::WorkspaceEdits {
             leading.push(model.into());
+        }
+        let attachment_only =
+            empty && !state.files.is_empty() && state.revision.is_none() && !running;
+        if attachment_only {
+            trailing.push(
+                enz_toolbar_icon("send", message(Message::Send))
+                    .tokens(self.icon_tokens())
+                    .aria_label(tr("shell-assistant-describe-attachments"))
+                    .tooltip(tr("shell-assistant-describe-attachments"))
+                    .enabled(!state.attachment_loader.busy() && !state.approval_busy)
+                    .into_element(),
+            );
         }
         let composer = enz_composer(&state.composer, |action| message(Message::Edit(action)))
             .placeholder(if running {
@@ -823,12 +975,17 @@ impl Shell {
             })
             .max_rows(6)
             .busy(running && empty)
-            .on_send(message(Message::Send))
-            .on_stop(message(Message::Stop))
             .rail_leading(leading)
             .rail_trailing(trailing)
             .id(COMPOSER)
             .aria_label(enzui_shell::i18n::tr("shell-message-the-assistant"));
+        let composer = if attachment_only {
+            composer
+        } else {
+            composer
+                .on_send(message(Message::Send))
+                .on_stop(message(Message::Stop))
+        };
         let composer = if let Some(running) = &state.running {
             let elapsed = state
                 .now
@@ -864,7 +1021,65 @@ impl Shell {
         } else {
             composer
         };
-        composer.into_element()
+        let mut content = column![].spacing(6);
+        if state.revision.is_some() {
+            content = content.push(
+                row![
+                    enz_text(tr("shell-assistant-editing-last"))
+                        .size_px(SMALL)
+                        .wrap(true)
+                        .into_element(),
+                    enz_button(tr("shell-cancel"), message(Message::CancelEdit))
+                        .kind(ButtonKind::Quiet)
+                        .size(ButtonSize::Sm)
+                        .enabled(!running)
+                        .into_element(),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            );
+        } else {
+            for (index, file) in state.files.iter().enumerate() {
+                let preview: Element<'_, ShellMessage> = match file.preview() {
+                    Some(handle) => iced::widget::image(handle).width(30).height(26).into(),
+                    None => enz_icon("file-text").size(15.0).tint(muted).into_element(),
+                };
+                content = content.push(
+                    row![
+                        preview,
+                        enz_text(file.name.as_ref())
+                            .size_px(SMALL)
+                            .ellipsis(iced::widget::text::Ellipsis::End)
+                            .into_element(),
+                        space().width(Length::Fill),
+                        enz_toolbar_icon(
+                            "x",
+                            message(Message::Attachments(attachments::Message::Remove(index)))
+                        )
+                        .tokens(self.icon_tokens())
+                        .size(22.0, 13.0)
+                        .aria_label(format!(
+                            "{} {}",
+                            tr("shell-assistant-remove-attachment"),
+                            file.name
+                        ))
+                        .tooltip(tr("shell-assistant-remove-attachment"))
+                        .enabled(!state.attachment_loader.busy() && !state.approval_busy)
+                        .into_element(),
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+                );
+            }
+        }
+        if state.attachment_loader.busy() {
+            content = content.push(
+                enz_text(tr("shell-assistant-loading-files"))
+                    .size_px(SMALL)
+                    .into_element(),
+            );
+        }
+        content.push(composer.into_element()).into()
     }
 }
 
@@ -884,18 +1099,35 @@ fn assistant_row<'a>(
     palette: &Palette,
     running: bool,
     last: bool,
+    can_revise: bool,
 ) -> Element<'a, ShellMessage> {
     let muted = palette.text_muted;
     let inset = mix(palette.surface, palette.text, 0.06);
     let key = row.key.clone();
     let element: Element<'a, ShellMessage> = match &row.body {
-        Body::User { text, steering } => {
+        Body::User {
+            text,
+            steering,
+            attachments,
+        } => {
             let bubble = enzui_widgets::max_width::max_width(
                 container(
-                    enz_text(text.clone())
-                        .size_px(BODY)
-                        .wrap(true)
-                        .into_element(),
+                    column![
+                        enz_text(text.clone())
+                            .size_px(BODY)
+                            .wrap(true)
+                            .into_element(),
+                        if attachments.is_empty() {
+                            space().height(0).into()
+                        } else {
+                            enz_text(attachments.join(" · "))
+                                .size_px(TINY)
+                                .color(muted)
+                                .wrap(true)
+                                .into_element()
+                        },
+                    ]
+                    .spacing(3),
                 )
                 .padding(Padding {
                     top: 7.0,
@@ -1064,6 +1296,15 @@ fn assistant_row<'a>(
                 ToolStatus::Done => enz_icon("check").size(12.0).tint(muted).into_element(),
                 ToolStatus::Failed => enz_icon("x").size(12.0).tint(palette.danger).into_element(),
             };
+            let title = if title.is_empty() {
+                if tool == "screenshot" {
+                    tr("shell-agent-tool-screenshot")
+                } else {
+                    tool.as_str()
+                }
+            } else {
+                title.as_str()
+            };
             let label = row![
                 enz_icon(tool_icon(tool))
                     .size(14.0)
@@ -1073,7 +1314,7 @@ fn assistant_row<'a>(
                         muted
                     })
                     .into_element(),
-                enz_text(title.clone())
+                enz_text(title)
                     .size_px(SMALL)
                     .color(muted)
                     .ellipsis(iced::widget::text::Ellipsis::End)
@@ -1371,6 +1612,24 @@ fn assistant_row<'a>(
                         .tooltip(tr("shell-copy"))
                         .into_element(),
                 );
+            }
+            if last && can_revise {
+                for (icon, label, event) in [
+                    (
+                        "rotate-ccw",
+                        tr("shell-assistant-regenerate"),
+                        Message::Regenerate,
+                    ),
+                    ("pencil", tr("shell-assistant-edit-last"), Message::EditLast),
+                ] {
+                    line = line.push(
+                        enz_toolbar_icon(icon, message(event))
+                            .size(22.0, 13.0)
+                            .aria_label(label)
+                            .tooltip(label)
+                            .into_element(),
+                    );
+                }
             }
             container(line)
                 .padding(Padding {

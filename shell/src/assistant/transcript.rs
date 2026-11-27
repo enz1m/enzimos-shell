@@ -34,6 +34,7 @@ pub(crate) enum Body {
     User {
         text: String,
         steering: bool,
+        attachments: Vec<String>,
     },
     Markdown {
         text: Rc<str>,
@@ -260,7 +261,7 @@ struct Live {
     thinking: Option<(usize, Instant)>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Transcript {
     pub rows: Vec<Row>,
     heights: Vec<f32>,
@@ -396,13 +397,23 @@ impl Transcript {
     // A saved chat, as `session.export` lists it.
     pub(crate) fn load(&mut self, items: &[Value]) {
         self.clear();
-        for item in items.iter().filter_map(Item::from_json) {
+        for value in items {
+            let Some(item) = Item::from_json(value) else {
+                continue;
+            };
             match item {
                 Item::User(text) => self.push(
                     "user",
                     Body::User {
                         text,
                         steering: false,
+                        attachments: value["attachments"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect(),
                     },
                 ),
                 Item::Assistant(text) => {
@@ -455,13 +466,13 @@ impl Transcript {
             }
         }
     }
-    // The user's message opens a turn.
-    pub(crate) fn begin(&mut self, prompt: &str) {
+    pub(crate) fn begin(&mut self, prompt: &str, attachments: Vec<String>) {
         self.push(
             "user",
             Body::User {
                 text: prompt.to_owned(),
                 steering: false,
+                attachments,
             },
         );
         self.said.clear();
@@ -680,6 +691,7 @@ impl Transcript {
                     Body::User {
                         text: text("text"),
                         steering: true,
+                        attachments: Vec::new(),
                     },
                 );
                 self.restart_reply();
@@ -815,12 +827,39 @@ impl Transcript {
             *decision = Decision::Pending;
         }
     }
+    pub(crate) fn last_user(&self) -> Option<(&str, &[String])> {
+        self.rows.iter().rev().find_map(|row| match &row.body {
+            Body::User {
+                text, attachments, ..
+            } => Some((text.as_str(), attachments.as_slice())),
+            _ => None,
+        })
+    }
+
+    pub(crate) fn replace_last(&mut self, prompt: &str) {
+        if let Some(index) = self
+            .rows
+            .iter()
+            .rposition(|row| matches!(row.body, Body::User { .. }))
+        {
+            let files = self
+                .last_user()
+                .map(|(_, files)| files.to_vec())
+                .unwrap_or_default();
+            self.rows.truncate(index);
+            self.heights.truncate(index);
+            self.geometry.take();
+            self.begin(prompt, files);
+        }
+    }
+
     // The last user message, for Retry.
     pub(crate) fn last_prompt(&self) -> Option<String> {
         self.rows.iter().rev().find_map(|row| match &row.body {
             Body::User {
                 text,
                 steering: false,
+                ..
             } => Some(text.clone()),
             _ => None,
         })
@@ -874,7 +913,7 @@ mod tests {
     #[test]
     fn failed_completion_keeps_partial_reply_and_recovery_message() {
         let mut transcript = Transcript::default();
-        transcript.begin("Explain enums");
+        transcript.begin("Explain enums", vec![]);
         transcript.apply(&json!({"type": "message.delta", "text": "An enum can represent"}));
         transcript.apply(&json!({"type": "turn.completed", "status": "failed"}));
         transcript.fail("The AI gateway is offline");

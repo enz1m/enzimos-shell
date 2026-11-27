@@ -52,9 +52,11 @@ pub(crate) enum Event {
     Hover(bool, bool),
     Hide(u64),
     Frame(window::Id, Instant),
+    KeyboardReady(window::Id, Result<(), String>),
     Click(String),
     Launch(String),
     DropFolders(FileDrop),
+    DropOnApp(String, FileDrop),
     Reorder(enzui_core::drag::DropRequest),
     Folders(enzui_shell::plugins::service::Owner, FileDrop, Vec<String>),
     Invoke(String, Origin, ContextMenuEvent),
@@ -77,6 +79,12 @@ pub(crate) struct Menu {
     pub model: MenuModel,
     pub state: ContextMenuState,
 }
+struct KeyboardNavigation {
+    window: window::Id,
+    id: iced::widget::Id,
+    previous: Option<WindowTarget>,
+}
+
 pub(crate) struct State {
     pub badges: enzui_shell::launcher_badges::Snapshot,
     pub badges_generation: u64,
@@ -96,8 +104,11 @@ pub(crate) struct State {
     pub entries: Vec<Entry>,
     pinned: usize,
     strip: dock_motion::Strip,
+    keyboard: Option<KeyboardNavigation>,
+    pub bar_scroll: enzui_widgets::scroll_view::ScrollGeometryCell,
+    dock_scroll: enzui_widgets::scroll_view::ScrollGeometryCell,
     reveal: dock_motion::Track,
-    launches: std::collections::BTreeMap<String, dock_motion::Track>,
+    launches: std::collections::BTreeMap<String, u64>,
     pub menu: Option<Menu>,
     pub closed: ContextMenuState,
     pub search_model: MenuModel,
@@ -156,6 +167,9 @@ impl Default for State {
             entries: Vec::new(),
             pinned: 0,
             strip: Default::default(),
+            keyboard: None,
+            bar_scroll: Default::default(),
+            dock_scroll: Default::default(),
             reveal: Default::default(),
             launches: Default::default(),
             menu: None,
@@ -192,7 +206,7 @@ impl Default for State {
 
 impl State {
     fn animating(&self) -> bool {
-        self.reveal.active() || self.strip.active() || !self.launches.is_empty()
+        self.reveal.active() || self.strip.active()
     }
 }
 
@@ -355,11 +369,19 @@ fn group_icon<'a>(
         .into()
 }
 
-fn model(group: &Group, p: &dock::Preferences) -> MenuModel {
+fn model(group: &Group, p: &dock::Preferences, snapshot: &Snapshot) -> MenuModel {
     if let Some(builtin) = &group.builtin {
         let mut rows = vec![MenuEntryModel::command("open", &group.title)];
-        if matches!(builtin, Builtin::Folder(_)) {
-            rows.push(MenuEntryModel::command("pin", tr("shell-remove-from-dock")));
+        if let Builtin::Folder(uri) = builtin {
+            rows.push(MenuEntryModel::command("pin", tr("shell-remove-from-dock")).icon("pin-off"));
+            if let Some(index) = p.folders.iter().position(|folder| folder == uri) {
+                if index > 0 {
+                    rows.push(MenuEntryModel::command("earlier", tr("shell-move-earlier")));
+                }
+                if index + 1 < p.folders.len() {
+                    rows.push(MenuEntryModel::command("later", tr("shell-move-later")));
+                }
+            }
         }
         rows.push(MenuEntryModel::command("settings", tr("shell-dock-settings")).icon("settings"));
         return MenuModel::new(rows);
@@ -372,11 +394,13 @@ fn model(group: &Group, p: &dock::Preferences) -> MenuModel {
             } else {
                 CheckState::Unchecked
             });
-        rows.push(if w.minimized {
-            window.description(tr("shell-minimized"))
-        } else {
-            window
-        });
+        rows.push(
+            if let Some(context) = crate::dock_hover::window_context(w, snapshot) {
+                window.description(context)
+            } else {
+                window
+            },
+        );
     }
     if !group.windows.is_empty() {
         rows.push(MenuEntryModel::separator("windows"));
@@ -514,6 +538,7 @@ impl Shell {
         let bar_material = self.bar_dock_material();
         let was = self.dock.preferences.enabled;
         self.dock.preferences = desired;
+        self.dock.keyboard = None;
         let bar = if bar_material != self.bar_dock_material() {
             self.refresh_bar_glass()
         } else {
@@ -697,18 +722,28 @@ impl Shell {
         } else {
             &snapshot.windows
         };
-        let groups = dock::groups(p, &self.dock.apps, windows, snapshot.desktop);
+        let slots = dock::Slots::new(p, self.metrics, shares_sidebar);
+        let groups = dock::groups(
+            p,
+            &self.dock.apps,
+            windows,
+            snapshot.desktop,
+            slots.icon,
+            snapshot.scale,
+        );
         self.dock.entries = groups
             .into_iter()
             .map(|group| Entry {
-                model: model(&group, p),
+                model: model(&group, p, snapshot),
                 group,
             })
             .collect();
         self.dock
+            .launches
+            .retain(|id, _| self.dock.entries.iter().any(|entry| entry.group.id == *id));
+        self.dock
             .preview
             .update_windows(&self.dock.entries, snapshot.screen);
-        let slots = dock::Slots::new(p, self.metrics, shares_sidebar);
         let pinned = p.pins.len().min(self.dock.entries.len());
         self.dock.pinned = pinned;
         let divider = pinned > 0
@@ -719,7 +754,10 @@ impl Shell {
                 .is_some_and(|entry| !entry.group.windows.is_empty());
         let motion = self.tokens().motion;
         let motion = motion.with_reduced_motion(
-            motion.reduced_motion || self.dock.geometry.is_none() || self.dock.hidden,
+            motion.reduced_motion
+                || p.position == Position::Bar
+                || self.dock.geometry.is_none()
+                || self.dock.hidden,
         );
         self.dock.strip.sync(
             self.dock.entries[pinned..].iter().map(|entry| &entry.group),
@@ -744,6 +782,7 @@ impl Shell {
         geometry.desktop = snapshot.desktop;
         self.dock.fullscreen = dock::fullscreen(&geometry, &snapshot.windows);
         if self.dock.fullscreen {
+            self.dock.keyboard = None;
             self.dock.preview.clear();
             self.dock.menu = None;
             self.dock.pending = None;
@@ -759,6 +798,7 @@ impl Shell {
                 && !self.dock.hovered
                 && !self.dock.hide_pending
                 && self.dock.menu.is_none()
+                && self.dock.keyboard.is_none()
                 && self.dock.preview.preview.is_none());
         self.dock.geometry = Some(geometry);
     }
@@ -775,11 +815,94 @@ impl Shell {
             motion.with_reduced_motion(
                 motion.reduced_motion
                     || self.dock.fullscreen
+                    || self.dock.keyboard.is_some()
                     || !detached
                     || self.dock.window.is_none(),
             ),
             enzui_theme::MotionToken::Normal,
         );
+    }
+
+    fn first_dock_focus(&self) -> Option<iced::widget::Id> {
+        if self.dock.entries.is_empty() {
+            return Some("dock-add-app".into());
+        }
+        self.dock
+            .entries
+            .iter()
+            .find(|entry| {
+                entry.group.builtin.is_some()
+                    || entry.group.app.is_some()
+                    || !entry.group.windows.is_empty()
+            })
+            .map(|entry| format!("dock-app-{}", entry.group.id).into())
+    }
+
+    pub(crate) fn dock_focus_keyboard(&mut self) -> Task<Message> {
+        if !self.dock_active()
+            || self.dock.fullscreen
+            || self.dock.menu.is_some()
+            || self.dock.keyboard.is_some()
+        {
+            return Task::none();
+        }
+        let in_bar = self.dock.preferences.position == Position::Bar;
+        let (Some(window), Some(id)) = (
+            if in_bar {
+                Some(self.panel)
+            } else {
+                self.dock.window
+            },
+            self.first_dock_focus(),
+        ) else {
+            return Task::none();
+        };
+        let previous = self.dock.snapshot.as_ref().and_then(|snapshot| {
+            snapshot
+                .windows
+                .iter()
+                .find(|window| window.active)
+                .map(|w| w.target.clone())
+        });
+        self.dock.keyboard = Some(KeyboardNavigation {
+            window,
+            id,
+            previous,
+        });
+        self.dock.preview.clear();
+        self.dock.hidden = false;
+        let compositor = self.compositor.clone();
+        Task::perform(
+            async move {
+                if in_bar {
+                    compositor.focus_desktop_bar().await
+                } else {
+                    compositor.focus_dock().await
+                }
+            },
+            move |result| message(Event::KeyboardReady(window, result)),
+        )
+    }
+
+    pub(crate) fn dock_end_keyboard(
+        &mut self,
+        window: window::Id,
+        restore: bool,
+    ) -> Option<Task<Message>> {
+        if !self
+            .dock
+            .keyboard
+            .as_ref()
+            .is_some_and(|nav| nav.window == window)
+        {
+            return None;
+        }
+        let nav = self.dock.keyboard.take()?;
+        self.dock_rebuild();
+        Some(match nav.previous {
+            Some(target) if restore => self.dock_windows(vec![target], "focus"),
+            _ => Task::none(),
+        })
     }
 
     pub(crate) fn dock_subscription(&self) -> Subscription<Message> {
@@ -788,13 +911,9 @@ impl Shell {
         }
         use iced_runtime::futures::subscription;
         let generation = self.dock.badges_generation;
-        let animation_window = if self.dock.preferences.position == Position::Bar {
-            Some(self.panel)
-        } else {
-            self.dock.window
-        };
         let mut animation = Subscription::none();
-        if let Some(target) = animation_window
+        if let Some(target) = self.dock.window
+            && self.dock.preferences.position != Position::Bar
             && self.dock.animating()
         {
             animation = subscription::filter_map_with_interest(
@@ -831,6 +950,7 @@ impl Shell {
                     | Event::Invoke(..)
                     | Event::Search(..)
                     | Event::DropFolders(_)
+                    | Event::DropOnApp(..)
                     | Event::Reorder(_)
                     | Event::Folders(..)
             )
@@ -839,23 +959,38 @@ impl Shell {
         }
         match event {
             Event::Frame(id, at) => {
-                let target = if self.dock.preferences.position == Position::Bar {
-                    Some(self.panel)
-                } else {
-                    self.dock.window
-                };
-                if target == Some(id) && self.dock.animating() {
+                if self.dock.window == Some(id)
+                    && self.dock.preferences.position != Position::Bar
+                    && self.dock.animating()
+                {
                     self.dock.strip.advance(at);
                     self.dock.reveal.advance(at);
-                    self.dock.launches.retain(|_, pulse| {
-                        pulse.advance(at);
-                        pulse.active()
-                    });
                     self.redraw_only = Some(id);
                 } else {
                     self.quiet = true;
                 }
                 Task::none()
+            }
+            Event::KeyboardReady(window, result) => {
+                let Some(nav) = self
+                    .dock
+                    .keyboard
+                    .as_ref()
+                    .filter(|nav| nav.window == window)
+                else {
+                    return Task::none();
+                };
+                match result {
+                    Ok(()) => iced_runtime::task::widget_in(
+                        window,
+                        enzui_core::focus::focus_and_reveal_id(nav.id.clone()),
+                    ),
+                    Err(error) => {
+                        self.dock.error = Some(error);
+                        self.dock_end_keyboard(window, false)
+                            .unwrap_or_else(Task::none)
+                    }
+                }
             }
             Event::Preview(event) => self.dock_preview_event(event),
             Event::Changed => self.dock_refresh(),
@@ -879,7 +1014,17 @@ impl Shell {
                 }
                 self.dock.busy = false;
                 match result {
-                    Ok(snapshot) => self.dock.snapshot = Some(snapshot),
+                    Ok(snapshot) => {
+                        if self.dock.snapshot.as_ref().is_some_and(|old| {
+                            old.output_id != snapshot.output_id
+                                || old.screen != snapshot.screen
+                                || old.scale != snapshot.scale
+                        }) {
+                            self.dock.preview.clear();
+                            self.dock.preview.clear_cache();
+                        }
+                        self.dock.snapshot = Some(snapshot);
+                    }
                     Err(error) => {
                         self.dock.error = Some(error);
                         return Task::none();
@@ -986,6 +1131,39 @@ impl Shell {
                     self.dock.pending_pin_order = Some(preview.pins);
                 }
                 self.dock_save(change)
+            }
+            Event::DropOnApp(id, drop) => {
+                if drop.is_temporary() {
+                    return Task::none();
+                }
+                let Some(claim) = self.dock_owner() else {
+                    return Task::none();
+                };
+                let Some(app) = self
+                    .dock
+                    .entries
+                    .iter()
+                    .find(|entry| entry.group.id == id)
+                    .and_then(|entry| entry.group.file_target.clone())
+                else {
+                    return Task::none();
+                };
+                let authority = Arc::clone(&claim.authority);
+                self.dock.preview.clear();
+                self.dock.action_serial = self.dock.action_serial.wrapping_add(1);
+                let serial = self.dock.action_serial;
+                let compositor = self.compositor.clone();
+                Task::perform(
+                    async move {
+                        if !authority.load(std::sync::atomic::Ordering::Acquire) {
+                            return Err(tr("shell-plugin-authority-changed").into());
+                        }
+                        compositor.open_dock_files(app, drop.paths()).await?;
+                        drop.finish();
+                        Ok(())
+                    },
+                    move |result| message(Event::Done(serial, result)),
+                )
             }
             Event::DropFolders(drop) => {
                 if drop.is_temporary() {
@@ -1263,24 +1441,11 @@ impl Shell {
             return Task::none();
         };
         let Some(app) = app else { return Task::none() };
-        use enzui_theme::MotionToken;
-        let motion = self.tokens().motion;
-        if !motion.reduced_motion {
-            let now = Instant::now();
-            let mut pulse = dock_motion::Track::default();
-            pulse.retarget(
-                1.0,
-                now,
-                motion.with_reduced_motion(true),
-                MotionToken::Fast,
-            );
-            pulse.retarget(0.0, now, motion, MotionToken::Slow);
-            if pulse.active() {
-                self.dock.launches.insert(id, pulse);
-            }
-        }
         self.dock.action_serial = self.dock.action_serial.wrapping_add(1);
         let serial = self.dock.action_serial;
+        if !self.tokens().motion.reduced_motion {
+            self.dock.launches.insert(id, serial);
+        }
         let root = self.root.clone();
         let compositor = self.compositor.clone();
         Task::perform(
@@ -1336,6 +1501,10 @@ impl Shell {
             return match (action, builtin) {
                 ("open", item) => self.dock_builtin(item),
                 ("pin", Builtin::Folder(uri)) => self.dock_save(Change::UnpinFolder(uri)),
+                ("earlier" | "later", Builtin::Folder(uri)) => self.dock_save(Change::MoveFolder(
+                    uri,
+                    if action == "earlier" { -1 } else { 1 },
+                )),
                 ("settings", _) => self.dock_plugin_settings(),
                 _ => Task::none(),
             };
@@ -1523,29 +1692,43 @@ impl Shell {
             })
             .center_y(target)
             .padding(glyph_pad);
-            let pulse = self
-                .dock
-                .launches
-                .get(&id)
-                .map_or(0.0, dock_motion::Track::value);
-            let icon = container(icon)
-                .align_left(width)
-                .center_y(target)
-                .style(move |_| container::Style {
-                    background: (pulse > 0.0)
-                        .then_some(palette.accent.scale_alpha(0.24 * pulse).into()),
-                    border: iced::Border {
-                        width: if urgent || pulse > 0.0 { 1.0 } else { 0.0 },
-                        color: if urgent {
-                            palette.warning
-                        } else {
-                            palette.accent.scale_alpha(pulse)
+            let mut layers: Vec<Element<'_, Message>> = vec![
+                container(icon)
+                    .align_left(width)
+                    .center_y(target)
+                    .style(move |_| container::Style {
+                        border: iced::Border {
+                            width: if urgent { 2.0 } else { 0.0 },
+                            color: palette.warning,
+                            radius: radius.into(),
                         },
-                        radius: radius.into(),
-                    },
-                    ..Default::default()
-                });
-            let mut layers: Vec<Element<'_, Message>> = vec![icon.into()];
+                        ..Default::default()
+                    })
+                    .into(),
+            ];
+            if let Some(serial) = self.dock.launches.get(&id) {
+                let flash = container(space())
+                    .width(width)
+                    .height(target)
+                    .style(move |_| container::Style {
+                        background: Some(palette.accent.scale_alpha(0.24).into()),
+                        border: iced::Border {
+                            width: 1.0,
+                            color: palette.accent,
+                            radius: radius.into(),
+                        },
+                        ..Default::default()
+                    });
+                let fade = enzui_widgets::motion::animated(flash)
+                    .opacity(0.0)
+                    .enters_from(iced::Vector::ZERO, 1.0);
+                layers.push(
+                    enzui_widgets::keyed_row::keyed_row(vec![(serial.to_string(), fade.into())])
+                        .into(),
+                );
+            } else {
+                layers.push(space().into());
+            }
             if group.builtin.is_none() && p.indicator != Indicator::None {
                 let color = if active {
                     palette.accent
@@ -1608,7 +1791,17 @@ impl Shell {
             let label = if group.builtin.is_some() {
                 group.title.clone()
             } else {
-                tr!("shell-windows-2", "arg0" => group.title.clone(), "arg1" => format!("{:}", group.windows.len()), "arg2" => (if group.pinned { tr("shell-kept-in-dock") } else { "" }).to_owned(), "arg3" => (if badge.count_visible && badge.count > 0 {format!(" · {} unread",badge.count)} else {String::new()}).clone(), "arg4" => (if urgent {tr("shell-needs-attention")} else {""}).to_owned())
+                let mut label = tr!("shell-dock-window-count", "title" => group.title.clone(), "count" => count);
+                if group.pinned {
+                    label.push_str(tr("shell-kept-in-dock"));
+                }
+                if badge.count_visible && badge.count > 0 {
+                    label.push_str(&tr!("shell-dock-unread-count", "count" => badge.count));
+                }
+                if urgent {
+                    label.push_str(tr("shell-needs-attention"));
+                }
+                label
             };
             let button = enz_pressable(
                 iced::widget::stack(layers)
@@ -1637,7 +1830,6 @@ impl Shell {
             .into_element();
             let hover_id = id.clone();
             let leave_id = id.clone();
-            let scroll_id = id.clone();
             let button = mouse_area(button)
                 .on_enter(message(Event::Preview(crate::dock_hover::Event::Enter(
                     hover_id, origin,
@@ -1650,18 +1842,26 @@ impl Shell {
             } else {
                 button
             };
-            let button = if group.windows.len() > 1 {
-                button.on_scroll(move |delta| {
-                    message(Event::Preview(crate::dock_hover::Event::Cycle(
-                        scroll_id.clone(),
-                        delta,
-                    )))
-                })
+            let button: Element<'_, Message> = if group.windows.len() > 1 {
+                let scroll = if in_bar {
+                    &self.dock.bar_scroll
+                } else {
+                    &self.dock.dock_scroll
+                };
+                iced::widget::stack([
+                    button.into(),
+                    Element::new(crate::dock_hover::WheelTarget {
+                        id: id.clone(),
+                        size: iced::Size::new(width, target),
+                        scroll: scroll.clone(),
+                    }),
+                ])
+                .into()
             } else {
-                button
+                button.into()
             };
             let button: Element<'_, Message> = if running && p.hover_previews {
-                button.into()
+                button
             } else {
                 let tip = enzui_widgets::tooltip::TooltipTokens {
                     gap: spacing.sm(),
@@ -1669,25 +1869,35 @@ impl Shell {
                     ..enzui_widgets::tooltip::TooltipTokens::from_palette(&palette)
                 };
                 enzui_widgets::tooltip::enz_tooltip_with_tokens(
-                    button.into(),
+                    button,
                     group.title.clone(),
                     tooltip,
                     tip,
                 )
             };
-            buttons.push((
-                group.id.clone(),
-                enz_context_menu_host(button, model, &self.dock.closed, move |event| {
-                    message(Event::Invoke(id.clone(), origin, event))
+            let menu_id = id.clone();
+            let button = enz_context_menu_host(button, model, &self.dock.closed, move |event| {
+                message(Event::Invoke(menu_id.clone(), origin, event))
+            })
+            .into();
+            let button = if group.file_target.is_some() {
+                enz_file_drop_target_with_receipt(button, move |drop| {
+                    message(Event::DropOnApp(id.clone(), drop))
                 })
-                .into(),
-            ));
+                .copy_only(true)
+                .key(&group.id)
+                .into()
+            } else {
+                button
+            };
+            buttons.push((group.id.clone(), button));
         }
         if buttons.is_empty() {
             let add = container(
                 enz_toolbar_icon("plus", Message::ShowLauncher)
                     .tokens(ToolbarIconTokens::from_palette(&palette))
                     .aria_label(tr("shell-search-for-an-application-to-keep-in-the-dock"))
+                    .id("dock-add-app".into())
                     .into_element(),
             )
             .center_x(target)
@@ -1878,24 +2088,27 @@ impl Shell {
                 };
                 let framed = g.framed;
                 let body = self.dock_folder_target(
-                    container(scroll.into_element())
-                        .padding(g.padding)
-                        .center_x(g.body.width)
-                        .center_y(g.body.height)
-                        .style(move |_| container::Style {
-                            background: (p.style != Style::Minimal && glass.is_none())
-                                .then_some(palette.surface.into()),
-                            border: iced::Border {
-                                radius,
-                                width: f32::from(
-                                    p.style != Style::Minimal && (!framed || glass.is_some()),
-                                ),
-                                color: palette.border,
-                            },
-                            shadow,
-                            ..Default::default()
-                        })
-                        .into(),
+                    container(enzui_widgets::scroll_view::publish_geometry_of(
+                        scroll.into_element(),
+                        self.dock.dock_scroll.clone(),
+                    ))
+                    .padding(g.padding)
+                    .center_x(g.body.width)
+                    .center_y(g.body.height)
+                    .style(move |_| container::Style {
+                        background: (p.style != Style::Minimal && glass.is_none())
+                            .then_some(palette.surface.into()),
+                        border: iced::Border {
+                            radius,
+                            width: f32::from(
+                                p.style != Style::Minimal && (!framed || glass.is_some()),
+                            ),
+                            color: palette.border,
+                        },
+                        shadow,
+                        ..Default::default()
+                    })
+                    .into(),
                 );
                 let body = mouse_area(body)
                     .on_enter(message(Event::Hover(true, true)))

@@ -393,8 +393,18 @@ impl Change {
                 | (crate::dock::Change::EnableAndPin(a), crate::dock::Change::EnableAndPin(b)) => {
                     a == b
                 }
-                (crate::dock::Change::Move(..) | crate::dock::Change::ReorderPins(_), _)
-                | (_, crate::dock::Change::Move(..) | crate::dock::Change::ReorderPins(_)) => false,
+                (
+                    crate::dock::Change::Move(..)
+                    | crate::dock::Change::MoveFolder(..)
+                    | crate::dock::Change::ReorderPins(_),
+                    _,
+                )
+                | (
+                    _,
+                    crate::dock::Change::Move(..)
+                    | crate::dock::Change::MoveFolder(..)
+                    | crate::dock::Change::ReorderPins(_),
+                ) => false,
                 _ => std::mem::discriminant(a) == std::mem::discriminant(b),
             },
             (Self::Search(a), Self::Search(b)) => a.same_key(b),

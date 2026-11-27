@@ -953,6 +953,41 @@ impl Compositor {
         spawn_desktop_application(command).await
     }
 
+    /// Passes local files to an installed application's desktop entry.
+    pub async fn open_dock_files(
+        &self,
+        app: AppTarget,
+        paths: &[std::path::PathBuf],
+    ) -> Result<(), String> {
+        drop(session::Target::from_environment()?.connect()?);
+        let AppTarget::Desktop { path, identity } = app else {
+            return Err(tr("shell-application-is-no-longer-installed").into());
+        };
+        if paths.is_empty() || paths.len() > 64 || paths.iter().any(|path| !path.is_absolute()) {
+            return Err(tr("shell-invalid-dock-drop").into());
+        }
+        for path in paths {
+            if !tokio::fs::metadata(path)
+                .await
+                .is_ok_and(|meta| meta.is_file() || meta.is_dir())
+            {
+                return Err(tr("shell-item-is-no-longer-available").into());
+            }
+        }
+        identity.verify(&path)?;
+        if !crate::parental::entry_allowed(&path) {
+            return Err(tr("shell-this-app-is-not-allowed-on-this-account").into());
+        }
+        let app = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default();
+        let mut command = scoped(app, std::ffi::OsStr::new("/usr/bin/gio"));
+        command.args(["launch", "--"]).arg(path);
+        command.args(paths.iter().map(|path| crate::desktop_portal::uri(path)));
+        spawn_desktop_application(command).await
+    }
+
     pub async fn open_dock_folder(&self, root: &Path, path: &Path) -> Result<(), String> {
         drop(session::Target::from_environment()?.connect()?);
         if !path.is_absolute()

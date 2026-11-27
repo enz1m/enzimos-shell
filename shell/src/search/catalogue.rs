@@ -66,6 +66,16 @@ enum EntryPurpose {
     Identity,
 }
 
+fn exec_accepts_files(exec: &str) -> bool {
+    let mut chars = exec.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '%' && matches!(chars.next(), Some('f' | 'F' | 'u' | 'U')) {
+            return true;
+        }
+    }
+    false
+}
+
 fn desktop_entry(
     path: &Path,
     id: &str,
@@ -145,23 +155,31 @@ fn desktop_entry(
         .and_then(|exec| exec.split_whitespace().next())
         .map(PathBuf::from)
         .filter(|program| program.is_absolute());
-    Some((
-        Item::new(
-            format!("app:desktop/{id}"),
-            Category::Apps,
-            title,
-            comment,
-            tr("shell-open"),
-            "app-window",
-            Some(Target::App(AppTarget::Desktop {
-                path: path.to_owned(),
-                identity,
-            })),
-        )
-        .with_image(image),
-        program,
-        fields.contains_key("X-Flatpak"),
-    ))
+    let mut item = Item::new(
+        format!("app:desktop/{id}"),
+        Category::Apps,
+        title,
+        comment,
+        tr("shell-open"),
+        "app-window",
+        Some(Target::App(AppTarget::Desktop {
+            path: path.to_owned(),
+            identity,
+        })),
+    )
+    .with_image(image);
+    item.theme_icon = fields.get("Icon").map(|icon| (*icon).to_owned());
+    if fields.get("DBusActivatable") == Some(&"true")
+        || fields
+            .get("Exec")
+            .is_some_and(|exec| exec_accepts_files(exec))
+    {
+        item.file_target = match &item.target {
+            Some(Target::App(target)) => Some(target.clone()),
+            _ => None,
+        };
+    }
+    Some((item, program, fields.contains_key("X-Flatpak")))
 }
 pub fn scan(root: &Path, directories: &[PathBuf]) -> Vec<Item> {
     scan_cancellable(
@@ -296,6 +314,8 @@ pub fn scan_cancellable(
                     builtin.target.clone(),
                 )
                 .with_image(item.image);
+                result[index].theme_icon = item.theme_icon;
+                result[index].file_target = item.file_target;
                 continue;
             }
             if flatpak {
@@ -423,6 +443,10 @@ fn exec_program(path: &Path) -> Option<String> {
 
 /// Resolves a running app ID through its desktop entry, then the icon theme.
 pub fn icon_for_app_id(id: &str) -> Option<PathBuf> {
+    icon_for_app_id_at(id, 48, 48)
+}
+
+pub(crate) fn icon_for_app_id_at(id: &str, size: u32, pixels: u32) -> Option<PathBuf> {
     let id = id.trim();
     if id.is_empty() || id.len() > 200 || id.contains(['/', '\0']) || id.starts_with('.') {
         return None;
@@ -439,12 +463,13 @@ pub fn icon_for_app_id(id: &str) -> Option<PathBuf> {
         .filter(|path| path.is_file())
         .find_map(|path| {
             let file = path.file_name()?.to_str()?.to_owned();
-            desktop_entry(&path, &file, EntryPurpose::Identity)?.0.image
+            let item = desktop_entry(&path, &file, EntryPurpose::Identity)?.0;
+            crate::icon_theme::lookup_for_output(item.theme_icon.as_deref()?, size, pixels)
         })
         .or_else(|| {
             candidates
                 .iter()
-                .find_map(|name| crate::icon_theme::lookup(name, 48))
+                .find_map(|name| crate::icon_theme::lookup_for_output(name, size, pixels))
         })
 }
 /// A running app ID's display name from its desktop entry, when one exists.

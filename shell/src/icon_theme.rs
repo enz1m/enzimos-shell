@@ -42,17 +42,14 @@ impl Directory {
             Kind::Threshold(t) => self.size.abs_diff(size) <= t,
         }
     }
-    fn distance(&self, size: u32) -> u32 {
+    fn distance(&self, pixels: u32) -> u32 {
+        let scaled = |size: u32| size.saturating_mul(self.scale);
         match self.kind {
-            Kind::Fixed => self.size.abs_diff(size),
-            Kind::Scalable { min, max } => {
-                if size < min {
-                    min - size
-                } else {
-                    size.saturating_sub(max)
-                }
-            }
-            Kind::Threshold(t) => self.size.abs_diff(size).saturating_sub(t),
+            Kind::Fixed => scaled(self.size).abs_diff(pixels),
+            Kind::Scalable { min, max } => scaled(min)
+                .saturating_sub(pixels)
+                .max(pixels.saturating_sub(scaled(max))),
+            Kind::Threshold(t) => scaled(self.size).abs_diff(pixels).saturating_sub(scaled(t)),
         }
     }
 }
@@ -288,7 +285,7 @@ struct Resolver {
     theme: String,
     bases: Vec<PathBuf>,
     themes: HashMap<String, Option<Theme>>,
-    found: HashMap<(String, u32), Option<PathBuf>>,
+    found: HashMap<(String, u32, u32), Option<PathBuf>>,
 }
 
 fn selected() -> &'static RwLock<Option<String>> {
@@ -371,7 +368,7 @@ impl Resolver {
         chain
     }
 
-    fn in_theme(theme: &Theme, name: &str, size: u32) -> Option<PathBuf> {
+    fn in_theme(theme: &Theme, name: &str, size: u32, pixels: u32) -> Option<PathBuf> {
         let file = |dir: &Directory| {
             theme.roots.iter().find_map(|root| {
                 EXTENSIONS
@@ -380,28 +377,35 @@ impl Resolver {
                     .find(|path| usable(path))
             })
         };
-        let unscaled = theme.directories.iter().filter(|dir| dir.scale == 1);
-        if let Some(path) = unscaled
-            .clone()
-            .filter(|dir| dir.matches(size))
+        if let Some(path) = theme
+            .directories
+            .iter()
+            .filter(|dir| {
+                dir.size > 0 && size.saturating_mul(dir.scale) == pixels && dir.matches(size)
+            })
             .find_map(file)
         {
             return Some(path);
         }
-        let mut candidates: Vec<&Directory> = unscaled.collect();
-        candidates.sort_by_key(|dir| (dir.distance(size), u32::MAX - dir.size));
+        let mut candidates: Vec<_> = theme.directories.iter().collect();
+        candidates.sort_by_key(|dir| {
+            (
+                dir.distance(pixels),
+                std::cmp::Reverse(dir.size.saturating_mul(dir.scale)),
+            )
+        });
         candidates.into_iter().find_map(file)
     }
 
-    fn lookup(&mut self, name: &str, size: u32) -> Option<PathBuf> {
-        let key = (name.to_owned(), size);
+    fn lookup(&mut self, name: &str, size: u32, pixels: u32) -> Option<PathBuf> {
+        let key = (name.to_owned(), size, pixels);
         if let Some(found) = self.found.get(&key) {
             return found.clone();
         }
         let path = self
             .chain()
             .iter()
-            .find_map(|theme| Self::in_theme(theme, name, size))
+            .find_map(|theme| Self::in_theme(theme, name, size, pixels))
             .or_else(|| {
                 let pixmaps = Path::new("/usr/share/pixmaps");
                 EXTENSIONS
@@ -417,6 +421,11 @@ impl Resolver {
 /// Resolves SVG/PNG icons through the selected theme, parents, hicolor and pixmaps; accepts
 /// absolute paths.
 pub fn lookup(icon: &str, size: u32) -> Option<PathBuf> {
+    lookup_for_output(icon, size, size)
+}
+
+/// Resolves a theme icon for a logical size and the output's physical raster size.
+pub fn lookup_for_output(icon: &str, size: u32, pixels: u32) -> Option<PathBuf> {
     let icon = icon.trim();
     if icon.is_empty() || icon.len() > 512 || icon.contains('\0') {
         return None;
@@ -438,20 +447,19 @@ pub fn lookup(icon: &str, size: u32) -> Option<PathBuf> {
         .chain(["xpm"].iter())
         .find_map(|ext| icon.strip_suffix(&format!(".{ext}")))
         .unwrap_or(icon);
+    let selected = selected()
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut guard = resolver()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let resolver = guard.get_or_insert_with(|| Resolver {
-        theme: selected()
-            .read()
-            .ok()
-            .and_then(|theme| theme.clone())
-            .unwrap_or_else(default_theme),
+        theme: selected.clone().unwrap_or_else(default_theme),
         bases: base_directories(),
         themes: HashMap::new(),
         found: HashMap::new(),
     });
-    resolver.lookup(name, size)
+    resolver.lookup(name, size, pixels)
 }
 
 /// The drawable source for a resolved icon file.
@@ -463,5 +471,40 @@ pub fn source(path: &Path) -> enzui_widgets::icon::IconSource {
         iced::widget::svg::Handle::from_path(path).into()
     } else {
         iced::widget::image::Handle::from_path(path).into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raster_lookup_keeps_distinct_results_for_mixed_output_scales() {
+        let base = tempfile::tempdir().expect("icon theme fixture");
+        let root = base.path().join("density");
+        let index = "[Icon Theme]\nName=Density\nDirectories=24/apps\nScaledDirectories=18@2/apps,24@2/apps\n\n[24/apps]\nSize=24\nType=Fixed\n\n[18@2/apps]\nSize=18\nScale=2\nType=Fixed\n\n[24@2/apps]\nSize=24\nScale=2\nType=Fixed\n";
+        for directory in ["24/apps", "18@2/apps", "24@2/apps"] {
+            let path = root.join(directory);
+            std::fs::create_dir_all(&path).expect("theme directory");
+            std::fs::write(path.join("terminal.png"), b"raster").expect("raster icon");
+        }
+        std::fs::write(root.join("index.theme"), index).expect("theme index");
+        let mut resolver = Resolver {
+            theme: "density".to_owned(),
+            bases: vec![base.path().to_owned()],
+            themes: HashMap::new(),
+            found: HashMap::new(),
+        };
+        for (pixels, directory) in [
+            (24, "24/apps"),
+            (36, "18@2/apps"),
+            (48, "24@2/apps"),
+            (24, "24/apps"),
+        ] {
+            assert_eq!(
+                resolver.lookup("terminal", 24, pixels),
+                Some(root.join(directory).join("terminal.png")),
+            );
+        }
     }
 }

@@ -4519,7 +4519,6 @@ shell-now = ahora
 shell-minimal = Mínima
 shell-ipv4-address = Dirección IPv4
 shell-ipv6-address = Dirección IPv6
-shell-windows-2 = { $arg0 } · { $arg1 } ventanas{ $arg2 }{ $arg3 }{ $arg4 }
 shell-could-not-be-turned-on = No se ha podido activar { $arg0 }
 shell-in-use-by = { $arg0 } en uso por { $arg1 }
 shell-settings-5 = Ajustes de { $arg0 }
@@ -5636,3 +5635,12 @@ shell-assistant-attachment-vision-required = Las imágenes requieren un modelo c
 shell-assistant-local-context-limit = La solicitud es demasiado extensa para el modelo local. Acorta el mensaje o quita un archivo adjunto.
 shell-assistant-stale-revision = La última respuesta ha cambiado. Vuelve a abrir el chat e inténtalo de nuevo.
 shell-agent-tool-screenshot = Hacer una captura de pantalla
+
+shell-dock-window-count = { $title } · { $count ->
+    [one] { $count } ventana
+   *[other] { $count } ventanas
+    }
+shell-dock-unread-count = { " " }· { $count } sin leer
+shell-show-minimized-window = Mostrar la ventana minimizada { $title }
+shell-invalid-dock-drop = Suelta hasta 64 archivos locales para abrirlos en la aplicación.
+shell-focus-the-dock = Dar el foco al dock

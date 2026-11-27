@@ -90,6 +90,7 @@ pub enum Change {
     PinFolders(Vec<String>),
     UnpinFolder(String),
     Move(String, i8),
+    MoveFolder(String, i8),
     ReorderPins(enzui_core::drag::DropRequest),
 }
 impl Material {
@@ -208,14 +209,8 @@ impl Preferences {
                     next.pins = diff.order.into_iter().map(|id| id.0).collect();
                 }
             }
-            Change::Move(id, step) => {
-                if let Some(index) = next.pins.iter().position(|known| known == id) {
-                    let to = (index as isize + isize::from(*step))
-                        .clamp(0, next.pins.len() as isize - 1)
-                        as usize;
-                    next.pins.swap(index, to);
-                }
-            }
+            Change::Move(id, step) => move_pin(&mut next.pins, id, *step),
+            Change::MoveFolder(uri, step) => move_pin(&mut next.folders, uri, *step),
         }
         next.validate()?;
         *self = next;
@@ -258,6 +253,15 @@ pub fn valid_app_id(id: &str) -> bool {
             .unwrap_or_default()
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+}
+
+fn move_pin(pins: &mut [String], id: &str, step: i8) {
+    if let Some(index) = pins.iter().position(|known| known == id) {
+        let to = index
+            .saturating_add_signed(isize::from(step))
+            .min(pins.len() - 1);
+        pins.swap(index, to);
+    }
 }
 
 pub const MAX_FOLDERS: usize = 16;
@@ -323,7 +327,7 @@ pub struct App {
     pub classes: Vec<String>,
 }
 impl App {
-    pub fn from_item(mut item: Item) -> Option<Self> {
+    pub fn from_item(item: Item) -> Option<Self> {
         let Target::App(target) = item.target.as_ref()? else {
             return None;
         };
@@ -344,7 +348,18 @@ impl App {
                 classes = crate::search::catalogue::application_ids(path);
             }
         }
-        if let AppTarget::Prepared(id) = target {
+        Some(Self { item, classes })
+    }
+
+    fn image(&self, size: u32, pixels: u32) -> Option<std::path::PathBuf> {
+        let themed = |name| crate::icon_theme::lookup_for_output(name, size, pixels);
+        if let Some(name) = &self.item.theme_icon {
+            return themed(name);
+        }
+        self.item.image.clone().or_else(|| {
+            let Some(Target::App(AppTarget::Prepared(id))) = &self.item.target else {
+                return None;
+            };
             let names: &[&str] = match id.as_str() {
                 "terminal-emulator" => &["io.github.enzui.Terminal", "utilities-terminal"],
                 "files-app" => &["io.github.enzui.Files", "system-file-manager", "folder"],
@@ -357,18 +372,11 @@ impl App {
                 "task-manager-app" => &["io.github.enzui.TaskManager", "utilities-system-monitor"],
                 _ => &["application-x-executable"],
             };
-            item.image = item.image.clone().or_else(|| {
-                classes
-                    .iter()
-                    .find_map(|class| crate::search::catalogue::icon_for_app_id(class))
-                    .or_else(|| {
-                        names
-                            .iter()
-                            .find_map(|name| crate::icon_theme::lookup(name, 24))
-                    })
-            });
-        }
-        Some(Self { item, classes })
+            self.classes
+                .iter()
+                .find_map(|class| crate::search::catalogue::icon_for_app_id_at(class, size, pixels))
+                .or_else(|| names.iter().find_map(|name| themed(name)))
+        })
     }
 }
 fn same_class(left: &str, right: &str) -> bool {
@@ -468,6 +476,7 @@ pub struct Group {
     pub icon: String,
     pub image: Option<std::path::PathBuf>,
     pub app: Option<AppTarget>,
+    pub file_target: Option<AppTarget>,
     pub pinned: bool,
     pub builtin: Option<Builtin>,
     pub windows: Vec<Window>,
@@ -485,7 +494,11 @@ pub fn groups(
     apps: &[App],
     windows: &[Window],
     desktop: i64,
+    icon_size: f32,
+    scale: f32,
 ) -> Vec<Group> {
+    let size = icon_size.round() as u32;
+    let pixels = (icon_size * scale).round() as u32;
     // Client enumeration follows compositor z-order; focus must not reorder
     // dock slots, hover cards or the next window in a cycling sequence.
     let mut ordered: Vec<_> = windows.iter().map(|w| (w.group_id(), w)).collect();
@@ -538,18 +551,17 @@ pub fn groups(
                 }),
             icon: app.map_or_else(|| "app-window".into(), |a| a.item.icon.clone()),
             image: app
-                .and_then(|a| a.item.image.clone())
+                .and_then(|a| a.image(size, pixels))
                 .or_else(|| {
-                    own.first()
-                        .and_then(|w| crate::search::catalogue::icon_for_app_id(&w.class))
+                    own.first().and_then(|w| {
+                        crate::search::catalogue::icon_for_app_id_at(&w.class, size, pixels)
+                    })
                 })
                 .or_else(|| {
-                    crate::icon_theme::lookup(
-                        "application-x-executable",
-                        u32::from(preferences.icon_size),
-                    )
+                    crate::icon_theme::lookup_for_output("application-x-executable", size, pixels)
                 }),
             app: target,
+            file_target: app.and_then(|app| app.item.file_target.clone()),
             pinned: preferences.pins.contains(&id),
             builtin: None,
             windows: own,
@@ -583,6 +595,7 @@ pub fn groups(
             icon: builtin.icon().into(),
             image: None,
             app: None,
+            file_target: None,
             pinned: matches!(builtin, Builtin::Folder(_)),
             builtin: Some(builtin),
             windows: Vec::new(),
@@ -895,6 +908,7 @@ pub fn obscured(p: &Preferences, geometry: &Geometry, windows: &[Window]) -> boo
 pub struct Snapshot {
     pub windows: Vec<Window>,
     pub screen: Size,
+    pub scale: f32,
     pub output: String,
     pub output_id: i64,
     pub desktop: i64,
@@ -989,6 +1003,7 @@ impl crate::compositor::Compositor {
         Ok(Snapshot {
             windows,
             screen,
+            scale: scale as f32,
             output: output["name"]
                 .as_str()
                 .ok_or_else(|| tr("shell-missing-output-name"))?
@@ -1300,7 +1315,7 @@ mod tests {
             pins: vec![apps[2].item.id.clone()],
             ..Default::default()
         };
-        let groups = groups(&prefs, &apps, &[running], 1);
+        let groups = groups(&prefs, &apps, &[running], 1, 24.0, 1.0);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].windows.len(), 1);
         assert_eq!(

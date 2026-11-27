@@ -4470,7 +4470,6 @@ shell-now = now
 shell-minimal = Minimal
 shell-ipv4-address = IPv4 address
 shell-ipv6-address = IPv6 address
-shell-windows-2 = { $arg0 } · { $arg1 } windows{ $arg2 }{ $arg3 }{ $arg4 }
 shell-could-not-be-turned-on = { $arg0 } could not be turned on
 shell-in-use-by = { $arg0 } in use by { $arg1 }
 shell-settings-5 = { $arg0 } settings
@@ -5671,3 +5670,12 @@ shell-assistant-attachment-vision-required = Image attachments require a vision 
 shell-assistant-local-context-limit = This request is too large for the local model. Shorten the message or remove an attachment.
 shell-assistant-stale-revision = The last reply changed. Reopen this chat and try again.
 shell-agent-tool-screenshot = Take a screenshot
+
+shell-dock-window-count = { $title } · { $count ->
+    [one] { $count } window
+   *[other] { $count } windows
+    }
+shell-dock-unread-count = { " " }· { $count } unread
+shell-show-minimized-window = Show minimized window { $title }
+shell-invalid-dock-drop = Drop up to 64 local files to open them in the application.
+shell-focus-the-dock = Focus the dock

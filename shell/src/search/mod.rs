@@ -1,5 +1,5 @@
-use enzui_shell::{i18n::tr, settings_catalog::SearchRank};
 use enzui_shell::tr;
+use enzui_shell::{i18n::tr, settings_catalog::SearchRank};
 /// How many apps the launcher's blank page shows in its icon row.
 pub const TOP_APPS: usize = 6;
 
@@ -81,6 +81,8 @@ pub struct Item {
     /// The application's own icon file from the icon theme, drawn instead of
     /// `icon` when present.
     pub image: Option<std::path::PathBuf>,
+    pub(crate) theme_icon: Option<String>,
+    pub(crate) file_target: Option<AppTarget>,
     pub target: Option<Target>,
     /// The app a result comes from, heading its group.
     pub source: Option<Arc<str>>,
@@ -111,6 +113,8 @@ impl Item {
             verb,
             icon: icon.into(),
             image: None,
+            theme_icon: None,
+            file_target: None,
             target,
             source: None,
         }

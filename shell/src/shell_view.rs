@@ -1217,8 +1217,7 @@ impl Shell {
             .height(f32::from(self.metrics.bar));
         for (section, item) in items {
             if let Some(item) = item {
-                let zone_limit = if section == Section::Middle
-                    && self.dock_active()
+                let has_dock = self.dock_active()
                     && self.dock.preferences.position == enzui_shell::dock::Position::Bar
                     && self.dock.surface_element.as_ref().is_some_and(|(_, dock)| {
                         self.desired_settings
@@ -1226,22 +1225,30 @@ impl Shell {
                             .items(section)
                             .iter()
                             .any(|item| item.enabled() && item.id() == dock)
-                    }) {
+                    });
+                let zone_limit = if has_dock && section == Section::Middle {
                     width
                 } else {
                     limit
                 };
-                let view = container(
-                    enz_scroll_view(item)
-                        .axis(Axis::Horizontal)
-                        .width(Length::Shrink)
-                        .height(f32::from(self.metrics.bar))
-                        .id(format!("bar-scroll-{}", section.key()).into())
-                        .backdrop(self.tokens().palette.surface)
-                        .into_element(),
-                )
-                .width(Length::Shrink.max(zone_limit))
-                .into();
+                let scroll = enz_scroll_view(item)
+                    .axis(Axis::Horizontal)
+                    .width(Length::Shrink)
+                    .height(f32::from(self.metrics.bar))
+                    .id(format!("bar-scroll-{}", section.key()).into())
+                    .backdrop(self.tokens().palette.surface)
+                    .into_element();
+                let scroll = if has_dock {
+                    enzui_widgets::scroll_view::publish_geometry_of(
+                        scroll,
+                        self.dock.bar_scroll.clone(),
+                    )
+                } else {
+                    scroll
+                };
+                let view = container(scroll)
+                    .width(Length::Shrink.max(zone_limit))
+                    .into();
                 zones = match section {
                     Section::Start => zones.start(view),
                     Section::Middle => zones.center(view),

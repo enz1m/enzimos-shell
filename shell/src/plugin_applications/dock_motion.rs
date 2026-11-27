@@ -171,6 +171,7 @@ mod tests {
             icon: String::new(),
             image: None,
             app: None,
+            file_target: None,
             pinned: false,
             builtin: None,
             windows: Vec::new(),

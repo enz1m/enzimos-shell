@@ -134,6 +134,7 @@ impl Shell {
                     .as_ref()
                     .is_some_and(|snapshot| snapshot.tiling),
             )),
+            Command::FocusDock => self.dock_focus_keyboard(),
             Command::Dock => self.dock_save(enzui_shell::dock::Change::Enabled(
                 !self
                     .dock_owner()

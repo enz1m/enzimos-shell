@@ -35,6 +35,7 @@ pub const ACTIONS: &[Action] = actions![
     "shortcuts", "Show keyboard shortcuts", "System", "SUPER + code:61";
     "controls", "Open Control Center", "System", "SUPER + C";
     "dock", "Turn the dock on or off", "System", "SUPER + SHIFT + D";
+    "focus-dock", "Focus the dock", "Accessibility", "SUPER + ALT + D";
     "lock", "Lock the screen", "System", "SUPER + L";
     "notifications", "Show notifications", "System", "SUPER + N";
     "settings", "Open Settings", "System", "SUPER + code:59";
@@ -104,6 +105,7 @@ const NEW_DEFAULTS: &[&str] = &[
     "shortcuts",
     "controls",
     "dock",
+    "focus-dock",
     "overview",
     "desktop-layout",
     "desktop-before",

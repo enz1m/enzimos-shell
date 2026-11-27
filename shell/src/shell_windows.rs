@@ -5,6 +5,12 @@ use iced::{Task, window};
 
 impl Shell {
     pub(crate) fn update_windows(&mut self, message: Message) -> Task<Message> {
+        if let Message::Escape(id) | Message::Window(id, window::Event::Unfocused) = &message
+            && self.dock.menu.is_none()
+            && let Some(task) = self.dock_end_keyboard(*id, matches!(&message, Message::Escape(_)))
+        {
+            return task;
+        }
         match message {
             Message::Escape(id)
             | Message::Window(id, window::Event::CloseRequested | window::Event::Unfocused)

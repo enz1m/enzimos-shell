@@ -662,6 +662,9 @@ impl Compositor {
         self.focus_owned_popup("dev.enzui.PluginPanel", tr("shell-plugin-panel"))
             .await
     }
+    pub async fn focus_desktop_bar(&self) -> Result<(), String> {
+        self.focus_owned_popup("dev.enzui.Desktop", "bar").await
+    }
     pub async fn restore_bar_from_dock(&self) -> Result<(), String> {
         self.focus_owned_popup_if("dev.enzui.Desktop", "bar", Some("dev.enzui.Dock"))
             .await

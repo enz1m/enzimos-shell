@@ -20,6 +20,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+const THUMBNAIL_WIDTH: u32 = 160;
+const THUMBNAIL_HEIGHT: u32 = 106;
+
 #[derive(Clone, Debug)]
 pub(crate) enum Event {
     Enter(String, Origin),
@@ -28,7 +31,7 @@ pub(crate) enum Event {
     Bounds(u64, Origin, Option<Rectangle>),
     Point(u64, Result<iced::Point, String>),
     Refresh(u64),
-    Picture(u64, WindowTarget, Option<image::Handle>),
+    Picture(u64, WindowTarget, [u32; 2], Option<image::Handle>),
     Hold(bool),
     Dismiss(u64),
     Focus(WindowTarget),
@@ -43,6 +46,7 @@ pub(crate) struct Preview {
     body: Rectangle,
     point: iced::Point,
     position: Position,
+    pixels: [u32; 2],
 }
 #[derive(Default)]
 pub(crate) struct State {
@@ -60,6 +64,7 @@ pub(crate) struct State {
 struct Picture {
     target: WindowTarget,
     handle: Option<image::Handle>,
+    pixels: [u32; 2],
     time: Instant,
 }
 
@@ -103,36 +108,44 @@ impl Gesture {
     }
 }
 impl State {
-    fn picture(&self, target: &WindowTarget) -> Option<&Picture> {
-        self.pictures.iter().find(|p| p.target == *target)
+    fn picture(&self, target: &WindowTarget, pixels: [u32; 2]) -> Option<&Picture> {
+        self.pictures
+            .iter()
+            .find(|p| p.target == *target && p.pixels == pixels)
     }
 
-    fn cache(&mut self, target: WindowTarget, picture: Option<image::Handle>) -> bool {
+    fn cache(
+        &mut self,
+        target: WindowTarget,
+        pixels: [u32; 2],
+        picture: Option<image::Handle>,
+    ) -> bool {
         let old = self
             .pictures
             .iter()
             .position(|p| p.target == target)
             .and_then(|index| self.pictures.remove(index));
-        let unchanged = old
-            .as_ref()
-            .is_some_and(|old| match (&old.handle, &picture) {
-                (None, None) => true,
-                (
-                    Some(image::Handle::Rgba {
-                        width,
-                        height,
-                        pixels,
-                        ..
-                    }),
-                    Some(image::Handle::Rgba {
-                        width: new_width,
-                        height: new_height,
-                        pixels: new_pixels,
-                        ..
-                    }),
-                ) => (width, height, pixels) == (new_width, new_height, new_pixels),
-                _ => false,
-            });
+        let unchanged = old.as_ref().is_some_and(|old| {
+            old.pixels == pixels
+                && match (&old.handle, &picture) {
+                    (None, None) => true,
+                    (
+                        Some(image::Handle::Rgba {
+                            width,
+                            height,
+                            pixels,
+                            ..
+                        }),
+                        Some(image::Handle::Rgba {
+                            width: new_width,
+                            height: new_height,
+                            pixels: new_pixels,
+                            ..
+                        }),
+                    ) => (width, height, pixels) == (new_width, new_height, new_pixels),
+                    _ => false,
+                }
+        });
         let handle = if unchanged {
             old.and_then(|old| old.handle)
         } else {
@@ -141,6 +154,7 @@ impl State {
         self.pictures.push_front(Picture {
             target,
             handle,
+            pixels,
             time: Instant::now(),
         });
         self.pictures.truncate(24);
@@ -237,6 +251,79 @@ pub(crate) fn place(
         height,
     }
 }
+pub(super) struct WheelTarget {
+    pub id: String,
+    pub size: iced::Size,
+    pub scroll: enzui_widgets::scroll_view::ScrollGeometryCell,
+}
+
+impl iced::advanced::Widget<Message, iced::Theme, iced::Renderer> for WheelTarget {
+    fn size(&self) -> iced::Size<iced::Length> {
+        iced::Size::new(self.size.width.into(), self.size.height.into())
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut iced::advanced::widget::Tree,
+        _: &iced::Renderer,
+        limits: &iced::advanced::layout::Limits,
+    ) {
+        let size =
+            <Self as iced::advanced::Widget<Message, iced::Theme, iced::Renderer>>::size(self);
+        iced::advanced::layout::empty(limits, size.width, size.height).apply(tree);
+    }
+
+    fn update(
+        &mut self,
+        _: &mut iced::advanced::widget::Tree,
+        event: &iced::Event,
+        layout: iced::advanced::Layout,
+        cursor: iced::mouse::Cursor,
+        _: &iced::Renderer,
+        shell: &mut iced::advanced::Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        if let iced::Event::Mouse(iced::mouse::Event::WheelScrolled { delta }) = event
+            && cursor.is_over(layout.bounds())
+            && cursor.is_over(*viewport)
+            && !self
+                .scroll
+                .get()
+                .is_some_and(|geometry| geometry.is_overflowing())
+        {
+            shell.publish(message(Event::Cycle(self.id.clone(), *delta)));
+            shell.capture_event();
+        }
+    }
+
+    fn frame_interest(&self, _: &iced::advanced::widget::Tree) -> bool {
+        false
+    }
+
+    fn draw(
+        &self,
+        _: &iced::advanced::widget::Tree,
+        _: &mut iced::Renderer,
+        _: &iced::Theme,
+        _: &iced::advanced::renderer::Style,
+        _: iced::advanced::Layout,
+        _: iced::mouse::Cursor,
+        _: &Rectangle,
+    ) {
+    }
+}
+
+pub(super) fn window_context(
+    window: &Window,
+    snapshot: &enzui_shell::dock::Snapshot,
+) -> Option<String> {
+    if window.minimized {
+        return Some(tr("shell-minimized").to_owned());
+    }
+    (window.output != snapshot.output_id || window.workspace != snapshot.desktop)
+        .then(|| tr!("shell-desktop-number", "arg0" => window.workspace))
+}
+
 pub(crate) fn cycle_target(
     windows: &[Window],
     previous: Option<&str>,
@@ -376,6 +463,11 @@ impl Shell {
                     body,
                     point,
                     position,
+                    pixels: [THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT].map(|size| {
+                        (size as f32 * self.dock.snapshot.as_ref().map_or(1.0, |s| s.scale))
+                            .ceil()
+                            .clamp(1.0, 640.0) as u32
+                    }),
                 });
                 self.dock.hidden = false;
                 self.dock_capture_previews(serial)
@@ -384,7 +476,7 @@ impl Shell {
                 self.quiet = true;
                 self.dock_capture_previews(serial)
             }
-            Event::Picture(serial, target, picture) => {
+            Event::Picture(serial, target, pixels, picture) => {
                 self.dock.preview.busy = false;
                 let current = self.dock.preview.preview.as_ref().map(|p| p.serial);
                 if current != Some(serial) {
@@ -392,7 +484,7 @@ impl Shell {
                     return current
                         .map_or_else(Task::none, |serial| self.dock_capture_previews(serial));
                 }
-                if self.dock.preview.cache(target, picture) {
+                if self.dock.preview.cache(target, pixels, picture) {
                     self.redraw_only = self.dock.window;
                 } else {
                     self.quiet = true;
@@ -481,13 +573,14 @@ impl Shell {
             return Task::none();
         }
         let target = visible[preview.next % visible.len()].target.clone();
+        let pixels = preview.pixels;
         let first = preview.next < visible.len();
         preview.next = preview.next.wrapping_add(1);
         if first
             && self
                 .dock
                 .preview
-                .picture(&target)
+                .picture(&target, pixels)
                 .is_some_and(|p| p.time.elapsed() < Duration::from_millis(320))
         {
             return Task::done(message(Event::Refresh(serial)));
@@ -507,8 +600,8 @@ impl Shell {
                         enzui_shell::previews::capture_window(
                             root,
                             target.address.clone(),
-                            160,
-                            106,
+                            pixels[0],
+                            pixels[1],
                         ),
                     )
                     .await
@@ -523,25 +616,27 @@ impl Shell {
                 }
                 (target, picture)
             },
-            move |(target, picture)| message(Event::Picture(serial, target, picture)),
+            move |(target, picture)| message(Event::Picture(serial, target, pixels, picture)),
         )
     }
     pub(crate) fn dock_preview_view(&self) -> Option<Element<'_, Message>> {
         let preview = self.dock.preview.preview.as_ref()?;
-        let palette = self.tokens().palette;
+        let palette = self.window_tokens(self.dock.window).palette;
+        let snapshot = self.dock.snapshot.as_ref()?;
         let cards = preview
             .windows
             .iter()
             .map(|w| {
-                let cached = self.dock.preview.picture(&w.target);
+                let cached = self.dock.preview.picture(&w.target, preview.pixels);
                 let picture = cached
                     .and_then(|p| p.handle.as_ref())
                     .filter(|_| !w.minimized);
                 let content: Element<'_, Message> = if let Some(picture) = picture {
                     container(
                         image(picture.clone())
-                            .width(iced::Length::Shrink)
-                            .height(iced::Length::Shrink),
+                            .width(THUMBNAIL_WIDTH as f32)
+                            .height(THUMBNAIL_HEIGHT as f32)
+                            .content_fit(iced::ContentFit::Contain),
                     )
                     .center_x(164)
                     .center_y(106)
@@ -562,10 +657,15 @@ impl Shell {
                     .center_y(106)
                     .into()
                 };
+                let active = w.active;
+                let title = window_context(w, snapshot).map_or_else(
+                    || w.title.clone(),
+                    |context| format!("{} · {context}", w.title),
+                );
                 enzui_widgets::pressable::enz_pressable(
                     column![
                         content,
-                        enzui_widgets::text::enz_text(&w.title)
+                        enzui_widgets::text::enz_text(title.clone())
                             .no_wrap()
                             .size(enzui_widgets::text::TextSize::Caption)
                             .into_element()
@@ -578,7 +678,16 @@ impl Shell {
                 .style(enzui_widgets::pressable::PressableStyle::Plain)
                 .padding(4)
                 .radius(f32::from(self.dock.preferences.highlight_radius))
-                .aria_label(tr!("shell-show-2", "arg0" => w.title.clone()))
+                .surface_colors_resolved(move |_| enzui_widgets::pressable::SurfaceColors {
+                    background: active.then_some(palette.surface_selected),
+                    hover_background: Some(palette.surface_hover),
+                    border: None,
+                })
+                .aria_label(if w.minimized {
+                    tr!("shell-show-minimized-window", "title" => w.title.clone())
+                } else {
+                    tr!("shell-show-2", "arg0" => title)
+                })
                 .into_element()
             })
             .collect::<Vec<_>>();

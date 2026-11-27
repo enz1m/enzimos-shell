@@ -506,6 +506,9 @@ impl Shell {
             .cloned()
             .collect();
         results.extend(base);
+        if !self.search.model.query.trim().is_empty() {
+            results.sort_by_key(|item| !item.is_installed_app());
+        }
         // Apps' own results follow the desktop's, keep their room, and come
         // before the web fallback.
         let from_apps = self

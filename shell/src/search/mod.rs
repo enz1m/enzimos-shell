@@ -112,6 +112,10 @@ impl Item {
             source: None,
         }
     }
+    /// Whether this result can launch an installed application.
+    pub fn is_installed_app(&self) -> bool {
+        matches!(self.target, Some(Target::App(_)))
+    }
     #[must_use]
     pub fn with_source(mut self, source: Arc<str>) -> Self {
         self.source = Some(source);
@@ -421,6 +425,7 @@ fn rank_bounded<'a>(
         };
         scored.push((
             (
+                !query.is_empty() && !item.is_installed_app(),
                 score,
                 item.target.is_none(),
                 !favorite,
@@ -639,6 +644,38 @@ mod tests {
             assert_eq!(found("firfox"), ["Firefox"]);
             assert_eq!(found("lw"), ["LibreOffice Writer"]);
             assert_eq!(found("nhr"), ["Notification history retention"]);
+        }
+        {
+            let items = [
+                Item::new(
+                    "setting:display",
+                    Category::Actions,
+                    "Display",
+                    "Settings",
+                    "Open",
+                    "settings",
+                    Some(Target::Settings("display")),
+                ),
+                item("app:keyword", "Digital Screen Player").search_terms("display"),
+                item("app:prefix", "Display Viewer"),
+            ];
+            let preferences = Preferences::default();
+            let found = rank(items.iter(), "display", None, &preferences);
+            assert_eq!(
+                found
+                    .iter()
+                    .map(|item| item.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["app:prefix", "app:keyword", "setting:display"],
+            );
+            let found = rank_bounded(items.iter(), "display", None, &preferences, 2);
+            assert_eq!(
+                found
+                    .iter()
+                    .map(|item| item.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["app:prefix", "app:keyword"],
+            );
         }
         // Bounded projection matches full order across categories and queries.
         {

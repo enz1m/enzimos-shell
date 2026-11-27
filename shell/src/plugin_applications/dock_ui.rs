@@ -67,6 +67,7 @@ pub(crate) enum Event {
     Anchor(u64, Result<iced::Point, String>),
     IconBounds(u64, String, Origin, Option<iced::Rectangle>),
     Done(u64, Result<(), String>),
+    PolicyPublished(Result<(), String>),
     Search(Box<enzui_shell::search::Item>, ContextMenuEvent),
     SearchSaved(Result<(), String>),
 }
@@ -135,6 +136,7 @@ pub(crate) struct State {
     pub fullscreen: bool,
     pub error: Option<String>,
     pending: Option<(String, Origin, InvocationKind)>,
+    publishing_policy: bool,
     sent_policy: Option<(
         Geometry,
         dock::Preferences,
@@ -206,6 +208,7 @@ impl Default for State {
             fullscreen: false,
             error: None,
             pending: None,
+            publishing_policy: false,
             sent_policy: None,
             layout: None,
             search_saving: false,
@@ -576,7 +579,7 @@ impl Shell {
         let layout_changed = self.dock.layout.replace(layout) != Some(layout);
         if !owner_changed && self.dock.preferences == desired {
             if layout_changed && self.dock.preferences.enabled {
-                self.dock.preview.clear();
+                self.dock_reset_placement();
                 self.dock_rebuild();
             }
             return if sidebar_changed {
@@ -683,11 +686,12 @@ impl Shell {
         let Some(geometry) = self.dock.geometry.as_ref() else {
             return Task::none();
         };
-        if self.dock.preferences.enabled
-            && self
-                .dock
-                .window
-                .is_none_or(|id| !self.surface_inputs.contains_key(&id))
+        if self.dock.publishing_policy
+            || (self.dock.preferences.enabled
+                && self
+                    .dock
+                    .window
+                    .is_none_or(|id| !self.surface_inputs.contains_key(&id)))
         {
             return Task::none();
         }
@@ -713,6 +717,7 @@ impl Shell {
             return Task::none();
         }
         let geometry = geometry.clone();
+        self.dock.publishing_policy = true;
         self.dock.sent_policy = Some((
             geometry.clone(),
             self.dock.preferences.clone(),
@@ -729,7 +734,7 @@ impl Shell {
                     .dock_policy(&geometry, &prefs, hidden, fullscreen, menu, preview)
                     .await
             },
-            |result| message(Event::Done(0, result)),
+            |result| message(Event::PolicyPublished(result)),
         )
     }
     pub(crate) fn dock_load_apps(&mut self) -> Task<Message> {
@@ -773,6 +778,20 @@ impl Shell {
             move |result| message(Event::Loaded(generation, result)),
         )
     }
+    fn dock_reset_placement(&mut self) {
+        self.dock.preview.clear();
+        self.dock.menu = None;
+        self.dock.pending = None;
+        self.dock.keyboard = None;
+        self.dock.menu_serial = self.dock.menu_serial.wrapping_add(1);
+        self.dock.hovered = false;
+        self.dock.hover_body = false;
+        self.dock.hover_sensor = false;
+        self.dock.touches.clear();
+        self.dock.hide_pending = false;
+        self.dock.hide_serial = self.dock.hide_serial.wrapping_add(1);
+    }
+
     pub(crate) fn dock_rebuild(&mut self) {
         let Some(snapshot) = self.dock.snapshot.as_ref() else {
             return;
@@ -1154,18 +1173,8 @@ impl Shell {
                                 || old.screen != snapshot.screen
                                 || old.scale != snapshot.scale
                         }) {
-                            self.dock.preview.clear();
+                            self.dock_reset_placement();
                             self.dock.preview.clear_cache();
-                            self.dock.menu = None;
-                            self.dock.pending = None;
-                            self.dock.keyboard = None;
-                            self.dock.menu_serial = self.dock.menu_serial.wrapping_add(1);
-                            self.dock.hovered = false;
-                            self.dock.hover_body = false;
-                            self.dock.hover_sensor = false;
-                            self.dock.touches.clear();
-                            self.dock.hide_pending = false;
-                            self.dock.hide_serial = self.dock.hide_serial.wrapping_add(1);
                         }
                         self.dock.snapshot = Some(snapshot);
                     }
@@ -1524,6 +1533,14 @@ impl Shell {
                 };
                 update.finish(action)
             }
+            Event::PolicyPublished(result) => {
+                self.dock.publishing_policy = false;
+                self.quiet = true;
+                if let Err(error) = result {
+                    eprintln!("enzui-shell dock: {error}");
+                }
+                Task::none()
+            }
             Event::Done(serial, result) => {
                 if serial != 0 && serial != self.dock.action_serial {
                     return Task::none();
@@ -1733,10 +1750,7 @@ impl Shell {
     }
     pub(crate) fn bar_dock_material(&self) -> Option<Material> {
         let p = &self.dock.preferences;
-        (p.enabled
-            && p.position == Position::Bar
-            && p.style != Style::Minimal
-            && p.material != Material::Panels)
+        (p.enabled && p.position == Position::Bar && p.material != Material::Panels)
             .then_some(p.material)
     }
 
@@ -1765,10 +1779,8 @@ impl Shell {
         let slots = dock::Slots::new(p, self.metrics, self.dock_shares_sidebar());
         let size = slots.icon;
         let target = slots.target;
-        let radius = if p.style == Style::Desktop
-            && p.highlight_radius == dock::Preferences::default().highlight_radius
-            && matches!(origin, Origin::Bar)
-        {
+        let default_highlight = p.highlight_radius == dock::Preferences::default().highlight_radius;
+        let radius = if default_highlight && matches!(origin, Origin::Bar) {
             self.metrics.bar_item_radius(7.0).min(target / 2.0)
         } else {
             f32::from(p.highlight_radius).min(target / 2.0)
@@ -2122,6 +2134,18 @@ impl Shell {
                         .into_element(),
                 );
             }
+            let empty_radius = if default_highlight
+                && matches!(origin, Origin::Dock)
+                && p.style == Style::Desktop
+                && self.metrics.islands.is_some()
+            {
+                self.dock
+                    .geometry
+                    .as_ref()
+                    .map_or(radius, |g| g.radius.min(target / 2.0))
+            } else {
+                radius
+            };
             let add = enz_pressable(
                 container(content)
                     .center_x(if vertical { target } else { FIND_APPS_WIDTH })
@@ -2132,7 +2156,7 @@ impl Shell {
             .style(PressableStyle::Plain)
             .tokens(pressable)
             .padding(0)
-            .radius(radius)
+            .radius(empty_radius)
             .aria_label(tr("shell-search-for-an-application-to-keep-in-the-dock"))
             .id("dock-add-app".into())
             .into_element();
@@ -2322,6 +2346,11 @@ impl Shell {
                     iced::Shadow::default()
                 };
                 let framed = g.framed;
+                let contour = if glass.is_none() && self.chrome_light() {
+                    palette.border_strong
+                } else {
+                    palette.border
+                };
                 let body = self.dock_folder_target(
                     container(crate::plugin_applications::dock_scroll::dock_scroll(
                         scroll.into_element(),
@@ -2339,7 +2368,7 @@ impl Shell {
                             width: f32::from(
                                 p.style != Style::Minimal && (!framed || glass.is_some()),
                             ),
-                            color: palette.border,
+                            color: contour,
                         },
                         shadow,
                         ..Default::default()

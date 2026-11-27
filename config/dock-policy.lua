@@ -95,7 +95,7 @@ function enzui_dock_update(owner,output,rectangles,menu,side,amount,body,overlap
     assert(type(rectangles)=="table" and #rectangles<=3,"Invalid dock regions")
     for _,r in ipairs(rectangles) do assert(#r==4,"Invalid dock rectangle");for _,n in ipairs(r) do assert(type(n)=="number" and n==n and n>=0 and n<=16384,"Invalid dock coordinate") end end
     local w=enzui_dock_window(owner)
-    if #rectangles>0 or menu then assert(w,"Dock surface unavailable") end
+    if not w and (#rectangles>0 or menu or amount>0) then return "pending" end
     local old_overlap=enzui_dock_shape and enzui_dock_shape.overlapped
     enzui_dock_shape={owner=owner,output=output,rectangles=rectangles,menu=menu,body=body,overlapped=old_overlap}
     if overlap and not enzui_dock_watch then

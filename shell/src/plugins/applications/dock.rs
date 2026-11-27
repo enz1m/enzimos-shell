@@ -120,11 +120,12 @@ impl Preferences {
 
     pub fn in_bar(&self, bar: crate::settings::BarEdge) -> bool {
         self.position == Position::Bar
-            || matches!(
-                (self.position, bar),
-                (Position::Top, crate::settings::BarEdge::Top)
-                    | (Position::Bottom, crate::settings::BarEdge::Bottom)
-            )
+            || (self.style == Style::Desktop
+                && matches!(
+                    (self.position, bar),
+                    (Position::Top, crate::settings::BarEdge::Top)
+                        | (Position::Bottom, crate::settings::BarEdge::Bottom)
+                ))
     }
     #[must_use]
     pub fn effective(&self, bar: crate::settings::BarEdge) -> Self {
@@ -707,7 +708,7 @@ pub fn geometry(
     shares_sidebar: bool,
 ) -> Geometry {
     let vertical = matches!(p.position, Position::Left | Position::Right);
-    let matches_desktop = p.style == Style::Desktop || shares_sidebar;
+    let matches_desktop = p.style == Style::Desktop;
     let framed = matches_desktop && metrics.islands.is_none();
     let island = metrics.islands.filter(|_| matches_desktop);
     let inset = island.map_or_else(
@@ -721,13 +722,7 @@ pub fn geometry(
         },
     );
     let slots = Slots::new(p, metrics, shares_sidebar);
-    let chrome_thickness = match (island, vertical) {
-        (Some(style), true) => f32::from(style.rail),
-        (Some(style), false) => f32::from(style.height),
-        (None, true) if framed => f32::from(metrics.rail),
-        (None, false) if framed => f32::from(metrics.bar),
-        _ => 0.0,
-    };
+    let chrome_thickness = f32::from(if vertical { metrics.rail } else { metrics.bar });
     let spacing = enzui_theme::SpacingScale::default();
     let thickness = (slots.target + spacing.xs()).max(chrome_thickness);
     let cross_padding = (thickness - slots.target) / 2.0;
@@ -784,7 +779,9 @@ pub fn geometry(
     } else {
         0.0
     };
-    let end_inset = island.map_or(frame, |style| f32::from(style.edge_gap));
+    let end_inset = metrics
+        .islands
+        .map_or(frame, |style| f32::from(style.edge_gap));
     let band_end = screen.height - bottom.max(end_inset);
     // The compositor gives the sidebar the upper half of the same band.
     let available = if shares_sidebar {
@@ -884,7 +881,7 @@ pub fn geometry(
         sensor,
         vertical,
         padding,
-        radius,
+        radius: radius.min(thickness.min(span) / 2.0),
         framed,
         reserve: (inset + thickness - covered).max(0.0),
         output: String::new(),
@@ -1236,10 +1233,17 @@ impl crate::compositor::Compositor {
                 && preferences.position != Position::Bar
                 && preferences.visibility == Visibility::Overlap
         );
-        if self.request(&["eval", &lua]).await?.trim() != "ok" {
-            return Err(tr("shell-dock-input-policy-rejected").into());
+        // The Wayland input handle can become ready before the compositor maps the toplevel.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match self.request(&["eval", &lua]).await?.trim() {
+                "ok" => return Ok(()),
+                "pending" if tokio::time::Instant::now() < deadline => {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                _ => return Err(tr("shell-dock-input-policy-rejected").into()),
+            }
         }
-        Ok(())
     }
 }
 
@@ -1317,6 +1321,51 @@ mod tests {
             input_regions(&dock, &preferences, false, false, None),
             vec![(dock.body, dock.radius)]
         );
+    }
+
+    #[test]
+    fn same_edge_joins_only_when_following_the_desktop() {
+        use crate::settings::BarEdge;
+        let mut preferences = Preferences {
+            position: Position::Top,
+            ..Preferences::default()
+        };
+        assert_eq!(preferences.effective(BarEdge::Top).position, Position::Bar);
+        preferences.style = Style::Island;
+        assert_eq!(preferences.effective(BarEdge::Top).position, Position::Top);
+        preferences.position = Position::Bar;
+        assert_eq!(preferences.effective(BarEdge::Top).position, Position::Bar);
+    }
+
+    #[test]
+    fn explicit_panel_spans_its_band_and_keeps_the_panel_thickness() {
+        use crate::settings::{BarEdge, Metrics};
+        let preferences = Preferences {
+            position: Position::Top,
+            style: Style::Panel,
+            radius: 44,
+            ..Preferences::default()
+        };
+        let metrics = Metrics {
+            bar: 56,
+            ..Metrics::default()
+        };
+        let panel = geometry(
+            &preferences,
+            38.0,
+            Size::new(960.0, 600.0),
+            BarEdge::Top,
+            metrics,
+            (8, 8),
+            false,
+        );
+        assert_eq!(
+            panel.body,
+            Rectangle::new(iced::Point::new(16.0, 64.0), Size::new(928.0, 56.0))
+        );
+        assert_eq!(panel.radius, 28.0);
+        assert_eq!(panel.reserve, 64.0);
+        assert!(!panel.framed);
     }
 
     #[test]

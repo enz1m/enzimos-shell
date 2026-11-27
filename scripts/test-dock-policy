@@ -36,7 +36,11 @@ assert(enzui_dock_place(7,"QA",960,600)=="ok")
 assert(dock.size.x==960 and dock.size.y==600 and dock.at.x==0 and dock.at.y==0)
 local base={left=12,right=12,top=12,bottom=50}
 enzui_apply_reservations(monitor,base)
-enzui_dock_update(7,"QA",{{0,847,240,3},{600,774,240,68}},false,"bottom",76,{600,774,240,68},false)
+dock.mapped=false
+assert(enzui_dock_update(7,"QA",{{600,774,240,68}},false,"bottom",76,{600,774,240,68},false)=="pending")
+assert(enzui_dock_shape==nil and monitor.reserved.bottom==50)
+dock.mapped=true
+assert(enzui_dock_update(7,"QA",{{0,847,240,3},{600,774,240,68}},false,"bottom",76,{600,774,240,68},false)=="ok")
 assert(monitor.reserved.bottom==126)
 enzui_apply_reservations(monitor,base);assert(monitor.reserved.bottom==126)
 enzui_dock_update(7,"QA",{},false,"bottom",0,{600,774,240,68},false);assert(monitor.reserved.bottom==50)

@@ -167,7 +167,7 @@ impl Settings {
             Change::ControllerNotifications(value) => self.controller_notifications = value,
             Change::AssistantCorner(value) => self.assistant_corner = value,
             Change::AssistantWidth(value) => {
-                self.assistant_width = clamp_assistant_width(value.into())
+                self.assistant_width = clamp_assistant_width(value.into());
             }
             Change::BarShadow(value) => self.bar_shadow = value.min(4),
             Change::PanelGlass(value) => {

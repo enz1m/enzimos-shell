@@ -1133,7 +1133,7 @@ impl Shell {
                 &prompt,
                 files.iter().map(|file| file.name.to_string()).collect(),
             );
-            self.assistant.last_files = files.clone();
+            self.assistant.last_files.clone_from(&files);
         }
         let (stop, cancelled) = tokio::sync::oneshot::channel();
         self.assistant.running = Some(Running {

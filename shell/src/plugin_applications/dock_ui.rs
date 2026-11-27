@@ -15,6 +15,7 @@ use enzui_shell::{
     },
     search::{AppTarget, Target, WindowTarget},
     settings::QuickAction,
+    surface_input::SurfaceInput,
 };
 use enzui_widgets::context_menu_host::{
     ContextMenuEvent, ContextMenuState, apply_event_restoring, apply_event_restoring_with,
@@ -385,7 +386,12 @@ fn window_indicator<'a>(
                     Shadow {
                         color,
                         blur_radius: spacing.space3,
-                        offset: iced::Vector::ZERO,
+                        offset: match edge {
+                            Position::Top => iced::Vector::new(0.0, spacing.space1),
+                            Position::Left => iced::Vector::new(spacing.space1, 0.0),
+                            Position::Right => iced::Vector::new(-spacing.space1, 0.0),
+                            _ => iced::Vector::new(0.0, -spacing.space1),
+                        },
                     }
                 } else {
                     Shadow::default()
@@ -1952,7 +1958,7 @@ impl Shell {
             .then_some(p.material)
     }
 
-    pub(crate) fn dock_material(&self) -> Option<enzui_theme::MaterialStyle> {
+    fn dock_plate_material(&self) -> Option<enzui_theme::MaterialStyle> {
         let prefs = &self.dock.preferences;
         if prefs.style == Style::Minimal || prefs.position == Position::Bar {
             return None;
@@ -1961,7 +1967,43 @@ impl Shell {
         prefs.material.glass(panels)
     }
 
+    pub(crate) fn dock_material(&self) -> Option<enzui_theme::MaterialStyle> {
+        if self.dock.preview.preview.is_some() || self.dock.menu.is_some() {
+            self.dock_popup_material()
+        } else {
+            self.dock_plate_material()
+        }
+    }
+
+    fn dock_popup_material(&self) -> Option<enzui_theme::MaterialStyle> {
+        let prefs = &self.dock.preferences;
+        if prefs.position == Position::Bar {
+            let panels = self.metrics.islands.and_then(|_| self.chrome_glass());
+            prefs.material.glass(panels)
+        } else if prefs.style == Style::Minimal {
+            self.metrics.islands.and_then(|_| self.panel_glass())
+        } else {
+            self.dock_plate_material()
+        }
+    }
+
+    fn dock_popup_radius(&self) -> f32 {
+        let prefs = &self.dock.preferences;
+        if prefs.position == Position::Bar && self.metrics.islands.is_some() {
+            return self.metrics.island_radius();
+        }
+        self.dock
+            .geometry
+            .as_ref()
+            .filter(|_| prefs.position != Position::Bar && prefs.style != Style::Minimal)
+            .map_or_else(
+                || f32::from(self.metrics.radius),
+                |geometry| geometry.radius,
+            )
+    }
+
     pub(crate) fn dock_icons(&self, origin: Origin, vertical: bool) -> Element<'_, Message> {
+        let p = &self.dock.preferences;
         let theme = match origin {
             Origin::Bar => match self.bar_dock_material() {
                 Some(material) => match material.glass(None) {
@@ -1970,11 +2012,11 @@ impl Shell {
                 },
                 None => self.window_tokens(Some(self.panel)),
             },
+            Origin::Dock if p.style == Style::Minimal => self.tokens(),
             Origin::Dock => self.window_tokens(self.dock.window),
         };
         let translucent = theme.backdrop().is_some();
         let palette = theme.palette;
-        let p = &self.dock.preferences;
         let slots = dock::Slots::new(p, self.metrics, self.dock_shares_sidebar());
         let size = slots.icon;
         let target = slots.target;
@@ -2079,6 +2121,12 @@ impl Shell {
             Position::Bar if self.bar == enzui_shell::settings::BarEdge::Top => Tooltip::Bottom,
             _ => Tooltip::Top,
         };
+        let tip = enzui_widgets::tooltip::TooltipTokens {
+            radius: self.dock_popup_radius(),
+            gap: spacing.sm(),
+            padding_x: spacing.space5,
+            ..enzui_widgets::tooltip::TooltipTokens::from_palette(&palette)
+        };
         let pinned = self.dock.pinned;
         let desktop_ids = self
             .dock
@@ -2149,10 +2197,11 @@ impl Shell {
             } else {
                 iced::Padding::ZERO.bottom(count_inset)
             };
+            let backing = if icons_only { 6.0 } else { 0.0 };
             let icon = container(group_icon(
                 group,
                 size.min(
-                    (slot.width.min(slot.height - count_inset) - spacing.space1 * 2.0)
+                    (slot.width.min(slot.height - count_inset) - spacing.space1 * 2.0 - backing)
                         .max(spacing.space1),
                 ),
                 &palette,
@@ -2406,17 +2455,12 @@ impl Shell {
             let button: Element<'_, Message> = if running && p.hover_previews {
                 button
             } else {
-                let tip = enzui_widgets::tooltip::TooltipTokens {
-                    gap: spacing.sm(),
-                    padding_x: spacing.space5,
-                    ..enzui_widgets::tooltip::TooltipTokens::from_palette(&palette)
-                };
                 enzui_widgets::tooltip::enz_tooltip_with_tokens(
                     button,
                     if has_no_favorites(p)
                         && matches!(group.builtin, Some(Builtin::Action(Action::Applications)))
                     {
-                        tr("shell-dock-find-apps-hint").into()
+                        tr("shell-dock-find-apps-tooltip").into()
                     } else {
                         group.title.clone()
                     },
@@ -2450,8 +2494,8 @@ impl Shell {
                 && self.dock.entries.is_empty();
             let mut content = row![
                 enzui_widgets::icon::enz_icon("plus")
-                    .size(16.0)
-                    .tint(palette.text)
+                    .size(size.min(18.0) * 0.78)
+                    .tint(muted_ink)
                     .into_element()
             ]
             .spacing(spacing.sm())
@@ -2496,13 +2540,18 @@ impl Shell {
                 hover_background: Some(hovered),
                 border: None,
             })
-            .aria_label(tr("shell-search-for-an-application-to-keep-in-the-dock"))
+            .semantics(
+                Semantics::new(Role::Button)
+                    .label(tr("shell-dock-find-apps"))
+                    .description(tr("shell-dock-find-apps-hint")),
+            )
             .id("dock-add-app".into())
             .into_element();
-            let add = enzui_widgets::tooltip::enz_tooltip(
+            let add = enzui_widgets::tooltip::enz_tooltip_with_tokens(
                 container(add).padding(slot_padding).into(),
-                tr("shell-dock-find-apps-hint"),
+                tr("shell-dock-find-apps-tooltip"),
                 tooltip,
+                tip,
             );
             items.push(("dock:find-apps".into(), add));
         }
@@ -2610,12 +2659,19 @@ impl Shell {
         };
         let palette = self.window_tokens(self.dock.window).palette;
         let input = self.dock.window.and_then(|id| self.surface_inputs.get(&id));
-        let glass = self.dock_material().filter(|_| {
-            input.is_some_and(|input| {
-                input.glass_supported() && (!g.framed || input.glass_supports_corners())
-            })
+        let glass_supported = input.is_some_and(SurfaceInput::glass_supported);
+        let glass = self.dock_plate_material().filter(|_| {
+            glass_supported
+                && (!g.framed || input.is_some_and(SurfaceInput::glass_supports_corners))
         });
-        let preview = self.dock.preview.preview.as_ref().map(|p| p.bounds);
+        let popup_radius = self.dock_popup_radius();
+        let preview = self.dock.preview.preview.as_ref().map(|p| {
+            let radius = popup_radius.min(p.bounds.width.min(p.bounds.height) / 2.0);
+            (p.bounds, radius)
+        });
+        let preview_glass = preview
+            .and_then(|_| self.dock_popup_material())
+            .filter(|_| glass_supported);
         let visible = g.body + offset;
         let radius = iced::border::Radius::new(g.radius);
         let radius = if g.framed {
@@ -2631,13 +2687,9 @@ impl Shell {
         let mask = if self.dock.menu.is_some() {
             enzui_shell::desktop_glass::InputMask::Full
         } else {
-            let regions = if p.position == Position::Bar {
-                preview.into_iter().map(|bounds| (bounds, 10.0)).collect()
-            } else {
-                dock::input_regions(g, p, true, self.dock.fullscreen, preview)
-            };
-            let mut regions: Vec<_> = regions
+            let mut regions: Vec<_> = dock::input_regions(g, p, true, self.dock.fullscreen)
                 .into_iter()
+                .chain(preview)
                 .map(|(bounds, radius)| (bounds, radius.into()))
                 .collect();
             if p.position != Position::Bar && !self.dock.hidden && progress > 0.0 {
@@ -2689,6 +2741,18 @@ impl Shell {
                 };
                 let framed = g.framed;
                 let dark_glass = glass.is_some() && palette.is_dark();
+                let fill = if dark_glass && glass == Some(enzui_theme::MaterialStyle::FlatFrosted) {
+                    use iced::{Color, gradient::Linear};
+                    Some(
+                        Linear::new(std::f32::consts::PI)
+                            .add_stop(0.0, Color::WHITE.scale_alpha(0.085))
+                            .add_stop(0.55, Color::WHITE.scale_alpha(0.018))
+                            .add_stop(1.0, Color::TRANSPARENT)
+                            .into(),
+                    )
+                } else {
+                    (p.style != Style::Minimal && glass.is_none()).then_some(palette.surface.into())
+                };
                 let contour = if glass.is_some() && !palette.is_dark() {
                     palette.text.scale_alpha(0.24)
                 } else if self.chrome_light() {
@@ -2706,8 +2770,7 @@ impl Shell {
                     .center_x(g.body.width)
                     .center_y(g.body.height)
                     .style(move |_| container::Style {
-                        background: (p.style != Style::Minimal && glass.is_none())
-                            .then_some(palette.surface.into()),
+                        background: fill,
                         border: iced::Border {
                             radius,
                             width: f32::from(
@@ -2764,7 +2827,9 @@ impl Shell {
                 );
             }
         }
-        if let Some(preview) = self.dock_preview_view() {
+        if let Some((_, radius)) = preview
+            && let Some(preview) = self.dock_preview_view(radius, preview_glass.is_some())
+        {
             layers.push(preview);
         }
         let canvas = iced::widget::stack(layers)
@@ -2776,24 +2841,36 @@ impl Shell {
             menu.map(|m| (&m.model, &m.state)),
             |event| message(Event::Menu(event)),
         );
-        let view = match menu {
-            Some(menu) => view.label(tr!("shell-dock-menu-for-app", "title" => menu.title.clone())),
-            None => view,
-        }
-        .into();
-        let Some(id) = self.dock.window else {
-            return view;
-        };
-        let regions = if glass.is_some() && p.position != Position::Bar && progress > 0.0 {
-            vec![(visible, radius)]
+        let view = if let Some(menu) = menu {
+            view.label(tr!("shell-dock-menu-for-app", "title" => menu.title.clone()))
         } else {
-            Vec::new()
+            view
         };
+        let menu_glass = menu
+            .and_then(|_| self.dock_popup_material())
+            .filter(|_| glass_supported);
+        let overlay_defaults = menu.map(|_| {
+            let mut theme = self.window_tokens(self.dock.window);
+            theme.shape.popup = enzui_theme::RadiusStep::Window;
+            theme.window_radius = popup_radius;
+            theme.palette.surface_elevated = theme.palette.surface;
+            theme
+        });
+        let Some(id) = self.dock.window else {
+            return view.into();
+        };
+        let mut regions = Vec::new();
+        if glass.is_some() && progress > 0.0 {
+            regions.push((visible, radius));
+        }
+        if let Some((bounds, radius)) = preview.filter(|_| preview_glass.is_some()) {
+            regions.push((bounds, radius.into()));
+        }
         enzui_shell::desktop_glass::fixed_glass_with_input(
-            view,
+            view.into(),
             enzui_shell::desktop_glass::WindowGlass {
                 input: input.cloned(),
-                style: glass,
+                style: glass.or(preview_glass).or(menu_glass),
                 tint: self.glass_tint(id, self.tokens().palette.surface),
                 light_ink: self.window_ink(id),
                 reduced_motion: self.tokens().motion.reduced_motion,
@@ -2810,6 +2887,7 @@ impl Shell {
             },
             regions,
             mask,
+            overlay_defaults,
         )
     }
     pub(crate) fn dock_search_host<'a>(

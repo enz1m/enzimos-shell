@@ -1426,6 +1426,7 @@ shell-plugin-authority-changed = Cambio de la autoridad del complemento
 shell-search-for-an-application-to-keep-in-the-dock = Buscar una aplicación para mantener en el Dock
 shell-dock-find-apps = Buscar apps
 shell-dock-find-apps-hint = Abre el menú de una aplicación en Buscar y elige Mantener en el Dock.
+shell-dock-find-apps-tooltip = { shell-dock-find-apps } · { shell-dock-find-apps-hint }
 shell-loading-preview = Cargando vista previa...
 shell-preview-unavailable = Vista previa no disponible
 shell-another-plugin-owns-the-application-surface = Otro plugin posee la superficie de la aplicación

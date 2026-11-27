@@ -630,7 +630,11 @@ impl Shell {
             move |(target, picture)| message(Event::Picture(serial, target, pixels, picture)),
         )
     }
-    pub(crate) fn dock_preview_view(&self) -> Option<Element<'_, Message>> {
+    pub(crate) fn dock_preview_view(
+        &self,
+        radius: f32,
+        glass: bool,
+    ) -> Option<Element<'_, Message>> {
         let preview = self.dock.preview.preview.as_ref()?;
         let palette = self.window_tokens(self.dock.window).palette;
         let snapshot = self.dock.snapshot.as_ref()?;
@@ -723,10 +727,15 @@ impl Shell {
             .width(bounds.width)
             .height(bounds.height)
             .style(move |_| container::Style {
-                background: Some(palette.surface.into()),
+                background: (!glass).then_some(palette.surface.into()),
                 border: iced::Border {
-                    radius: 10.0.into(),
-                    ..Default::default()
+                    radius: radius.into(),
+                    width: 1.0,
+                    color: if glass {
+                        enzui_shell::reveal::glass_rim(palette.surface)
+                    } else {
+                        palette.border
+                    },
                 },
                 ..Default::default()
             });

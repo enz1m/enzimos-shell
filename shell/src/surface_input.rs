@@ -416,7 +416,7 @@ impl SurfaceInput {
                 let tuned = crate::reveal::glass_tweaks().apply(shell_frost(&tokens, region.tint));
                 let t = &tuned;
                 let rect = region.bounds;
-                let tint = light_frost_tint(&tokens, region.tint)
+                let tint = flat_frost_tint(&tokens, region.tint)
                     .into_rgba8()
                     .map(|channel| f32::from(channel) / 255.0);
                 let radius = region.radius;
@@ -1022,12 +1022,12 @@ fn raster(
     Some(spans)
 }
 
-fn light_frost_tint(tokens: &enzui_theme::MaterialTokens, tint: Color) -> Color {
+fn flat_frost_tint(tokens: &enzui_theme::MaterialTokens, tint: Color) -> Color {
     let light = 0.2126 * tint.r + 0.7152 * tint.g + 0.0722 * tint.b > 0.5;
-    if !light || *tokens != enzui_theme::MaterialStyle::FlatFrosted.builtin_tokens() {
+    if *tokens != enzui_theme::MaterialStyle::FlatFrosted.builtin_tokens() {
         return tint;
     }
-    let f = 0.45;
+    let f = if light { 0.45 } else { 0.055 };
     Color {
         r: tint.r + (1.0 - tint.r) * f,
         g: tint.g + (1.0 - tint.g) * f,
@@ -1059,7 +1059,7 @@ pub(crate) fn shell_frost(
     }
     let light = 0.2126 * tint.r + 0.7152 * tint.g + 0.0722 * tint.b > 0.5;
     enzui_theme::MaterialTokens {
-        tint_opacity: if light { 0.82 } else { 0.94 },
+        tint_opacity: if light { 0.82 } else { 0.78 },
         blur_sigma: 20.0,
         saturation: 1.0,
         ..*tokens

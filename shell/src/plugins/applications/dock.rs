@@ -910,7 +910,6 @@ pub fn input_regions(
     preferences: &Preferences,
     hidden: bool,
     fullscreen: bool,
-    preview: Option<Rectangle>,
 ) -> Vec<(Rectangle, f32)> {
     let mut regions = Vec::new();
     if preferences.enabled && preferences.position != Position::Bar {
@@ -930,9 +929,6 @@ pub fn input_regions(
             };
             regions.push((geometry.body, radius));
         }
-    }
-    if let Some(preview) = preview {
-        regions.push((preview, 10.0));
     }
     regions
 }
@@ -1194,11 +1190,12 @@ impl crate::compositor::Compositor {
         menu: bool,
         preview: Option<Rectangle>,
     ) -> Result<(), String> {
-        let values: Vec<[f32; 4]> =
-            input_regions(geometry, preferences, hidden, fullscreen, preview)
-                .iter()
-                .map(|(r, _)| [r.x, r.y, r.width, r.height])
-                .collect();
+        let values: Vec<[f32; 4]> = input_regions(geometry, preferences, hidden, fullscreen)
+            .into_iter()
+            .map(|(bounds, _)| bounds)
+            .chain(preview)
+            .map(|bounds| [bounds.x, bounds.y, bounds.width, bounds.height])
+            .collect();
         let side = match preferences.position {
             Position::Top => "top",
             Position::Left => "left",
@@ -1325,7 +1322,7 @@ mod tests {
         assert_eq!(dock.body.y + dock.body.height, screen.height - 10.0);
         assert_eq!(dock.radius, dock.body.height / 2.0);
         assert_eq!(
-            input_regions(&dock, &preferences, false, false, None),
+            input_regions(&dock, &preferences, false, false),
             vec![(dock.body, dock.radius)]
         );
     }

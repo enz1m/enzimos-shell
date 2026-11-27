@@ -3,9 +3,9 @@
 //! Bind the window surface, wrap its view with window_glass, then mark glass_pane regions.
 //! Unsupported surfaces use solid panels. Compositor sampling excludes the app's own content.
 
-use crate::surface_input::SurfaceInput;
+use crate::surface_input::{GlassRegion, SurfaceInput};
 use enzui_shell::i18n::tr;
-use enzui_theme::MaterialStyle;
+use enzui_theme::{EnzTheme, MaterialStyle, text_defaults::TextDefaultsScope};
 use iced::advanced::{
     Renderer as _, Shell, Widget,
     layout::{self, Layout},
@@ -92,6 +92,7 @@ pub fn window_glass<'a, Message: 'a>(
         fixed_regions: None,
         extra: None,
         input_mask: None,
+        overlay_defaults: None,
     })
 }
 
@@ -116,11 +117,13 @@ pub enum InputMask {
 }
 
 /// Publishes the draw's input and glass regions in the same surface commit.
+/// The overlay theme supplies the rounded menu chrome on glass and on fallback.
 pub fn fixed_glass_with_input<'a, Message: 'a>(
     content: Element<'a, Message>,
     glass: WindowGlass,
     regions: Vec<(Rectangle, iced::border::Radius)>,
     input_mask: InputMask,
+    overlay_defaults: Option<EnzTheme>,
 ) -> Element<'a, Message> {
     Element::new(Root {
         content,
@@ -128,6 +131,7 @@ pub fn fixed_glass_with_input<'a, Message: 'a>(
         fixed_regions: Some(regions),
         extra: None,
         input_mask: Some(input_mask),
+        overlay_defaults: overlay_defaults.map(Box::new),
     })
 }
 
@@ -149,6 +153,7 @@ pub fn fixed_glass_with_extra<'a, Message: 'a>(
         ),
         extra,
         input_mask: None,
+        overlay_defaults: None,
     })
 }
 
@@ -232,9 +237,16 @@ struct Root<'a, Message> {
     fixed_regions: Option<Vec<(Rectangle, iced::border::Radius)>>,
     extra: Option<(Rectangle, f32, MaterialStyle)>,
     input_mask: Option<InputMask>,
+    overlay_defaults: Option<Box<EnzTheme>>,
 }
 
 impl<Message> Root<'_, Message> {
+    fn overlay_defaults(&self) -> Option<TextDefaultsScope> {
+        self.overlay_defaults
+            .as_deref()
+            .map(TextDefaultsScope::enter)
+    }
+
     fn material(&self) -> Option<MaterialStyle> {
         self.glass.style.filter(|style| {
             !style.tokens().is_opaque()
@@ -245,6 +257,150 @@ impl<Message> Root<'_, Message> {
                     .is_some_and(SurfaceInput::glass_supported)
         })
     }
+
+    fn with_menu_glass<'a>(
+        glass: &'a WindowGlass,
+        fixed: &'a [(Rectangle, iced::border::Radius)],
+        defaults: &'a EnzTheme,
+        viewport: Rectangle,
+        overlays: &mut Vec<overlay::Element<'a, Message, iced::Theme, iced::Renderer>>,
+    ) where
+        Message: 'a,
+    {
+        if overlays
+            .last()
+            .is_some_and(|overlay| overlay.as_overlay().grabs())
+            && let Some(menu) = overlays.pop()
+        {
+            overlays.push(overlay::Element::new(Box::new(MenuGlass {
+                menu,
+                glass,
+                fixed,
+                defaults,
+                viewport,
+            })));
+        }
+    }
+}
+
+struct MenuGlass<'a, Message> {
+    menu: overlay::Element<'a, Message, iced::Theme, iced::Renderer>,
+    glass: &'a WindowGlass,
+    fixed: &'a [(Rectangle, iced::border::Radius)],
+    defaults: &'a EnzTheme,
+    viewport: Rectangle,
+}
+
+impl<Message> overlay::Overlay<Message, iced::Theme, iced::Renderer> for MenuGlass<'_, Message> {
+    fn draw(
+        &self,
+        renderer: &mut iced::Renderer,
+        theme: &iced::Theme,
+        style: &renderer::Style,
+        cursor: mouse::Cursor,
+    ) {
+        let menu = self.menu.as_overlay();
+        let mut defaults = self.defaults.clone();
+        if let Some((input, material)) = self.glass.input.as_ref().zip(self.glass.style) {
+            // Context menu layout exposes one child per level, including open submenus.
+            let nodes = menu
+                .node()
+                .filter(|_| {
+                    menu.area()
+                        .is_some_and(|area| area.is_within(&self.viewport))
+                })
+                .map_or(&[][..], layout::Node::children);
+            let tint = self
+                .glass
+                .effective_tint(crate::glass_ink::look(theme, material, self.glass.light_ink).1);
+            let regions = self
+                .fixed
+                .iter()
+                .map(|&(bounds, radius)| GlassRegion {
+                    bounds,
+                    radius,
+                    tint,
+                })
+                .chain(nodes.iter().map(|node| {
+                    let bounds = node.bounds();
+                    let radius = defaults
+                        .window_radius
+                        .min(bounds.width.min(bounds.height) / 2.0);
+                    GlassRegion {
+                        bounds,
+                        radius: radius.into(),
+                        tint,
+                    }
+                }))
+                .collect::<Vec<_>>();
+            let _commit = input.commit_together().with_buffer();
+            if regions.is_empty() {
+                input.clear_glass();
+            } else if input.glass_regions(
+                &regions,
+                &crate::reveal::glass_tokens(material, self.glass.reduced_motion),
+                self.glass.shadow,
+            ) && !nodes.is_empty()
+            {
+                defaults.palette.surface_elevated = Color::TRANSPARENT;
+                defaults.palette.border = crate::reveal::glass_rim(tint);
+                // The material protocol takes settled rectangles, so the menu draws at that size.
+                defaults.motion.reduced_motion = true;
+            }
+        }
+        menu.draw(renderer, &defaults.iced_theme(), style, cursor);
+    }
+
+    fn operate(&mut self, renderer: &iced::Renderer, operation: &mut dyn Operation) {
+        self.menu.as_overlay_mut().operate(renderer, operation);
+    }
+
+    fn update(
+        &mut self,
+        event: &Event,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+        shell: &mut Shell<'_, Message>,
+    ) {
+        self.menu
+            .as_overlay_mut()
+            .update(event, cursor, renderer, shell);
+    }
+
+    fn mouse_interaction(
+        &self,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
+        self.menu.as_overlay().mouse_interaction(cursor, renderer)
+    }
+
+    fn overlay<'a>(
+        &'a mut self,
+        renderer: &iced::Renderer,
+    ) -> Vec<overlay::Element<'a, Message, iced::Theme, iced::Renderer>> {
+        self.menu.as_overlay_mut().overlay(renderer)
+    }
+
+    fn index(&self) -> f32 {
+        self.menu.as_overlay().index()
+    }
+
+    fn node(&self) -> Option<&layout::Node> {
+        self.menu.as_overlay().node()
+    }
+
+    fn area(&self) -> Option<Rectangle> {
+        self.menu.as_overlay().area()
+    }
+
+    fn anchor(&self) -> Option<Rectangle> {
+        self.menu.as_overlay().anchor()
+    }
+
+    fn grabs(&self) -> bool {
+        self.menu.as_overlay().grabs()
+    }
 }
 
 // Changes in glass availability or ink require another frame until the drawn state agrees.
@@ -252,9 +408,21 @@ impl<Message> Root<'_, Message> {
 struct Drawn {
     appearance: Cell<Option<(bool, Option<u8>)>>,
     fixed_regions: RefCell<Vec<(Rectangle, iced::border::Radius)>>,
+    menu_glass: Cell<bool>,
 }
 
 impl WindowGlass {
+    fn effective_tint(&self, ink_tint: Color) -> Color {
+        if self.light_ink.is_some() {
+            ink_tint
+        } else {
+            Color {
+                a: 1.0,
+                ..self.tint
+            }
+        }
+    }
+
     fn drawn(&self, material: Option<MaterialStyle>) -> (bool, Option<u8>) {
         (
             material.is_some(),
@@ -265,11 +433,12 @@ impl WindowGlass {
 }
 
 macro_rules! delegate {
-    () => {
+    ($overlays:ident) => {
         fn size(&self) -> Size<Length> {
             self.content.as_widget().size()
         }
         fn diff(&mut self, tree: &mut Tree) {
+            let _defaults = self.overlay_defaults();
             tree.diff_children(std::slice::from_mut(&mut self.content));
         }
         fn layout(&mut self, tree: &mut Tree, renderer: &iced::Renderer, limits: &layout::Limits) {
@@ -346,15 +515,17 @@ macro_rules! delegate {
             translation: Vector,
             window: Size,
         ) -> Vec<overlay::Element<'b, Message, iced::Theme, iced::Renderer>> {
+            let _defaults = self.overlay_defaults();
             let child = layout.child(&tree.children, 0);
-            self.content.as_widget_mut().overlay(
+            let overlays = self.content.as_widget_mut().overlay(
                 &mut tree.children[0],
                 child,
                 renderer,
                 viewport,
                 translation,
                 window,
-            )
+            );
+            $overlays!(self, overlays, window)
         }
     };
 }
@@ -374,8 +545,34 @@ impl<Message> Stale for GlassPane<'_, Message> {
     }
 }
 
+macro_rules! menu_overlay {
+    ($root:ident, $overlays:ident, $window:ident) => {{
+        let mut overlays = $overlays;
+        if let Some((fixed, defaults)) = $root
+            .fixed_regions
+            .as_deref()
+            .zip($root.overlay_defaults.as_deref())
+        {
+            Self::with_menu_glass(
+                &$root.glass,
+                fixed,
+                defaults,
+                Rectangle::with_size($window),
+                &mut overlays,
+            );
+        }
+        overlays
+    }};
+}
+
+macro_rules! unchanged_overlays {
+    ($pane:ident, $overlays:ident, $window:ident) => {
+        $overlays
+    };
+}
+
 impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Root<'_, Message> {
-    delegate!();
+    delegate!(menu_overlay);
     fn tag(&self) -> iced::advanced::widget::tree::Tag {
         iced::advanced::widget::tree::Tag::of::<Drawn>()
     }
@@ -395,7 +592,12 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Root<'_, Message>
         let input = self.glass.input.as_ref();
         let material = self.material();
         let drawn = tree.state.downcast_ref::<Drawn>();
+        let menu_paints_glass = material.is_some() && self.overlay_defaults.is_some();
+        let menu_changed = drawn.menu_glass.replace(menu_paints_glass) != menu_paints_glass;
         let _commit = self.input_mask.as_ref().and(input).map(|input| {
+            if menu_paints_glass {
+                return input.commit_together().with_buffer();
+            }
             let batch = input.commit_together();
             let visible = if material.is_some() {
                 self.fixed_regions.as_deref().unwrap_or_default()
@@ -403,7 +605,7 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Root<'_, Message>
                 &[]
             };
             let mut previous = drawn.fixed_regions.borrow_mut();
-            if previous.as_slice() == visible {
+            if previous.as_slice() == visible && !menu_changed {
                 batch
             } else {
                 previous.clear();
@@ -423,15 +625,8 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Root<'_, Message>
             return;
         }
         let placed = material.map(|style| {
-            let (theme, tint) = crate::glass_ink::look(theme, style, self.glass.light_ink);
-            let tint = if self.glass.light_ink.is_some() {
-                tint
-            } else {
-                Color {
-                    a: 1.0,
-                    ..self.glass.tint
-                }
-            };
+            let (theme, ink_tint) = crate::glass_ink::look(theme, style, self.glass.light_ink);
+            let tint = self.glass.effective_tint(ink_tint);
             Placed {
                 theme,
                 tint,
@@ -462,7 +657,7 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Root<'_, Message>
             viewport,
         );
         let placed = PLACED.with(|cell| cell.replace(outer));
-        if let Some(input) = input {
+        if let Some(input) = input.filter(|_| !menu_paints_glass) {
             if let Some((bounds, radius, extra)) = self.extra {
                 let reduced = self.glass.reduced_motion;
                 let panes = material
@@ -500,8 +695,14 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Root<'_, Message>
     }
 }
 
+impl<Message> GlassPane<'_, Message> {
+    fn overlay_defaults(&self) -> Option<TextDefaultsScope> {
+        None
+    }
+}
+
 impl<Message> Widget<Message, iced::Theme, iced::Renderer> for GlassPane<'_, Message> {
-    delegate!();
+    delegate!(unchanged_overlays);
     fn draw(
         &self,
         tree: &Tree,

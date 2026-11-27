@@ -17,7 +17,7 @@ use iced::{
     Element, Length, Task,
     widget::{column, container, responsive, row, space},
 };
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 #[derive(Default)]
 pub(super) struct State {
@@ -50,12 +50,14 @@ pub(super) enum Message {
     Visible(QuickAction, bool, u32),
     Reset(Arc<Layout>),
 }
-static SHAPES: [RadioChoice<'static, Shape>; 4] = [
-    RadioChoice::new("compact", Shape::Compact, "Compact"),
-    RadioChoice::new("pill", Shape::Pill, "2 wide"),
-    RadioChoice::new("triple", Shape::Triple, "3 wide"),
-    RadioChoice::new("wide", Shape::Wide, "Full"),
-];
+fn shape_choices() -> &'static [RadioChoice<'static, Shape>] {
+    static CHOICES: [OnceLock<[RadioChoice<'static, Shape>; Shape::ALL.len()]>; 2] =
+        [const { OnceLock::new() }; 2];
+    let locale = enzui_shell::i18n::current().locale().to_string();
+    let spanish = locale.split('-').next() == Some("es");
+    CHOICES[usize::from(spanish)]
+        .get_or_init(|| Shape::ALL.map(|shape| RadioChoice::new(shape.key(), shape, shape.label())))
+}
 
 impl SettingsApp {
     fn control_neighbours(
@@ -424,7 +426,7 @@ impl SettingsApp {
             let shape = base.shape(action);
             let choices = enz_radio_group_keyed(
                 tr("shell-control-size"),
-                &SHAPES,
+                shape_choices(),
                 Some(&shape),
                 move |shape| {
                     Parent::Controls(Message::Shape(action, *shape, std::sync::Arc::clone(&base)))

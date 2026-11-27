@@ -46,9 +46,9 @@ impl Shape {
     pub fn label(self) -> &'static str {
         match self {
             Self::Compact => tr("shell-compact"),
-            Self::Pill => "2 wide",
-            Self::Triple => "3 wide",
-            Self::Wide => tr("shell-full-width"),
+            Self::Pill => tr("shell-control-size-two-columns"),
+            Self::Triple => tr("shell-control-size-three-columns"),
+            Self::Wide => tr("shell-control-size-full"),
         }
     }
     pub fn key(self) -> &'static str {

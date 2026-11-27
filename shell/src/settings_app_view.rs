@@ -238,10 +238,16 @@ impl SettingsApp {
             .titlebar(|| {
                 enz_title_bar()
                     .center(
-                        enzui_widgets::search_field::enz_titlebar_search(
-                            &self.filter,
-                            Message::Filter,
-                        )
+                        {
+                            let field = enzui_widgets::search_field::enz_titlebar_search(
+                                &self.filter,
+                                Message::Filter,
+                            );
+                            match self.first_search_result() {
+                                Some(open) if !self.filter.trim().is_empty() => field.on_submit(open),
+                                _ => field,
+                            }
+                        }
                         .placeholder(tr("shell-find-a-setting"))
                         .id(SEARCH_FIELD)
                         .into_element(),

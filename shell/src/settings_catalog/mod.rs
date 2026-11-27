@@ -6,7 +6,7 @@ mod sections;
 
 pub use category::{Category, Folder, Group};
 pub use entries::ENTRIES;
-pub use search::{DESKTOP_GROUP_LIMIT, SearchDestination, SearchRank, search_groups};
+pub use search::{DESKTOP_GROUP_LIMIT, SearchDestination, SearchGroup, SearchRank, search_groups};
 pub use sections::{SECTIONS, Section};
 
 #[derive(Clone, Copy, Debug)]

@@ -793,9 +793,8 @@ impl SettingsApp {
             None => body,
         }
     }
-    fn search_results(&self) -> Column<'_, Message> {
-        const PREVIEW_CONTROLS: usize = 2;
-        let groups = settings_catalog::search_groups(&self.filter, |category, entry| {
+    fn matching_search_groups(&self) -> Vec<settings_catalog::SearchGroup> {
+        settings_catalog::search_groups(&self.filter, |category, entry| {
             self.category_available(category)
                 && (self.layout_preview || category != Category::Notifications)
                 && entry.is_none_or(|entry| {
@@ -807,7 +806,19 @@ impl SettingsApp {
                             .is_none_or(|route| self.dock_route_shown(route))
                         && self.route_shown(entry)
                 })
-        });
+        })
+    }
+    /// What Enter in the search field opens: the first result group.
+    pub(super) fn first_search_result(&self) -> Option<Message> {
+        let group = self.matching_search_groups().into_iter().next()?;
+        Some(match group.destination {
+            SearchDestination::Page(page) => Message::Page(page),
+            SearchDestination::Section(route) => Message::RevealSection(route),
+        })
+    }
+    fn search_results(&self) -> Column<'_, Message> {
+        const PREVIEW_CONTROLS: usize = 2;
+        let groups = self.matching_search_groups();
         let mut results = column![
             enz_text(tr("shell-search-results"))
                 .size(TextSize::Title2)

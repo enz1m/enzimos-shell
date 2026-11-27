@@ -1,7 +1,7 @@
 {
   "hyprland": {
     "url": "https://github.com/enz1m/enzim-hyprland.git",
-    "revision": "b5eb2d30d66e2bd865973a05c856a193d3d95f55",
+    "revision": "c68fc570ee8f99c3ce46fd7936c13b2df70961b8",
     "destination": "vendor/Hyprland",
     "variants": {
       "scoped-eis": "173de69ebc7dc3fd3743257482bc416d0e2d8caf",
@@ -23,11 +23,11 @@
   },
   "framework": {
     "url": "https://github.com/enz1m/enzui.git",
-    "revision": "40054f70695d03725e352231c0aa4c6cd777e7f0"
+    "revision": "851f9de552d34a4015c9c772005e700a1422b33f"
   },
   "iced": {
     "url": "https://github.com/enz1m/enzim-iced.git",
-    "revision": "cdc7efd7b306df4718960e2c701cd936d1c60bc1",
+    "revision": "288409128d7cd60018ffde80b653311e166613c7",
     "destination": "vendor/iced"
   },
   "winit": {

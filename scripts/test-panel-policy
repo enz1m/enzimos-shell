@@ -4,13 +4,15 @@ local path = config .. "panel-policy.lua"
 local panel = {class="dev.enzui.Desktop",mapped=true,at={x=0,y=0},size={x=1440,y=36}}
 local app = {class="app",mapped=true,at={x=200,y=80},size={x=800,y=600}}
 local active, point = panel, {x=400,y=18}
-local bindings, removed, dispatched, rule = {}, {}, {}, nil
+local bindings, removed, dispatched, rules, panel_events = {}, {}, {}, {}, {}
+local windows = {panel,app}
 hl = {dsp={window={}}}
 function hl.config() error("Panel policy must preserve compositor preferences") end
-function hl.window_rule(value) rule=value end
+function hl.window_rule(value) rules[value.name]=value end
+function hl.on(event,callback) panel_events[event]=callback end
 function hl.get_active_window() return active end
 function hl.get_cursor_pos() return point end
-function hl.get_windows() return {panel,app} end
+function hl.get_windows() return windows end
 function hl.unbind(key) assert(key~="all");removed[key]=(removed[key]or 0)+1;bindings[key]=nil end
 function hl.bind(key,action,options) bindings[key]={action=action,options=options} end
 function hl.dispatch(action)
@@ -23,6 +25,7 @@ for _,kind in ipairs({"close","float","fullscreen","move","drag","resize"}) do
 end
 local function call(key) return bindings[key].action() end
 dofile(path)
+local rule=rules["desktop-panel"]
 assert(rule.match.class=="^dev[.]enzui[.]Desktop$" and rule.no_xdg_drags)
 assert(rule.suppress_event=="maximize fullscreen")
 local keyboard={"SUPER + Q","ALT + F4","SUPER + V","SUPER + F","SUPER + M"}
@@ -109,6 +112,21 @@ function hl.dsp.window.tag(args)
         return {ok=true}
     end
 end
+local sidebar = {class="dev.enzui.AssistantPanel",mapped=true,monitor=primary,tags={}}
+local remote_sidebar = {class="dev.enzui.AssistantPanel",mapped=true,monitor=external,tags={}}
+local prompt = {class="dev.enzui.PortalAccess",mapped=true,monitor=primary}
+local other_prompt = {class="dev.enzui.PortalAccess",mapped=true,monitor=primary}
+function hl.get_windows() return {sidebar, remote_sidebar, prompt, other_prompt} end
+panel_events["window.open"](prompt)
+assert(sidebar.tags[1]==rules["desktop-assistant-consent"].match.tag and #remote_sidebar.tags==0)
+panel_events["window.close"](prompt)
+assert(#sidebar.tags==1)
+prompt.mapped=false
+panel_events["window.close"](other_prompt)
+assert(#sidebar.tags==0 and #remote_sidebar.tags==0)
+print("Assistant consent hides the sidebar on the dialog's output until the last dialog closes.")
+
+function hl.get_windows() return {panel,trigger,external_panel,app} end
 dofile(config .. "fullscreen-policy.lua")
 assert(not enzui_fullscreen_chrome_hidden(panel) and #app.tags==0)
 app.fullscreen=2;events["window.fullscreen"](app)

@@ -3,7 +3,48 @@ hl.window_rule({
     no_xdg_drags = true, suppress_event = "maximize fullscreen",
 })
 
-if enzui_panel_policy_installed ~= 17 then
+local consent_tag = "enzui-assistant-consent-hidden"
+hl.window_rule({
+    name = "desktop-assistant-consent", match = { tag = consent_tag },
+    opacity = "0 override 0 override", no_focus = true,
+})
+
+if enzui_panel_policy_installed ~= 18 then
+    local function consent_window(window)
+        return window and (window.class == "dev.enzui.AssistantPanel" or window.class == "dev.enzui.PortalAccess")
+    end
+    local function refresh_consent(closing)
+        local windows, prompts = hl.get_windows(), {}
+        for _, window in ipairs(windows) do
+            if window ~= closing and window.class == "dev.enzui.PortalAccess"
+                and window.mapped and not window.hidden and window.monitor then
+                prompts[window.monitor.name] = true
+            end
+        end
+        for _, window in ipairs(windows) do
+            if window ~= closing and window.class == "dev.enzui.AssistantPanel" and window.mapped then
+                local hide = window.monitor ~= nil and prompts[window.monitor.name] == true
+                local hidden = false
+                for _, tag in ipairs(window.tags or {}) do
+                    hidden = hidden or tag == consent_tag
+                end
+                if hide ~= hidden then
+                    hl.dispatch(hl.dsp.window.tag({ window = window, tag = (hide and "+" or "-") .. consent_tag }))
+                end
+            end
+        end
+    end
+    -- The sidebar is composited above ordinary pinned windows.
+    for _, event in ipairs({ "window.open", "window.move_to_workspace" }) do
+        hl.on(event, function(window)
+            if consent_window(window) then refresh_consent() end
+        end)
+    end
+    hl.on("window.close", function(window)
+        if consent_window(window) then refresh_consent(window) end
+    end)
+    refresh_consent()
+
     local function panel(window)
         return window and window.mapped and not window.hidden
             and (window.class == "dev.enzui.Dock" or window.class == "dev.enzui.Desktop" or window.class == "dev.enzui.Shortcuts" or window.class == "dev.enzui.QuickSearch" or window.class == "dev.enzui.WorkspaceOverview" or window.class == "dev.enzui.ControlCenter" or window.class == "dev.enzui.PluginPanel"
@@ -81,5 +122,5 @@ if enzui_panel_policy_installed ~= 17 then
     end
     bind("SUPER + mouse:272", mouse(hl.dsp.window.drag()), {mouse=true})
     bind("SUPER + mouse:273", mouse(hl.dsp.window.resize()), {mouse=true})
-    enzui_panel_policy_installed = 17
+    enzui_panel_policy_installed = 18
 end

@@ -66,6 +66,11 @@ fn tool_title<'a>(tool: &'a str, title: &'a str) -> &'a str {
         "files_list" => tr("shell-agent-tool-list"),
         "command" => tr("shell-agent-tool-command"),
         "screenshot" => tr("shell-agent-tool-screenshot"),
+        "desktop_setting" => tr("shell-assistant-change-setting"),
+        "desktop_open" => tr("shell-assistant-open-app"),
+        "desktop_timer" => tr("shell-assistant-start-timer"),
+        "device_status" => tr("shell-assistant-device-status"),
+        "find_downloads" => tr("shell-assistant-find-downloads"),
         _ => tool,
     }
 }
@@ -1535,6 +1540,7 @@ fn assistant_row<'a>(
             title,
             arguments,
             decision,
+            once_only,
             ..
         } => {
             let mut card = column![
@@ -1586,7 +1592,7 @@ fn assistant_row<'a>(
                         .size(ButtonSize::Sm)
                         .enabled(idle)
                         .into_element(),
-                        if tool == "screenshot" {
+                        if *once_only || tool == "screenshot" {
                             space().width(Length::Shrink).into()
                         } else {
                             enz_button(

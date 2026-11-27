@@ -5686,6 +5686,12 @@ shell-agent-tool-list = List folder contents
 shell-agent-tool-command = Run a workspace command
 shell-agent-screenshot-approval-detail = Allow screen capture for this chat. The selected model receives a summary or an image, based on your screenshot setting.
 shell-agent-tool-screenshot = Take a screenshot
+shell-assistant-change-setting = Change a desktop setting
+shell-assistant-open-app = Open an app or folder
+shell-assistant-start-timer = Start a timer
+shell-assistant-device-status = Read device status
+shell-assistant-find-downloads = Find downloads
+shell-assistant-timer-finished = Timer finished
 
 shell-dock-menu-for-app = { $title } dock menu
 shell-dock-opens-window-menu = Opens the window menu

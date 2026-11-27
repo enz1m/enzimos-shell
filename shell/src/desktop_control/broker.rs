@@ -1,5 +1,5 @@
 use super::{
-    Compositor, Failure, Peer, Result,
+    Compositor, Failure, Peer, Result, device,
     eis::Eis,
     executable, generation,
     indicator::Indicator,
@@ -76,15 +76,15 @@ struct Grant {
 
 type Slot = Rc<RefCell<Option<Grant>>>;
 
-pub(super) fn run(compositor: Compositor) -> Result<()> {
+pub(super) fn run(compositor: Compositor, root: PathBuf) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
-    tokio::task::LocalSet::new().block_on(&runtime, serve(compositor))
+    tokio::task::LocalSet::new().block_on(&runtime, serve(compositor, root))
 }
 
-async fn serve(compositor: Compositor) -> Result<()> {
+async fn serve(compositor: Compositor, root: PathBuf) -> Result<()> {
     let path = socket_path().ok_or_else(unavailable)?;
     let uid = rustix::process::getuid().as_raw();
     let base = path.parent().ok_or_else(unavailable)?;
@@ -106,6 +106,9 @@ async fn serve(compositor: Compositor) -> Result<()> {
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
     let shell = executable("enzui-shell").map_err(|e| e.to_string())?;
     let assistant = executable("enzui-assistant").map_err(|e| e.to_string())?;
+    let harness = harness_executable().map_err(|e| e.to_string())?;
+    let root = Rc::new(root);
+    let timers = Arc::new(Semaphore::new(16));
     let slot = Slot::default();
     let limit = Arc::new(Semaphore::new(8));
     loop {
@@ -115,13 +118,21 @@ async fn serve(compositor: Compositor) -> Result<()> {
             let _ = stream.try_write(b"{\"ok\":false}\n");
             continue;
         };
-        let peer = match Peer::new(&stream, &[&shell, &assistant]) {
-            Ok(peer) => peer,
-            Err(reason) => {
-                report(("client peer check", reason));
-                let _ = stream.try_write(b"{\"ok\":false}\n");
-                continue;
-            }
+        let assistant_peer = Peer::new(&stream, &[&shell, &assistant]);
+        if assistant_peer.is_err()
+            && let Ok(peer) = Peer::new(&stream, &[&harness])
+        {
+            let (compositor, root, timers) =
+                (compositor.clone(), Rc::clone(&root), Arc::clone(&timers));
+            tokio::task::spawn_local(async move {
+                let _permit = permit;
+                device_client(stream, peer, compositor, root, timers).await;
+            });
+            continue;
+        }
+        let Ok(peer) = assistant_peer else {
+            let _ = stream.try_write(b"{\"ok\":false}\n");
+            continue;
         };
         let (slot, compositor) = (Rc::clone(&slot), compositor.clone());
         tokio::task::spawn_local(async move {
@@ -129,6 +140,36 @@ async fn serve(compositor: Compositor) -> Result<()> {
             client(stream, peer, slot, compositor).await;
         });
     }
+}
+
+async fn device_client(
+    stream: UnixStream,
+    peer: Peer,
+    compositor: Compositor,
+    root: Rc<PathBuf>,
+    timers: Arc<Semaphore>,
+) {
+    let mut socket = BufReader::new(stream);
+    let Ok(Ok(request)) = tokio::time::timeout(IO_TIMEOUT, read_frame(&mut socket)).await else {
+        return;
+    };
+    if request["method"] != "device_tool" || !socket.buffer().is_empty() || !peer.alive() {
+        return;
+    }
+    let result = tokio::select! {
+        biased;
+        _ = socket.read_u8() => return,
+        result = tokio::time::timeout(Duration::from_secs(4), device::execute(&compositor, &root, timers, request)) => result,
+    };
+    let mut reply = match result {
+        Ok(Ok(value)) => json!({"ok":true,"result":value}),
+        Ok(Err(error)) => json!({"ok":false,"error":error}),
+        Err(_) => json!({"ok":false,"error":"unavailable"}),
+    };
+    if reply.to_string().len() >= super::FRAME {
+        reply = json!({"ok":false,"error":"unavailable"});
+    }
+    let _ = tokio::time::timeout(IO_TIMEOUT, write_frame(socket.get_mut(), &reply)).await;
 }
 
 async fn client(stream: UnixStream, peer: Peer, slot: Slot, compositor: Compositor) {
@@ -475,6 +516,14 @@ async fn control(
     }
 }
 
+fn harness_executable() -> std::io::Result<PathBuf> {
+    if crate::desktop_session::mode().nested() {
+        executable("enzimos-agent-harness")
+    } else {
+        Ok(PathBuf::from("/usr/bin/enzimos-agent-harness"))
+    }
+}
+
 async fn attach_harness(session: &str, generation: &str) -> Attempt<(BufReader<UnixStream>, Peer)> {
     let stage = "harness attachment";
     let path = std::env::var_os("ENZUI_AGENT_SOCKET")
@@ -485,16 +534,13 @@ async fn attach_harness(session: &str, generation: &str) -> Attempt<(BufReader<U
     let socket = UnixStream::connect(&path)
         .await
         .map_err(|_| (stage, "cannot connect to the agent harness socket"))?;
-    let installed = Path::new("/usr/bin/enzimos-agent-harness");
-    let preview = executable("enzimos-agent-harness")
-        .map_err(|_| (stage, "cannot locate expected harness executable"))?;
-    let expected = if crate::desktop_session::mode().nested() {
-        preview.as_path()
-    } else {
-        installed
-    };
-    let peer = Peer::new(&socket, &[installed, expected])
-        .map_err(|reason| ("harness peer check", reason))?;
+    let expected =
+        harness_executable().map_err(|_| (stage, "cannot locate expected harness executable"))?;
+    let peer = Peer::new(
+        &socket,
+        &[Path::new("/usr/bin/enzimos-agent-harness"), &expected],
+    )
+    .map_err(|reason| ("harness peer check", reason))?;
     let mut socket = BufReader::new(socket);
     write_frame(
         socket.get_mut(),

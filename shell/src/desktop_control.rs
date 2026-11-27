@@ -1,5 +1,6 @@
 //! The Assistant's conversation-scoped desktop control entry point.
 mod broker;
+mod device;
 mod eis;
 mod indicator;
 mod portal;
@@ -92,10 +93,10 @@ pub async fn request(session: &str, action: Request) -> Result<()> {
     Err(unavailable())
 }
 
-pub fn start(compositor: Compositor) {
+pub fn start(compositor: Compositor, root: PathBuf) {
     if crate::desktop_session::mode().managed() {
         std::thread::spawn(move || {
-            if let Err(error) = broker::run(compositor) {
+            if let Err(error) = broker::run(compositor, root) {
                 eprintln!("enzui desktop control: broker startup: {error}");
             }
         });

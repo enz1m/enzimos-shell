@@ -156,6 +156,17 @@ pub(crate) async fn notify_power(
     body: String,
     urgent: bool,
 ) -> Result<(), String> {
+    post_notification("Power", icon, "device", summary, body, urgent).await
+}
+
+pub(crate) async fn post_notification(
+    app: &str,
+    icon: &str,
+    category: &str,
+    summary: String,
+    body: String,
+    urgent: bool,
+) -> Result<(), String> {
     let connection = zbus::Connection::session()
         .await
         .map_err(|_| tr("shell-no-session-bus"))?;
@@ -172,13 +183,13 @@ pub(crate) async fn notify_power(
         "urgency",
         zbus::zvariant::Value::U8(if urgent { 2 } else { 1 }),
     );
-    hints.insert("category", zbus::zvariant::Value::from("device"));
+    hints.insert("category", zbus::zvariant::Value::from(category));
     let actions: Vec<&str> = Vec::new();
     let _: u32 = proxy
         .call(
             "Notify",
             &(
-                "Power",
+                app,
                 0u32,
                 icon,
                 summary.as_str(),

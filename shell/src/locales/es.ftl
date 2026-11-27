@@ -5651,6 +5651,12 @@ shell-agent-tool-list = Ver el contenido de una carpeta
 shell-agent-tool-command = Ejecutar un comando en el espacio de trabajo
 shell-agent-screenshot-approval-detail = Permite capturar la pantalla durante este chat. El modelo seleccionado recibe un resumen o una imagen, según tu configuración.
 shell-agent-tool-screenshot = Hacer una captura de pantalla
+shell-assistant-change-setting = Cambiar un ajuste del escritorio
+shell-assistant-open-app = Abrir una aplicación o carpeta
+shell-assistant-start-timer = Iniciar un temporizador
+shell-assistant-device-status = Consultar el estado del dispositivo
+shell-assistant-find-downloads = Buscar descargas
+shell-assistant-timer-finished = Temporizador terminado
 
 shell-dock-menu-for-app = Menú de { $title } en el Dock
 shell-dock-opens-window-menu = Abre el menú de ventanas

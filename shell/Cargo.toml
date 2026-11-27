@@ -138,6 +138,7 @@ enzui-widgets = { features = ["portal-dbus"], git = "https://github.com/enz1m/en
 enzui-agent = { features = ["iced-consumer"], git = "https://github.com/enz1m/enzui.git", rev = "851f9de552d34a4015c9c772005e700a1422b33f" }
 enzui-activity = { git = "https://github.com/enz1m/enzui.git", rev = "851f9de552d34a4015c9c772005e700a1422b33f" }
 enzui-agent-app = { git = "https://github.com/enz1m/enzui.git", rev = "851f9de552d34a4015c9c772005e700a1422b33f" }
+sysinfo = { version = "0.33.1", default-features = false, features = ["system"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 ttf-parser = "=0.25.1"
 serde_json = "1"

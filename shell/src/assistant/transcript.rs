@@ -67,6 +67,7 @@ pub(crate) enum Body {
         title: String,
         arguments: String,
         decision: Decision,
+        once_only: bool,
     },
     Note {
         text: String,
@@ -660,6 +661,7 @@ impl Transcript {
                         title: text("title"),
                         arguments: pretty(&event["arguments"]),
                         decision: Decision::Pending,
+                        once_only: event["once_only"] == true,
                     },
                 );
                 self.restart_reply();

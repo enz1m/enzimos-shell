@@ -388,6 +388,21 @@ impl SystemControls {
             input: input.ok().and_then(|text| audio_devices::serial(&text)),
         })
     }
+    pub(crate) async fn output_audio(&self) -> Option<Audio> {
+        self.audio_level(crate::audio_devices::Kind::Output).await
+    }
+    async fn audio_level(&self, kind: crate::audio_devices::Kind) -> Option<Audio> {
+        if self.pulse_only() {
+            self.pulse_level(kind).await.ok()
+        } else {
+            parse_audio(
+                &self
+                    .run("wpctl", &["get-volume", kind.default_target()])
+                    .await
+                    .ok()?,
+            )
+        }
+    }
     pub async fn snapshot(&self) -> SystemSnapshot {
         self.snapshot_with(true, true).await
     }
@@ -396,14 +411,11 @@ impl SystemControls {
     /// PipeWire's changes instead.
     pub async fn snapshot_with(&self, network: bool, audio: bool) -> SystemSnapshot {
         let read_network = network;
-        let volume = |kind: crate::audio_devices::Kind| async move {
-            if !audio {
-                None
-            } else if self.pulse_only() {
-                self.pulse_level(kind).await.ok()
+        let volume = |kind| async move {
+            if audio {
+                self.audio_level(kind).await
             } else {
-                let node = kind.default_target();
-                parse_audio(&self.run("wpctl", &["get-volume", node]).await.ok()?)
+                None
             }
         };
         let bluetooth = async {
@@ -500,7 +512,7 @@ impl SystemControls {
             power: self.allow_power && self.tool("systemctl").is_some(),
         }
     }
-    async fn brightness(&self) -> Option<Brightness> {
+    pub(crate) async fn brightness(&self) -> Option<Brightness> {
         let mut entries = tokio::fs::read_dir(self.sysfs.join("class/backlight"))
             .await
             .ok()?;

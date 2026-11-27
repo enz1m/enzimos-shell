@@ -56,8 +56,7 @@ pub(crate) fn indicator(shell: &Shell) -> Element<'_, Message> {
         },
     ))
     .on_scroll(Message::DesktopWheel)
-    // A floating desktop's windows side by side.
-    .on_right_press(Message::Spread(crate::window_spread::SpreadMessage::Toggle))
+    .on_right_press(Message::Command(enzui_shell::commands::Command::ShowActivities))
     .into()
 }
 

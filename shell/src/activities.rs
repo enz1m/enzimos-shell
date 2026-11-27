@@ -30,6 +30,23 @@ impl Shell {
         }
     }
 
+    pub(crate) fn show_activities(&mut self) -> Task<Message> {
+        if self.activities {
+            return Task::none();
+        }
+        if self.metrics.islands.is_none()
+            || self.snapshot.as_ref().is_some_and(|snapshot| snapshot.tiling)
+        {
+            return if self.search.showing {
+                Task::none()
+            } else {
+                self.search_message(SearchMessage::Show(None))
+            };
+        }
+        let old_spread = self.abort_spread();
+        Task::batch([old_spread, self.open_activities()])
+    }
+
     fn open_activities(&mut self) -> Task<Message> {
         self.activities = true;
         self.activities_following = false;

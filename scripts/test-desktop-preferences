@@ -2,10 +2,13 @@
 local values, calls, fault, leaves = {}, 0, nil, {}
 local device={border_color=0,border_custom=0x0a84ff,border_active=80,border_inactive=20,scroll=100,repeat_delay=600,repeat_rate=25,zoom=100,cursor=24,accel=true,left_handed=false,tap=true,dwt=true,gestures=false,kb_options="caps:ctrl_modifier,grp:alt_shift_toggle",kb_variant="",kb_layout="",x11_sharp=false,terminal="/usr/bin/terminal-emulator"}
 local environment,gestures={},{}
+local dispatched,fullscreen={},false
+function enzui_fullscreen_focused() return fullscreen end
 hl = {
     config = function(value) values=value;calls=calls+1 end,
     env = function(key,value) environment[key]=value end,
     gesture = function(value)
+        assert(value.fingers==3)
         local previous=gestures[value.direction]
         if value.action=="unset" then
             assert(previous,"No gesture is bound")
@@ -15,6 +18,8 @@ hl = {
             gestures[value.direction]=value.action
         end
     end,
+    dsp = {event = function(value) return value end},
+    dispatch = function(value) dispatched[#dispatched+1]=value end,
     animation = function(value) leaves[value.leaf]=value end,
     get_config = function(key)
         if key==fault then return -999 end
@@ -53,7 +58,14 @@ assert(next(gestures)==nil)
 device.gestures=true
 assert(enzui_apply_desktop_preferences(table.unpack(good)))
 assert(enzui_apply_desktop_preferences(table.unpack(good)))
-assert(gestures.horizontal=="workspace" and type(gestures.up)=="function")
+assert(gestures.horizontal=="workspace")
+gestures.up.finish({cancelled=false})
+gestures.down.finish({cancelled=false})
+gestures.up.finish({cancelled=true})
+gestures.down.finish({cancelled=true})
+fullscreen=true
+gestures.up.finish({cancelled=false})
+assert(table.concat(dispatched,",")=="enzui-command:show-activities,enzui-command:dismiss-activities")
 device.gestures=false
 assert(enzui_apply_desktop_preferences(table.unpack(good)))
 assert(enzui_apply_desktop_preferences(table.unpack(good)))

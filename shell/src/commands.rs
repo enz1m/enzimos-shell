@@ -53,10 +53,12 @@ pub enum Command {
     /// Super was pressed and released alone on a tiling desktop, where the
     /// overview has no window spread.
     ActivitiesSearch,
+    ShowActivities,
+    DismissActivities,
 }
 
 impl Command {
-    const ALL: [(Self, &'static str); 42] = [
+    const ALL: [(Self, &'static str); 44] = [
         (Self::VolumeUp, "volume-up"),
         (Self::VolumeDown, "volume-down"),
         (Self::VolumeMute, "volume-mute"),
@@ -99,6 +101,8 @@ impl Command {
         (Self::OutputRescaled, "output-rescaled"),
         (Self::Activities, "activities"),
         (Self::ActivitiesSearch, "activities-search"),
+        (Self::ShowActivities, "show-activities"),
+        (Self::DismissActivities, "dismiss-activities"),
     ];
 
     #[must_use]

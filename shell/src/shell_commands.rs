@@ -150,6 +150,8 @@ impl Shell {
             }
             Command::Activities => self.activities_command(true),
             Command::ActivitiesSearch => self.activities_command(false),
+            Command::ShowActivities => self.show_activities(),
+            Command::DismissActivities => self.close_search(),
             Command::Keyboard => self.toggle_osk(),
             // The supervised lock, as the Control Center's: it holds logind's
             // lock hint and refuses a second lock client.

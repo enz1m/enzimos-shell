@@ -76,11 +76,19 @@ function enzui_apply_desktop_preferences(inner,outer,border,rounding,animations,
     -- A compositor config reload clears both the gesture bindings and this Lua state.
     if device.gestures and not enzui_trackpad_gestures then
         hl.gesture({fingers=3,direction="horizontal",action="workspace"})
-        hl.gesture({fingers=3,direction="up",action=function() hl.dispatch(hl.dsp.event("enzui-command:overview")) end})
+        hl.gesture({fingers=3,direction="up",action={finish=function(event)
+            if not event.cancelled and not enzui_fullscreen_focused() then
+                hl.dispatch(hl.dsp.event("enzui-command:show-activities"))
+            end
+        end}})
+        hl.gesture({fingers=3,direction="down",action={finish=function(event)
+            if not event.cancelled then hl.dispatch(hl.dsp.event("enzui-command:dismiss-activities")) end
+        end}})
         enzui_trackpad_gestures=true
     elseif not device.gestures and enzui_trackpad_gestures then
         hl.gesture({fingers=3,direction="horizontal",action="unset"})
         hl.gesture({fingers=3,direction="up",action="unset"})
+        hl.gesture({fingers=3,direction="down",action="unset"})
         enzui_trackpad_gestures=false
     end
     local duration=300/animation_rate

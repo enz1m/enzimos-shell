@@ -14,10 +14,7 @@ use crate::{Message as ShellMessage, Shell, notification_panel};
 use enzui_shell::i18n::tr;
 use enzui_shell::tr;
 use enzui_shell::{
-    search::{
-        self, Category, DesktopAction, Item, Target, Ticket, compositor::IslandPlacement,
-        preferences::Change,
-    },
+    search::{self, Category, DesktopAction, Item, Target, Ticket, preferences::Change},
     settings::Change as SettingChange,
 };
 use iced::{Task, window};
@@ -143,39 +140,38 @@ impl Shell {
                     move |result| Message::Prepared(epoch, result),
                 )
             }
+            Message::WarmPrepared(bar_epoch, epoch, Ok(geometry))
+                if bar_epoch == self.bar_applied_epoch
+                    && epoch == self.search.epoch
+                    && !self.bar_busy
+                    && self.search.preferences.enabled
+                    && !self.search.showing
+                    && self.search.window.is_none() =>
+            {
+                self.search.epoch = self.search.epoch.saturating_add(1);
+                let size = self.set_search_geometry(geometry);
+                self.create_search_window(size)
+            }
+            Message::RefreshApps(epoch) if epoch == self.search.epoch && self.search.showing => {
+                self.search_scan_apps(true)
+            }
             Message::Prepared(epoch, result)
                 if epoch == self.search.epoch && self.search.showing =>
             {
                 match result {
                     Ok(geometry) => {
-                        let output = geometry.output;
-                        self.search.geometry = Some((geometry.body_max, output.clone()));
-                        self.search.island = geometry.island.map(|island| IslandPlacement {
-                            dim: island.dim && !self.search.overview,
-                            overview: self.search.overview,
-                            ..island
-                        });
+                        let output = geometry.output.clone();
+                        let size = self.set_search_geometry(geometry);
                         self.search.preparing = false;
                         self.search.layout_busy = false;
                         self.search.layout_revision = self.search.layout_revision.saturating_add(1);
-                        let size = self.search_window_extent();
-                        self.search.surface_size = Some(size);
-                        let mut tasks = Vec::new();
-                        if let Some(id) = self.search.window {
-                            if !self.surface_inputs.contains_key(&id) {
-                                tasks.push(Task::done(ShellMessage::Opened(id)));
+                        let open = match self.search.window {
+                            Some(id) if !self.surface_inputs.contains_key(&id) => {
+                                Task::done(ShellMessage::Opened(id))
                             }
-                        } else {
-                            let (id, open) = window::open(crate::window_settings(
-                                "dev.enzui.QuickSearch",
-                                size.width,
-                                size.height,
-                            ));
-                            self.search.window = Some(id);
-                            self.search.started = false;
-                            self.search.visible = false;
-                            tasks.push(open.map(ShellMessage::Opened));
-                        }
+                            Some(_) => Task::none(),
+                            None => self.create_search_window(size),
+                        };
                         let compositor = self.compositor.clone();
                         let live = self
                             .search
@@ -185,15 +181,15 @@ impl Shell {
                         let placement = self.search.island;
                         let fade = self.search.preferences.background_fade
                             && !self.tokens().motion.reduced_motion;
-                        tasks.push(perform(
+                        let present = perform(
                             async move {
                                 compositor
                                     .present_search(&output, size, epoch, live, placement, fade)
                                     .await
                             },
                             move |result| Message::Presented(epoch, result),
-                        ));
-                        Task::batch(tasks)
+                        );
+                        Task::batch([open, present])
                     }
                     Err(error) => {
                         self.search.feedback = Some(error.clone());
@@ -492,6 +488,7 @@ impl Shell {
                     && search::browse_installed_apps(
                         self.search.apps.iter(),
                         &self.search.preferences,
+                        search::TOP_APPS + 1,
                     )
                     .len()
                         > search::TOP_APPS
@@ -751,7 +748,7 @@ impl Shell {
             Message::Apps(generation, result) => {
                 self.search.apps_busy = false;
                 if generation != self.search.apps_generation {
-                    return self.search_scan_apps();
+                    return self.search_scan_apps(false);
                 }
                 if self.search.preferences.enabled {
                     match result {
@@ -906,7 +903,7 @@ impl Shell {
                     .retry()
                     .map_or_else(Task::none, clipboard_connection);
                 Task::batch([
-                    self.search_scan_apps(),
+                    self.search_scan_apps(false),
                     self.search_index(),
                     clipboard,
                     iced::widget::operation::focus("quick-search-input"),

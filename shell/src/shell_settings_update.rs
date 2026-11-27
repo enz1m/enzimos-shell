@@ -197,6 +197,7 @@ impl Shell {
                     self.publish_bar_regions(),
                     self.refresh_bar_glass(),
                     Task::done(Message::WarmControls),
+                    self.warm_search(),
                 ])
             }
             Message::BarGlassReady(result) => {

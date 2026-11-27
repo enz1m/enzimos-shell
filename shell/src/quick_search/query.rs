@@ -6,7 +6,7 @@ use crate::{Message as ShellMessage, Shell};
 use enzui_shell::i18n::tr;
 use enzui_shell::search::{self, Category, DesktopAction, Item, Model, Target, files};
 use enzui_shell::tr;
-use iced::{Task, window};
+use iced::Task;
 use std::{
     sync::{
         Arc,
@@ -113,10 +113,7 @@ impl Shell {
             self.search.model = Model::default();
             self.search.alias = None;
             self.search.preedit = None;
-            self.search
-                .window
-                .take()
-                .map_or_else(Task::none, window::close)
+            self.discard_search_surface()
         } else {
             Task::none()
         };
@@ -124,23 +121,19 @@ impl Shell {
         Task::batch([
             close,
             clipboard,
-            self.search_scan_apps(),
+            self.search_scan_apps(false),
             self.search_read_windows(),
             self.search_index(),
             self.search_file_query(),
         ])
     }
     pub(super) fn refresh_search_sources(&mut self) -> Task<ShellMessage> {
-        Task::batch([
-            self.search_check_activation(),
-            self.search_icons_changed(),
-            self.search_read_windows(),
-        ])
+        Task::batch([self.search_check_activation(), self.search_read_windows()])
     }
 
     pub(crate) fn refresh_overview_search(&mut self) -> Task<ShellMessage> {
         if std::mem::take(&mut self.search.overview_refresh_pending) && self.search.showing {
-            self.refresh_search_sources()
+            Task::batch([self.refresh_search_sources(), self.search_scan_apps(true)])
         } else {
             Task::none()
         }
@@ -154,12 +147,12 @@ impl Shell {
             cancel.store(true, Ordering::Release);
         }
         self.search.apps_busy = false;
-        self.search_scan_apps()
+        self.search_scan_apps(false)
     }
-    pub(super) fn search_scan_apps(&mut self) -> Task<ShellMessage> {
+    pub(super) fn search_scan_apps(&mut self, refresh: bool) -> Task<ShellMessage> {
         if !self.search.preferences.shows(Category::Apps)
             || self.search.apps_busy
-            || self.search.apps_ready
+            || (self.search.apps_ready && !refresh)
         {
             return Task::none();
         }
@@ -458,8 +451,16 @@ impl Shell {
                 self.search.model.replace(Vec::new());
                 return;
             }
-            let installed =
-                search::browse_installed_apps(self.search.apps.iter(), &self.search.preferences);
+            let limit = if self.search.browse_all_apps {
+                search::MAX_APP_RESULTS
+            } else {
+                search::TOP_APPS
+            };
+            let installed = search::browse_installed_apps(
+                self.search.apps.iter(),
+                &self.search.preferences,
+                limit,
+            );
             self.search.top_apps = installed.iter().take(search::TOP_APPS).cloned().collect();
             self.search.model.replace(if self.search.browse_all_apps {
                 // The full list is a catalogue to scan, so it is alphabetical;
@@ -468,7 +469,7 @@ impl Shell {
                 installed.sort_by_cached_key(|item| item.title.to_lowercase());
                 installed
             } else {
-                installed.into_iter().take(search::TOP_APPS).collect()
+                installed
             });
             let capacity = self.search_capacity();
             if self.search.browse_all_apps {

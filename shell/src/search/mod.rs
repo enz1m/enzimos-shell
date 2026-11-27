@@ -2,6 +2,7 @@ use enzui_shell::tr;
 use enzui_shell::{i18n::tr, settings_catalog::SearchRank};
 /// How many apps the launcher's blank page shows in its icon row.
 pub const TOP_APPS: usize = 6;
+pub const MAX_APP_RESULTS: usize = 2048;
 
 pub mod calculator;
 pub mod catalogue;
@@ -378,6 +379,7 @@ fn subsequence(text: &str, token: &str) -> bool {
 pub fn browse_installed_apps<'a>(
     items: impl IntoIterator<Item = &'a Item>,
     preferences: &Preferences,
+    limit: usize,
 ) -> Vec<Item> {
     rank_bounded(
         items
@@ -386,7 +388,7 @@ pub fn browse_installed_apps<'a>(
         "",
         Some(Category::Apps),
         preferences,
-        2048,
+        limit,
     )
 }
 pub fn rank<'a>(

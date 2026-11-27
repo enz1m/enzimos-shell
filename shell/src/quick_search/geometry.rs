@@ -7,7 +7,10 @@ use super::{
     },
 };
 use crate::{Message as ShellMessage, Shell};
-use enzui_shell::search::Category;
+use enzui_shell::search::{
+    Category,
+    compositor::{IslandPlacement, SearchGeometry},
+};
 use iced::{Subscription, Task, window};
 use std::{
     sync::atomic::Ordering,
@@ -377,6 +380,55 @@ impl Shell {
                 .map(|event| message(Message::Clipboard(event))),
         ])
     }
+    pub(crate) fn warm_search(&mut self) -> Task<ShellMessage> {
+        let bar_epoch = self.bar_applied_epoch;
+        if !self.bar_ready
+            || self.bar_busy
+            || !self.search.configured
+            || !self.search.preferences.enabled
+            || self.search.showing
+            || self.search.window.is_some()
+            || self.search.warmed_bar == Some(bar_epoch)
+        {
+            return Task::none();
+        }
+        self.search.warmed_bar = Some(bar_epoch);
+        let epoch = self.search.epoch;
+        let compositor = self.compositor.clone();
+        let (metrics, edge) = (self.metrics, self.bar);
+        enzui_shell::widget_bounds::bounds(self.panel, "applications").then(move |anchor| {
+            let compositor = compositor.clone();
+            perform(
+                async move { compositor.search_geometry(metrics, edge, anchor).await },
+                move |result| Message::WarmPrepared(bar_epoch, epoch, result),
+            )
+        })
+    }
+
+    pub(super) fn set_search_geometry(&mut self, geometry: SearchGeometry) -> iced::Size {
+        self.search.geometry = Some((geometry.body_max, geometry.output));
+        self.search.island = geometry.island.map(|island| IslandPlacement {
+            dim: island.dim && !self.search.overview,
+            overview: self.search.overview,
+            ..island
+        });
+        let size = self.search_window_extent();
+        self.search.surface_size = Some(size);
+        size
+    }
+
+    pub(super) fn create_search_window(&mut self, size: iced::Size) -> Task<ShellMessage> {
+        let (id, open) = window::open(crate::window_settings(
+            "dev.enzui.QuickSearch",
+            size.width,
+            size.height,
+        ));
+        self.search.window = Some(id);
+        self.search.started = false;
+        self.search.visible = false;
+        open.map(ShellMessage::Opened)
+    }
+
     pub(super) fn search_reveal_ready(&mut self) -> Task<ShellMessage> {
         if !self.search.showing
             || !self.search.presented
@@ -388,9 +440,22 @@ impl Shell {
         {
             return Task::none();
         }
+        let first = !self.search.started;
         self.search.visible = true;
         self.search.started = true;
-        iced::widget::operation::focus("quick-search-input")
+        let focus = iced::widget::operation::focus("quick-search-input");
+        if !first || self.search.overview {
+            return focus;
+        }
+        let epoch = self.search.epoch;
+        // Icon resolution and catalogue reads share the cores drawing the card.
+        let settle = Duration::from_millis(200);
+        Task::batch([
+            focus,
+            perform(async move { tokio::time::sleep(settle).await }, move |()| {
+                Message::RefreshApps(epoch)
+            }),
+        ])
     }
     pub(crate) fn discard_search_surface(&mut self) -> Task<ShellMessage> {
         let _ = self.close_search();

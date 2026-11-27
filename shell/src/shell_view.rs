@@ -90,6 +90,7 @@ impl Shell {
             ),
             self.plugin_subscription(),
             self.notification_subscription(),
+            self.dictation_subscription(),
             crate::desktop_update::subscription(),
             self.assistant_subscription(),
             enzui_shell::network_connectivity::subscription().map(Message::Connectivity),
@@ -419,6 +420,8 @@ impl Shell {
             tr("shell-notifications")
         } else if self.plugin.owns_window(id) {
             tr("shell-plugin-panel-2")
+        } else if self.dictation.owns(id) {
+            tr("shell-dictation")
         } else if self.assistant.owns(id) {
             tr("shell-assistant")
         } else {
@@ -444,6 +447,9 @@ impl Shell {
             return view;
         }
         if let Some(view) = self.assistant_view(id) {
+            return view;
+        }
+        if let Some(view) = self.dictation_view(id) {
             return view;
         }
         if let Some(view) = self.osd_view(id) {

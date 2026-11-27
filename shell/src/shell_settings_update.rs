@@ -285,6 +285,7 @@ impl Shell {
                             next,
                             self.settings_shortcut(),
                             self.notification_geometry_changed(),
+                            self.place_dictation(),
                             Task::done(Message::WarmControls),
                         ]))
                     }

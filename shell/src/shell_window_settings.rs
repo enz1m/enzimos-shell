@@ -35,6 +35,7 @@ pub(super) fn window_settings(app_id: &str, width: f32, height: f32) -> window::
                 | "dev.enzui.NotificationCenter"
                 | "dev.enzui.NotificationToasts"
                 | "dev.enzui.Osd"
+                | "dev.enzui.Dictation"
                 | "dev.enzui.Switcher"
                 | "dev.enzui.Capture"
                 | "dev.enzui.WindowSpread"

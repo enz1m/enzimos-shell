@@ -6,6 +6,7 @@ local shell_classes = {
     ["dev.enzui.Sidebar"]=true, ["dev.enzui.SidebarPane"]=true, ["dev.enzui.SidebarBacking"]=true,
     ["dev.enzui.PluginPanel"]=true, ["dev.enzui.WindowSpread"]=true, ["dev.enzui.Switcher"]=true,
     ["dev.enzui.AssistantPanel"]=true, ["dev.enzui.AssistantTrigger"]=true,
+    ["dev.enzui.Dictation"]=true, ["dev.enzui.DictationPermission"]=true,
     ["dev.enzui.NotificationCenter"]=true, ["dev.enzui.NotificationToasts"]=true,
     ["dev.enzui.WritingTools"]=true, ["dev.enzui.EmojiPicker"]=true, ["dev.enzui.Keyboard"]=true, ["dev.enzui.Shortcuts"]=true, ["dev.enzui.Osd"]=true, ["dev.enzui.Capture"]=true,
 }

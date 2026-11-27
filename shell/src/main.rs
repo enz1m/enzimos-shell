@@ -25,6 +25,7 @@ mod shell_clock;
 mod shell_commands;
 mod shell_controls;
 mod shell_diagnostics;
+mod shell_dictation;
 mod shell_emoji;
 mod shell_media;
 mod shell_messages;
@@ -78,6 +79,7 @@ struct Shell {
     desktop_update_pending: bool,
     activity: shell_activity::Activity,
     osd: shell_osd::Osd,
+    dictation: shell_dictation::Dictation,
     glass_windows: std::collections::HashMap<window::Id, enzui_shell::surface_input::SurfaceInput>,
     glass_binding: std::collections::HashSet<window::Id>,
     glass_inks: std::collections::HashMap<window::Id, enzui_shell::glass_ink::AdaptiveInk>,
@@ -351,6 +353,7 @@ impl Shell {
             desktop_update_pending: false,
             activity: Default::default(),
             osd: Default::default(),
+            dictation: Default::default(),
             glass_windows: std::collections::HashMap::new(),
             glass_binding: std::collections::HashSet::new(),
             glass_inks: std::collections::HashMap::new(),
@@ -772,6 +775,7 @@ impl Shell {
             Message::Activity(message) => self.activity_message(message),
             Message::Command(command) => self.run_command(command),
             Message::Osd(message) => self.osd_message(message),
+            Message::Dictation(message) => self.dictation_message(message),
             Message::GlassBound(id, result) => self.glass_bound(id, result),
             Message::GlassBackdrop(tick) => self.glass_backdrop(tick),
             Message::Media(message) => self.media_message(message),

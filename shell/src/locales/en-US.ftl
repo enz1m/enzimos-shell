@@ -5581,3 +5581,17 @@ shell-portal-share-account = Share account information?
 shell-portal-account-description = Share your username, name, and profile picture with the requesting app?
 shell-portal-account-requester = { $app } wants to see your username, name, and profile picture.
 shell-user-switch-inhibited = An application is preventing user switching.
+
+shell-dictation-listening = Listening…
+shell-dictation-transcribing = Transcribing…
+shell-dictation-inserted = Inserted
+shell-dictation-copied = Copied
+shell-dictation-no-microphone = No microphone
+shell-dictation-no-model = Model unavailable
+shell-dictation-nothing-heard = Nothing heard
+shell-dictation-disabled = Dictation is off
+shell-dictation-failed = Dictation failed
+shell-dictation-permission = Allow Dictation to use the microphone?
+shell-dictation-permission-detail = Dictation uses on-device speech recognition.
+shell-dictation-allow = Allow microphone
+shell-dictation-deny = Not now

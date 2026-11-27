@@ -5561,3 +5561,17 @@ shell-print-monochrome = Monocromo
 shell-print-service-unavailable = El servicio de impresión no está disponible.
 shell-print-no-printers = No hay impresoras configuradas.
 shell-user-switch-inhibited = Una aplicación impide cambiar de usuario.
+
+shell-dictation-listening = Escuchando…
+shell-dictation-transcribing = Transcribiendo…
+shell-dictation-inserted = Insertado
+shell-dictation-copied = Copiado
+shell-dictation-no-microphone = Sin micrófono
+shell-dictation-no-model = Modelo no disponible
+shell-dictation-nothing-heard = No se oyó nada
+shell-dictation-disabled = Dictado desactivado
+shell-dictation-failed = Error de dictado
+shell-dictation-permission = ¿Permitir que Dictado use el micrófono?
+shell-dictation-permission-detail = Dictado reconoce la voz en este dispositivo.
+shell-dictation-allow = Permitir micrófono
+shell-dictation-deny = Ahora no

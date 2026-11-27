@@ -644,6 +644,7 @@ impl Compositor {
         metrics: crate::settings::Metrics,
         bar: crate::settings::BarEdge,
     ) -> Result<ControlGeometry, String> {
+        use crate::{reveal::Attachment, settings::BarEdge};
         if !matches!(
             class,
             "dev.enzui.Osd"
@@ -652,13 +653,18 @@ impl Compositor {
                 | "dev.enzui.WritingTools"
                 | "dev.enzui.Keyboard"
                 | "dev.enzui.Capture"
+                | "dev.enzui.Dictation"
+                | "dev.enzui.DictationPermission"
         ) {
             return Err(tr("shell-unknown-overlay").into());
         }
         // Hyprland denies pointer input to no-focus windows; the keyboard instead skips focus
         // on mapping.
         let focus = match class {
-            "dev.enzui.EmojiPicker" | "dev.enzui.Capture" | "dev.enzui.WritingTools" => "",
+            "dev.enzui.EmojiPicker"
+            | "dev.enzui.Capture"
+            | "dev.enzui.WritingTools"
+            | "dev.enzui.DictationPermission" => "",
             "dev.enzui.Keyboard" => "no_initial_focus=true,",
             _ => "no_initial_focus=true,no_focus=true,",
         };
@@ -748,6 +754,29 @@ impl Compositor {
         } else {
             (x, y)
         };
+        let (x, y, width, height, attachment) = if class == "dev.enzui.Dictation" {
+            let radius = f32::from(metrics.radius);
+            let bottom = bar == BarEdge::Bottom;
+            let (attachment, width, gap) = if metrics.islands.is_some() {
+                (
+                    Attachment::Island {
+                        center: width / 2.0,
+                        seed_width: width,
+                    },
+                    width,
+                    -3.0,
+                )
+            } else {
+                (Attachment::Bar, width + 2.0 * radius, 0.0)
+            };
+            let height = height + attachment.join(radius);
+            let y = attached_y(&output, height, bar, metrics)? + if bottom { -gap } else { gap };
+            let x = ((screen_width - width) / 2.0).max(0.0).round();
+            let (x, y, width, height) = shadowed(x, y, width, height, bottom, attachment);
+            (x, y as f32, width, height, attachment)
+        } else {
+            (x, y, width, height, Attachment::default())
+        };
         let absolute_x = x + ox;
         let absolute_y = y + oy;
         let size = serde_json::json!(format!("{width} {height}"));
@@ -771,7 +800,7 @@ impl Compositor {
             width,
             height,
             output: name.into(),
-            attachment: Default::default(),
+            attachment,
         })
     }
 

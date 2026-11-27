@@ -29,6 +29,7 @@ pub(super) enum Message {
     Command(enzui_shell::commands::Command),
     ShortcutOverlay(shortcut_overlay::Message),
     Osd(shell_osd::OsdMessage),
+    Dictation(shell_dictation::Event),
     GlassBound(
         window::Id,
         Result<enzui_shell::surface_input::SurfaceInput, String>,

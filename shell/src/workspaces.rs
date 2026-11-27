@@ -290,6 +290,8 @@ const SHELL_CLASSES: &[&[u8]] = &[
     b"dev.enzui.AssistantTrigger",
     b"dev.enzui.Capture",
     b"dev.enzui.ControlCenter",
+    b"dev.enzui.Dictation",
+    b"dev.enzui.DictationPermission",
     b"dev.enzui.Dock",
     b"dev.enzui.Desktop",
     b"dev.enzui.WritingTools",

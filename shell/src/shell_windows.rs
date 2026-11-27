@@ -53,6 +53,17 @@ impl Shell {
                 self.spread_closed(id)
             }
             Message::Opened(id) if self.emoji.owns(id) => self.emoji_opened(id),
+            Message::Opened(id) if self.dictation.indicator(id) => {
+                window::enable_mouse_passthrough(id)
+            }
+            Message::Window(id, window::Event::Closed) if self.dictation.owns(id) => {
+                self.dictation_closed(id)
+            }
+            Message::Escape(id) | Message::Window(id, window::Event::CloseRequested)
+                if self.dictation.permission(id) =>
+            {
+                self.dictation_message(crate::shell_dictation::Event::Permission(false))
+            }
             Message::Opened(id)
                 if self.owns_osd(id) || self.owns_switcher(id) || self.osk.owns(id) =>
             {

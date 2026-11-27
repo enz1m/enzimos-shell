@@ -15,6 +15,7 @@ impl Message {
             Self::Activity(..) => "Activity",
             Self::Command(..) => "Command",
             Self::Osd(..) => "Osd",
+            Self::Dictation(..) => "Dictation",
             Self::GlassBound(..) => "GlassBound",
             Self::GlassBackdrop(..) => "GlassBackdrop",
             Self::Media(..) => "Media",

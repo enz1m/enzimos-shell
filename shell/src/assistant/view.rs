@@ -1,5 +1,5 @@
 use super::{
-    COMPOSER, Message, Screenshots, TRANSCRIPT, attachments, message, resize,
+    COMPOSER, HistoryAction, Message, Screenshots, TRANSCRIPT, attachments, message, resize,
     transcript::{Body, Decision, Row, ToolStatus},
 };
 use crate::{Message as ShellMessage, Shell, region};
@@ -489,6 +489,12 @@ impl Shell {
             } else {
                 space().width(Length::Shrink).into()
             },
+            enz_toolbar_icon("settings", message(Message::ModelSettings))
+                .tokens(self.icon_tokens())
+                .id("assistant-model-settings".into())
+                .aria_label(tr("shell-assistant-model-settings"))
+                .tooltip(tr("shell-assistant-model-settings"))
+                .into_element(),
             enz_toolbar_icon("keyboard", message(Message::Shortcuts(!state.shortcuts)))
                 .tokens(self.icon_tokens())
                 .id("assistant-shortcuts".into())
@@ -517,6 +523,7 @@ impl Shell {
     fn assistant_shortcuts(&self) -> Element<'_, ShellMessage> {
         let mut content = column![].spacing(10);
         for key in [
+            "shell-assistant-shortcut-toggle",
             "shell-assistant-shortcut-send",
             "shell-assistant-shortcut-newline",
             "shell-assistant-shortcut-close",
@@ -680,24 +687,55 @@ impl Shell {
                     .into_element(),
             ]
             .spacing(2);
+            let open = enz_pressable(
+                container(content)
+                    .padding(Padding {
+                        top: 7.0,
+                        right: 10.0,
+                        bottom: 7.0,
+                        left: 10.0,
+                    })
+                    .into(),
+                message(Message::Open(session.id.clone())),
+            )
+            .id(format!("assistant-session-{}", session.id).into())
+            .aria_label(session.title.clone())
+            .style(PressableStyle::Row)
+            .selected(active)
+            .width(Length::Fill)
+            .into_element();
+            let rename = enz_toolbar_icon(
+                "pencil",
+                message(Message::HistoryAction(Some(HistoryAction::Rename {
+                    id: session.id.clone(),
+                    title: session.title.clone(),
+                }))),
+            )
+            .tokens(self.icon_tokens())
+            .aria_label(
+                enzui_shell::tr!("shell-assistant-rename-chat", "title" => session.title.clone()),
+            )
+            .tooltip(tr("shell-rename"))
+            .enabled(!state.approval_busy && state.running.is_none())
+            .into_element();
+            let delete = enz_toolbar_icon(
+                "trash-2",
+                message(Message::HistoryAction(Some(HistoryAction::Delete {
+                    id: session.id.clone(),
+                    title: session.title.clone(),
+                }))),
+            )
+            .tokens(self.icon_tokens())
+            .aria_label(
+                enzui_shell::tr!("shell-assistant-delete-chat", "title" => session.title.clone()),
+            )
+            .tooltip(tr("shell-delete"))
+            .enabled(!state.approval_busy && state.running.is_none())
+            .into_element();
             list = list.push(
-                enz_pressable(
-                    container(content)
-                        .padding(Padding {
-                            top: 7.0,
-                            right: 10.0,
-                            bottom: 7.0,
-                            left: 10.0,
-                        })
-                        .into(),
-                    message(Message::Open(session.id.clone())),
-                )
-                .id(format!("assistant-session-{}", session.id).into())
-                .aria_label(session.title.clone())
-                .style(PressableStyle::Row)
-                .selected(active)
-                .width(Length::Fill)
-                .into_element(),
+                row![open, rename, delete]
+                    .spacing(2)
+                    .align_y(Alignment::Center),
             );
         }
         if matches == 0 {
@@ -712,7 +750,7 @@ impl Shell {
                 .into_element(),
             );
         }
-        column![
+        let mut content = column![
             enz_text_field(
                 "",
                 tr("shell-assistant-search-chats"),
@@ -728,8 +766,54 @@ impl Shell {
                 .into_element(),
         ]
         .spacing(8)
-        .height(Length::Fill)
-        .into()
+        .height(Length::Fill);
+        if let Some(action) = &state.history_action {
+            let (editor, submit, enabled) = match action {
+                HistoryAction::Rename { title, .. } => (
+                    enz_text_field("", tr("shell-assistant-chat-title"), title, |value| {
+                        message(Message::ChatTitle(value))
+                    })
+                    .id("assistant-chat-title".into())
+                    .aria_label(tr("shell-assistant-chat-title"))
+                    .on_submit(message(Message::SaveHistoryAction))
+                    .into_element(),
+                    tr("shell-save"),
+                    !title.trim().is_empty(),
+                ),
+                HistoryAction::Delete { title, .. } => (
+                    enz_text(enzui_shell::tr!("shell-assistant-delete-confirmation", "title" => title.clone()))
+                        .size_px(SMALL).wrap(true).into_element(),
+                    tr("shell-delete"),
+                    true,
+                ),
+            };
+            content = content.push(editor).push(
+                row![
+                    space().width(Length::Fill),
+                    enz_button(tr("shell-cancel"), message(Message::HistoryAction(None)))
+                        .kind(ButtonKind::Quiet)
+                        .size(ButtonSize::Sm)
+                        .enabled(!state.approval_busy)
+                        .into_element(),
+                    enz_button(submit, message(Message::SaveHistoryAction))
+                        .kind(ButtonKind::Secondary)
+                        .size(ButtonSize::Sm)
+                        .enabled(enabled && !state.approval_busy)
+                        .into_element(),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            );
+        }
+        if let Some(error) = &state.error {
+            content = content.push(
+                enz_text(error.clone())
+                    .size_px(SMALL)
+                    .wrap(true)
+                    .into_element(),
+            );
+        }
+        content.into()
     }
 
     fn assistant_transcript(&self, palette: &Palette) -> Element<'_, ShellMessage> {

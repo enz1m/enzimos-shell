@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Assistant
+Name[es]=Asistente
+Icon=enzui-assistant
+Exec=/usr/lib/enzui/bin/enzui-assistant
+NoDisplay=true

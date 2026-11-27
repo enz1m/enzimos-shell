@@ -96,7 +96,7 @@ pub(super) enum Message {
     Skills(String),
     Model(String),
     ListModels,
-    Models(Result<Vec<String>, String>),
+    Models(String, Result<Vec<String>, String>),
     Run(bool),
     Ran(Result<(), String>),
 }
@@ -338,6 +338,10 @@ impl SettingsApp {
                             Edit::AddRoot(_) => state.root.clear(),
                             Edit::AddSkills(_) => state.skills.clear(),
                             Edit::Model(_) => state.model.clear(),
+                            Edit::Provider(_) => {
+                                state.model.clear();
+                                state.models = None;
+                            }
                             _ => {}
                         }
                         self.assistant_save(config)
@@ -364,21 +368,31 @@ impl SettingsApp {
                 let Some(Ok(Some(config))) = &state.config else {
                     return Task::none();
                 };
-                let gateway = agent_harness::summary(config).gateway;
+                let Summary {
+                    gateway, provider, ..
+                } = agent_harness::summary(config);
                 state.models = None;
                 Task::perform(
                     async move {
-                        tokio::task::spawn_blocking(move || agent_harness::models(&gateway))
-                            .await
-                            .unwrap_or_else(|_| {
-                                Err(tr("shell-the-ai-gateway-did-not-answer").into())
-                            })
+                        let selected = provider.clone();
+                        let models = tokio::task::spawn_blocking(move || {
+                            agent_harness::models(&gateway, &provider)
+                        })
+                        .await
+                        .unwrap_or_else(|_| Err(tr("shell-the-ai-gateway-did-not-answer").into()));
+                        (selected, models)
                     },
-                    |models| ParentMessage::Assistant(Message::Models(models)),
+                    |(provider, models)| {
+                        ParentMessage::Assistant(Message::Models(provider, models))
+                    },
                 )
             }
-            Message::Models(models) => {
-                state.models = Some(models);
+            Message::Models(provider, models) => {
+                if let Some(Ok(Some(config))) = &state.config
+                    && agent_harness::summary(config).provider == provider
+                {
+                    state.models = Some(models);
+                }
                 Task::none()
             }
             Message::Run(on) => {
@@ -510,6 +524,27 @@ impl SettingsApp {
             )
             .into_element(),
         );
+        rows = rows
+            .push(
+                crate::settings_app::settings_row(tr("shell-assistant-model-settings"))
+                    .subtitle(tr("shell-assistant-model-settings-explanation"))
+                    .subtitle_wrap(true)
+                    .action(
+                        tr("shell-on-device-ai"),
+                        ParentMessage::Section("agents/local-ai"),
+                    )
+                    .into_element(),
+            )
+            .push(
+                crate::settings_app::settings_row(tr("shell-assistant-online-provider"))
+                    .subtitle(tr("shell-assistant-online-provider-explanation"))
+                    .subtitle_wrap(true)
+                    .action(
+                        tr("shell-ai-providers"),
+                        ParentMessage::Section("agents/ai-providers"),
+                    )
+                    .into_element(),
+            );
         let choices: Vec<(String, ParentMessage)> = summary
             .providers
             .iter()
@@ -546,7 +581,7 @@ impl SettingsApp {
                     row![
                         model_field,
                         enz_button(
-                            enzui_shell::i18n::tr("shell-list"),
+                            tr("shell-assistant-list-models"),
                             ParentMessage::Assistant(Message::ListModels)
                         )
                         .id("assistant-list-models".into())

@@ -5681,3 +5681,16 @@ shell-dock-unread-count = { " " }· { $count } unread
 shell-show-minimized-window = Show minimized window { $title }
 shell-invalid-dock-drop = Drop up to 64 local files to open them in the application.
 shell-focus-the-dock = Focus the dock
+
+shell-assistant-chat-title = Chat title
+shell-assistant-rename-chat = Rename { $title }
+shell-assistant-delete-chat = Delete { $title }
+shell-assistant-delete-confirmation = Delete “{ $title }” and its draft? This can’t be undone.
+shell-assistant-shortcut-toggle = Super+Shift+A · Toggle Assistant
+shell-assistant-model-settings = Choose a more capable model
+shell-assistant-model-settings-explanation = Download a larger model in On-device AI, then select it below. Changes apply to new chats.
+shell-assistant-online-provider = Use an online provider
+shell-assistant-online-provider-explanation = Set up a provider in AI Providers, then select it below. Messages in new chats will be sent to that provider.
+shell-assistant-list-models = Show models
+shell-assistant-screenshot-access-off = Screen access is off. Choose a mode under Ask → Screen access, or attach a screenshot manually.
+shell-assistant-screenshot-vision-required = This local model can’t see screenshots. Choose a vision model in Assistant settings and start a new chat, or use text-only screen access.

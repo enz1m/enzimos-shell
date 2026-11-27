@@ -39,6 +39,11 @@ pub(crate) enum Message {
     EditLast,
     CancelEdit,
     HistorySearch(String),
+    HistoryAction(Option<HistoryAction>),
+    ChatTitle(String),
+    SaveHistoryAction,
+    HistoryActionDone(HistoryAction, Result<Value, String>),
+    ModelSettings,
     Shortcuts(bool),
     TriggerPlaced(u64, Result<(String, TriggerLayout), String>),
     Hover(bool),
@@ -109,6 +114,12 @@ pub(crate) struct Pane {
     pub started: bool,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum HistoryAction {
+    Rename { id: String, title: String },
+    Delete { id: String, title: String },
+}
+
 struct EditLast {
     draft: text_editor::Content,
 }
@@ -162,6 +173,7 @@ pub(crate) struct State {
     revision: Option<EditLast>,
     completed: Option<u64>,
     history_search: String,
+    history_action: Option<HistoryAction>,
     shortcuts: bool,
     steering: bool,
     pub export_failed: bool,
@@ -303,6 +315,10 @@ fn list() -> Task<ShellMessage> {
     })
 }
 
+fn warmup(session: Option<String>) -> Task<ShellMessage> {
+    Task::future(client::warmup(session)).discard()
+}
+
 fn export(id: String) -> Task<ShellMessage> {
     perform(async move {
         let result = async {
@@ -400,6 +416,75 @@ impl Shell {
                 self.assistant.history_search = query;
                 Task::none()
             }
+            Message::HistoryAction(action) => {
+                if self.assistant.running.is_some() || self.assistant.approval_busy {
+                    return Task::none();
+                }
+                self.assistant.error = None;
+                let rename = matches!(action, Some(HistoryAction::Rename { .. }));
+                self.assistant.history_action = action;
+                iced::widget::operation::focus(if rename {
+                    "assistant-chat-title"
+                } else {
+                    "assistant-search"
+                })
+            }
+            Message::ChatTitle(value) => {
+                if let Some(HistoryAction::Rename { title, .. }) =
+                    &mut self.assistant.history_action
+                {
+                    *title = value.chars().take(60).collect();
+                }
+                Task::none()
+            }
+            Message::SaveHistoryAction => {
+                let state = &mut self.assistant;
+                if !state.history || state.approval_busy || state.running.is_some() {
+                    return Task::none();
+                }
+                let Some(action) = state.history_action.clone() else {
+                    return Task::none();
+                };
+                let (method, fields) = match &action {
+                    HistoryAction::Rename { id, title } if !title.trim().is_empty() => (
+                        "session.rename",
+                        json!({"session_id": id, "title": title.trim()}),
+                    ),
+                    HistoryAction::Rename { .. } => return Task::none(),
+                    HistoryAction::Delete { id, .. } => {
+                        ("session.delete", json!({"session_id": id}))
+                    }
+                };
+                state.approval_busy = true;
+                perform(async move {
+                    let result = client::request(method, fields).await;
+                    Message::HistoryActionDone(action, result)
+                })
+            }
+            Message::HistoryActionDone(action, result) => {
+                self.assistant.approval_busy = false;
+                if let Err(error) = result {
+                    self.assistant.error = Some(error);
+                    return Task::none();
+                }
+                self.assistant.history_action = None;
+                self.assistant.error = None;
+                if let HistoryAction::Delete { id, .. } = action {
+                    let reset = if self.assistant.session.as_ref() == Some(&id) {
+                        let reset = self.assistant_message(Message::NewChat);
+                        self.assistant.history = true;
+                        reset
+                    } else {
+                        Task::none()
+                    };
+                    self.assistant.drafts.remove(&Some(id));
+                    return Task::batch([reset, list()]);
+                }
+                list()
+            }
+            Message::ModelSettings => self
+                .close_assistant()
+                .chain(Task::done(ShellMessage::SettingsPage("agents/assistant"))),
             Message::Regenerate => self.assistant_revise(None),
             Message::EditLast => {
                 if self.assistant.can_revise()
@@ -422,6 +507,7 @@ impl Shell {
             Message::CancelEdit => Task::none(),
             Message::Service(state) => {
                 let ready = matches!(state, client::Service::Ready(_));
+                let was_ready = self.assistant.service == Some(Ok(()));
                 self.assistant.service = Some(match state {
                     client::Service::Ready(model) => {
                         if !model.is_empty() {
@@ -431,11 +517,21 @@ impl Shell {
                     }
                     client::Service::Failed(error) => Err(error),
                 });
-                if ready && self.assistant.panel.is_some() && !self.assistant.loaded {
-                    self.assistant_load()
-                } else {
-                    Task::none()
+                if ready
+                    && self
+                        .assistant
+                        .panel
+                        .as_ref()
+                        .is_some_and(|pane| pane.visible || !pane.started)
+                {
+                    if !self.assistant.loaded {
+                        return self.assistant_load();
+                    }
+                    if !was_ready && self.assistant.running.is_none() {
+                        return warmup(self.assistant.session.clone());
+                    }
                 }
+                Task::none()
             }
             Message::TriggerPlaced(serial, result) => {
                 if serial != self.assistant.placement_serial {
@@ -497,6 +593,9 @@ impl Shell {
                 Task::none()
             }
             Message::Toggle => {
+                if !self.desired_settings.assistant_enabled || !self.chrome_shown() {
+                    return Task::none();
+                }
                 if self
                     .assistant
                     .panel
@@ -534,10 +633,12 @@ impl Shell {
                             visible: false,
                             started: false,
                         });
-                        let load = if self.assistant.loaded {
-                            Task::none()
-                        } else {
+                        let load = if !self.assistant.loaded {
                             self.assistant_load()
+                        } else if self.assistant.running.is_none() {
+                            warmup(self.assistant.session.clone())
+                        } else {
+                            Task::none()
                         };
                         Task::batch([open.map(ShellMessage::Opened), load])
                     }
@@ -569,9 +670,10 @@ impl Shell {
                         let (id, title) = (latest.id.clone(), latest.title.clone());
                         self.assistant.switch_draft(Some(id.clone()));
                         self.assistant.title = title;
-                        return export(id);
+                        return Task::batch([export(id.clone()), warmup(Some(id))]);
                     }
                     self.assistant_new_approval();
+                    return warmup(None);
                 }
                 self.assistant_title();
                 Task::none()
@@ -789,6 +891,7 @@ impl Shell {
                 Task::batch([revoke, iced::widget::operation::focus(COMPOSER)])
             }
             Message::History(open) => {
+                self.assistant.history_action = None;
                 self.assistant.history = open;
                 self.assistant.shortcuts = false;
                 if open {
@@ -799,6 +902,7 @@ impl Shell {
                 }
             }
             Message::Open(id) => {
+                self.assistant.history_action = None;
                 self.assistant.history = false;
                 if self.assistant.running.is_some()
                     || self.assistant.approval_busy
@@ -1196,6 +1300,11 @@ impl Shell {
         if let Some(pane) = self.assistant.panel.as_mut() {
             pane.visible = true;
             return Task::batch([
+                if self.assistant.loaded && self.assistant.running.is_none() {
+                    warmup(self.assistant.session.clone())
+                } else {
+                    Task::none()
+                },
                 window::gain_focus(pane.window),
                 iced::widget::operation::focus(COMPOSER),
             ]);
@@ -1227,9 +1336,8 @@ impl Shell {
         self.assistant.attachment_loader.cancel();
         self.assistant.resize.drag = None;
         self.assistant.panel_opening = false;
-        if self.assistant.history {
-            self.assistant.history = false;
-        }
+        self.assistant.history_action = None;
+        self.assistant.history = false;
         match self.assistant.panel.as_mut() {
             Some(pane) if pane.started => {
                 pane.visible = false;
@@ -1346,6 +1454,9 @@ impl Shell {
 
     pub(crate) fn assistant_escape(&mut self, id: window::Id) -> Task<ShellMessage> {
         if self.assistant.owns_panel(id) {
+            if self.assistant.history_action.is_some() {
+                return self.assistant_message(Message::HistoryAction(None));
+            }
             if self.assistant.history || self.assistant.shortcuts {
                 self.assistant.history = false;
                 self.assistant.shortcuts = false;

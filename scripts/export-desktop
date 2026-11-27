@@ -408,7 +408,8 @@ def main():
                            (agent / "dev.enzui.Settings.service", prefix / "share/dbus-1/services/dev.enzui.Settings.service"),
                            (agent / "dev.enzui.Settings.background.json", prefix / "share/enzimos/background-apps/dev.enzui.Settings.json"),
                            (agent / "dev.enzui.Settings.search-provider.ini", prefix / "share/enzui/search-providers/dev.enzui.Settings.ini"),
-                           (agent / "dev.enzui.Settings.desktop", prefix / "share/applications/dev.enzui.Settings.desktop")):
+                           (agent / "dev.enzui.Settings.desktop", prefix / "share/applications/dev.enzui.Settings.desktop"),
+                           (agent / "dev.enzui.Assistant.desktop", prefix / "share/applications/dev.enzui.Assistant.desktop")):
         path = at(target)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(source.read_text().replace("/usr/lib/enzui/bin/", f"{prefix}/lib/enzui/bin/"))

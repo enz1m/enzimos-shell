@@ -51,7 +51,7 @@ pub(super) async fn open(mode: ApprovalMode, screenshots: Screenshots) -> Result
                 || tr("shell-choose-a-workspace-folder-in-settings-agents-first").to_owned();
             let workspace = setup.roots.first().cloned().ok_or_else(unset)?;
             let model = if setup.model.is_empty() && setup.provider != "local" {
-                agent_harness::models(&setup.gateway)?
+                agent_harness::models(&setup.gateway, &setup.provider)?
                     .into_iter()
                     .next()
                     .ok_or_else(|| tr("shell-the-gateway-lists-no-models").to_owned())?
@@ -200,6 +200,21 @@ pub(super) async fn request(method: &'static str, fields: Value) -> Result<Value
     }
 }
 
+pub(super) async fn warmup(session: Option<String>) {
+    if mock() {
+        return;
+    }
+    let exchange = async {
+        let mut stream = connect().await?;
+        stream
+            .write_all(&frame("model.warmup", json!({"session_id": session})))
+            .await
+            .map_err(|error| error.to_string())?;
+        line(&mut tokio::io::BufReader::new(stream)).await
+    };
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(45), exchange).await;
+}
+
 /// What a running turn reports.
 #[derive(Clone, Debug)]
 pub(crate) enum TurnEvent {
@@ -227,9 +242,15 @@ pub(super) fn turn(
                     .await
                     .map_err(|_| tr("shell-the-assistant-service-did-not-answer"))??;
                 let mut pending: Option<(Value, Instant)> = None;
+                let mut last_delta = None;
                 loop {
                     if let Some(event) = frame.get_mut("event").map(Value::take) {
-                        if event["type"] == "message.delta" {
+                        let kind = match event["type"].as_str() {
+                            Some("message.delta") => Some("message.delta"),
+                            Some("reasoning.delta") => Some("reasoning.delta"),
+                            _ => None,
+                        };
+                        if kind.is_some() && kind == last_delta {
                             match pending.as_mut() {
                                 Some((batch, _)) => {
                                     if let Some(Value::String(text)) = batch.get_mut("text") {
@@ -238,7 +259,7 @@ pub(super) fn turn(
                                 }
                                 None => {
                                     pending =
-                                        Some((event, Instant::now() + Duration::from_millis(16)));
+                                        Some((event, Instant::now() + Duration::from_millis(32)));
                                 }
                             }
                         } else {
@@ -247,6 +268,7 @@ pub(super) fn turn(
                             }
                             let _ = output.send(TurnEvent::Event(event)).await;
                         }
+                        last_delta = kind;
                     } else {
                         if let Some((batch, _)) = pending.take() {
                             let _ = output.send(TurnEvent::Event(batch)).await;

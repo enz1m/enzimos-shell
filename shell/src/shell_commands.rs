@@ -98,6 +98,7 @@ impl Shell {
             | Command::SwitchCancel
             | Command::SwitchState => self.switcher_command(command),
             Command::WritingTools => self.open_writing_tools(),
+            Command::Assistant => self.assistant_message(crate::assistant::Message::Toggle),
             Command::EmojiPicker => self.open_emoji_picker(),
             Command::Record => self.toggle_recording(),
             Command::Capture => self.open_capture(),

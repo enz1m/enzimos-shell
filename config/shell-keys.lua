@@ -51,6 +51,7 @@ for mod, keys in pairs({
 end
 hl.bind("SUPER + SPACE", command("search"))
 hl.bind("SUPER + A", command("launcher"))
+hl.bind("SUPER + SHIFT + A", command("assistant"))
 hl.bind("SUPER + code:61", command("shortcuts"))
 hl.bind("SUPER + C", command("controls"))
 hl.bind("SUPER + SHIFT + V", command("desktop-layout"))

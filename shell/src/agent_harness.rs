@@ -439,6 +439,9 @@ pub fn apply(config: &mut Value, edit: &Edit) -> Result<(), String> {
             {
                 return Err(tr("shell-that-provider-is-not-approved-in-this-configuration").into());
             }
+            if config["default_provider"].as_str().unwrap_or("local") != name {
+                config["enzui"]["model"] = json!("");
+            }
             config["default_provider"] = json!(name);
         }
         Edit::Model(model) => {
@@ -648,6 +651,8 @@ pub fn turn_error(code: &str) -> Option<&'static str> {
         "provider-timeout" => "shell-assistant-provider-timeout",
         "request-unavailable" => "shell-assistant-request-unavailable",
         "invalid-attachments" => "shell-assistant-invalid-attachments",
+        "screenshot-access-off" => "shell-assistant-screenshot-access-off",
+        "screenshot-vision-required" => "shell-assistant-screenshot-vision-required",
         "attachment-vision-required" => "shell-assistant-attachment-vision-required",
         "local-context-limit" => "shell-assistant-local-context-limit",
         "stale-turn-revision" => "shell-assistant-stale-revision",
@@ -777,8 +782,8 @@ pub fn request(method: &str, fields: Value) -> Result<Value, String> {
     }
 }
 
-/// The models the configured gateway offers (`/v1/models`), for choosing one.
-pub fn models(gateway: &str) -> Result<Vec<String>, String> {
+/// List chat models that the selected gateway provider offers.
+pub fn models(gateway: &str, provider: &str) -> Result<Vec<String>, String> {
     let path = Path::new(gateway);
     if !path.is_absolute() {
         return Err(tr("shell-no-gateway-is-configured").into());
@@ -786,8 +791,20 @@ pub fn models(gateway: &str) -> Result<Vec<String>, String> {
     let mut stream =
         private_socket(path).map_err(|_| tr("shell-the-ai-gateway-is-not-running").to_owned())?;
     stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
+    use std::fmt::Write as _;
+    let mut query = String::new();
+    for byte in provider.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+            query.push(char::from(byte));
+        } else {
+            let _ = write!(query, "%{byte:02X}");
+        }
+    }
+    let request = format!(
+        "GET /v1/models?provider={query} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    );
     stream
-        .write_all(b"GET /v1/models HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .write_all(request.as_bytes())
         .map_err(|_| tr("shell-the-ai-gateway-did-not-answer"))?;
     let mut response = Vec::new();
     stream
@@ -811,6 +828,7 @@ pub fn models(gateway: &str) -> Result<Vec<String>, String> {
         .as_array()
         .into_iter()
         .flatten()
+        .filter(|model| model["kind"] != "speech")
         .filter_map(|model| model["id"].as_str())
         .filter(|id| (1..=128).contains(&id.len()))
         .take(64)

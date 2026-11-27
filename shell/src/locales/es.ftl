@@ -5646,3 +5646,16 @@ shell-dock-unread-count = { " " }· { $count } sin leer
 shell-show-minimized-window = Mostrar la ventana minimizada { $title }
 shell-invalid-dock-drop = Suelta hasta 64 archivos locales para abrirlos en la aplicación.
 shell-focus-the-dock = Dar el foco al dock
+
+shell-assistant-chat-title = Título de la conversación
+shell-assistant-rename-chat = Cambiar el nombre de { $title }
+shell-assistant-delete-chat = Eliminar { $title }
+shell-assistant-delete-confirmation = ¿Eliminar «{ $title }» y su borrador? Esta acción es irreversible.
+shell-assistant-shortcut-toggle = Super+Mayús+A · Mostrar u ocultar el asistente
+shell-assistant-model-settings = Elegir un modelo más capaz
+shell-assistant-model-settings-explanation = Descarga un modelo mayor en IA local y selecciónalo abajo. Los cambios se aplican a las conversaciones nuevas.
+shell-assistant-online-provider = Usar un proveedor en línea
+shell-assistant-online-provider-explanation = Configura un proveedor en Proveedores de IA y selecciónalo abajo. Los mensajes de las conversaciones nuevas se enviarán a ese proveedor.
+shell-assistant-list-models = Mostrar modelos
+shell-assistant-screenshot-access-off = El acceso a la pantalla está desactivado. Elige un modo en Preguntar → Acceso a la pantalla o adjunta una captura manualmente.
+shell-assistant-screenshot-vision-required = Este modelo local no puede ver capturas. Elige un modelo con visión en Ajustes del asistente e inicia una conversación nueva, o usa el acceso a la pantalla solo como texto.

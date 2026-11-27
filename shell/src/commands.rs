@@ -21,6 +21,7 @@ pub enum Command {
     SwitchState,
     EmojiPicker,
     WritingTools,
+    Assistant,
     Overview,
     WindowSpread,
     Shortcuts,
@@ -59,7 +60,7 @@ pub enum Command {
 }
 
 impl Command {
-    const ALL: [(Self, &'static str); 45] = [
+    const ALL: [(Self, &'static str); 46] = [
         (Self::VolumeUp, "volume-up"),
         (Self::VolumeDown, "volume-down"),
         (Self::VolumeMute, "volume-mute"),
@@ -78,6 +79,7 @@ impl Command {
         (Self::SwitchState, "switch-state"),
         (Self::EmojiPicker, "emoji-picker"),
         (Self::WritingTools, "writing-tools"),
+        (Self::Assistant, "assistant"),
         (Self::Overview, "overview"),
         (Self::WindowSpread, "window-spread"),
         (Self::Shortcuts, "shortcuts"),

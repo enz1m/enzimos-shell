@@ -44,14 +44,29 @@ fn mix(a: Color, b: Color, t: f32) -> Color {
 
 fn tool_icon(tool: &str) -> &'static str {
     match tool {
-        "run_command" => "terminal",
+        "command" | "run_command" => "terminal",
         "file_read" | "read_file" => "eye",
-        "file_write" | "write_file" => "file-pen",
+        "file_write" | "write_file" | "file_rename" => "file-pen",
         "files_list" | "search_files" => "folder-search",
         "screenshot" => "camera",
         "render_chart" => "chart-column",
         "web_search" => "globe",
         _ => "wrench",
+    }
+}
+
+fn tool_title<'a>(tool: &'a str, title: &'a str) -> &'a str {
+    if !title.trim().is_empty() {
+        return title;
+    }
+    match tool {
+        "file_read" => tr("shell-agent-tool-read"),
+        "file_write" => tr("shell-agent-tool-write"),
+        "file_rename" => tr("shell-agent-tool-rename"),
+        "files_list" => tr("shell-agent-tool-list"),
+        "command" => tr("shell-agent-tool-command"),
+        "screenshot" => tr("shell-agent-tool-screenshot"),
+        _ => tool,
     }
 }
 
@@ -1380,15 +1395,7 @@ fn assistant_row<'a>(
                 ToolStatus::Done => enz_icon("check").size(12.0).tint(muted).into_element(),
                 ToolStatus::Failed => enz_icon("x").size(12.0).tint(palette.danger).into_element(),
             };
-            let title = if title.is_empty() {
-                if tool == "screenshot" {
-                    tr("shell-agent-tool-screenshot")
-                } else {
-                    tool.as_str()
-                }
-            } else {
-                title.as_str()
-            };
+            let title = tool_title(tool, title);
             let label = row![
                 enz_icon(tool_icon(tool))
                     .size(14.0)
@@ -1442,6 +1449,21 @@ fn assistant_row<'a>(
             .width(Length::Fill)
             .into_element();
             let mut column = column![heading].spacing(4);
+            if *status == ToolStatus::Failed && !output.trim().is_empty() {
+                column = column.push(
+                    container(
+                        enz_text(output.trim())
+                            .size_px(SMALL)
+                            .color(palette.text)
+                            .wrap(true)
+                            .into_element(),
+                    )
+                    .padding(Padding {
+                        left: 22.0,
+                        ..Padding::ZERO
+                    }),
+                );
+            }
             if row.open {
                 let mut detail = column![].spacing(6);
                 if !arguments.is_empty() {
@@ -1463,7 +1485,7 @@ fn assistant_row<'a>(
                             .into_element(),
                     );
                 }
-                if !output.is_empty() {
+                if *status != ToolStatus::Failed && !output.is_empty() {
                     detail = detail.push(
                         enz_text(tr("shell-output"))
                             .size_px(TINY)
@@ -1521,20 +1543,24 @@ fn assistant_row<'a>(
                         .size(16.0)
                         .tint(palette.warning)
                         .into_element(),
-                    enz_text(enzui_shell::tr!("shell-allow-2", "arg0" => enzui_shell::i18n::argument(if title.trim().is_empty() { tool } else { title })))
+                    enz_text(tool_title(tool, title))
                         .size_px(BODY)
                         .weight(Weight::Semibold)
                         .into_element(),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
-                enz_text(enzui_shell::tr!("shell-the-assistant-wants-to-use", "arg0" => enzui_shell::i18n::argument(&(tool))))
-                    .size_px(SMALL)
-                    .color(muted)
-                    .into_element(),
             ]
             .spacing(6);
-            if !arguments.is_empty() {
+            if tool == "screenshot" {
+                card = card.push(
+                    enz_text(tr("shell-agent-screenshot-approval-detail"))
+                        .size_px(SMALL)
+                        .color(muted)
+                        .wrap(true)
+                        .into_element(),
+                );
+            } else if !arguments.is_empty() {
                 card = card.push(
                     enz_code_block(arguments.clone())
                         .show_header(false)

@@ -15,16 +15,13 @@ use enzui_shell::{
     search::{AppTarget, Target, WindowTarget},
     settings::QuickAction,
 };
+use enzui_widgets::context_menu_host::{
+    ContextMenuEvent, ContextMenuState, apply_event_restoring, apply_event_restoring_with,
+    enz_context_menu_host, enz_optional_point_context_menu_host,
+};
 use enzui_widgets::{
     context_menu_host::FocusRestoreTarget,
     file_drop::{FileDrop, enz_file_drop_target_with_receipt},
-};
-use enzui_widgets::{
-    context_menu_host::{
-        ContextMenuEvent, ContextMenuState, apply_event_restoring, apply_event_restoring_with,
-        enz_context_menu_host, enz_optional_point_context_menu_host,
-    },
-    toolbar_icon::{ToolbarIconTokens, enz_toolbar_icon},
 };
 use iced::{
     Element, Length, Subscription, Task,
@@ -35,6 +32,8 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+
+const FIND_APPS_WIDTH: f32 = 132.0;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Origin {
@@ -757,6 +756,7 @@ impl Shell {
             motion.reduced_motion
                 || p.position == Position::Bar
                 || self.dock.geometry.is_none()
+                || self.dock.entries.is_empty()
                 || self.dock.hidden,
         );
         self.dock.strip.sync(
@@ -766,8 +766,13 @@ impl Shell {
             Instant::now(),
             motion,
         );
-        let span =
-            slots.span(self.dock.entries.len()) + f32::from(divider) * slots.separator_span();
+        let span = if self.dock.entries.is_empty()
+            && !matches!(p.position, Position::Left | Position::Right)
+        {
+            FIND_APPS_WIDTH
+        } else {
+            slots.span(self.dock.entries.len()) + f32::from(divider) * slots.separator_span()
+        };
         let mut geometry = dock::geometry(
             p,
             span,
@@ -1893,16 +1898,39 @@ impl Shell {
             buttons.push((group.id.clone(), button));
         }
         if buttons.is_empty() {
-            let add = container(
-                enz_toolbar_icon("plus", Message::ShowLauncher)
-                    .tokens(ToolbarIconTokens::from_palette(&palette))
-                    .aria_label(tr("shell-search-for-an-application-to-keep-in-the-dock"))
-                    .id("dock-add-app".into())
-                    .into_element(),
+            let mut content = row![
+                enzui_widgets::icon::enz_icon("plus")
+                    .size(16.0)
+                    .tint(palette.text)
+                    .into_element()
+            ]
+            .spacing(spacing.sm())
+            .align_y(iced::Alignment::Center);
+            if !vertical {
+                content = content.push(
+                    enzui_widgets::text::enz_text(tr("shell-dock-find-apps"))
+                        .no_wrap()
+                        .size(enzui_widgets::text::TextSize::Caption)
+                        .announce(false)
+                        .into_element(),
+                );
+            }
+            let add = enz_pressable(
+                container(content)
+                    .center_x(if vertical { target } else { FIND_APPS_WIDTH })
+                    .center_y(target)
+                    .into(),
+                Message::ShowLauncher,
             )
-            .center_x(target)
-            .center_y(target)
-            .into();
+            .style(PressableStyle::Plain)
+            .tokens(pressable)
+            .padding(0)
+            .radius(radius)
+            .aria_label(tr("shell-search-for-an-application-to-keep-in-the-dock"))
+            .id("dock-add-app".into())
+            .into_element();
+            let add =
+                enzui_widgets::tooltip::enz_tooltip(add, tr("shell-dock-find-apps-hint"), tooltip);
             return if matches!(origin, Origin::Bar) {
                 self.dock_folder_target(add)
             } else {

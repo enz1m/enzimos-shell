@@ -658,21 +658,31 @@ impl Shell {
                     .into()
                 };
                 let active = w.active;
-                let title = window_context(w, snapshot).map_or_else(
+                let context = window_context(w, snapshot);
+                let mut caption = row![
+                    enzui_widgets::text::enz_text(&w.title)
+                        .width(iced::Length::Fill)
+                        .no_wrap()
+                        .size(enzui_widgets::text::TextSize::Caption)
+                        .into_element()
+                ]
+                .spacing(6)
+                .align_y(iced::Alignment::Center);
+                if let Some(context) = &context {
+                    caption = caption.push(
+                        enzui_widgets::text::enz_text(context.clone())
+                            .no_wrap()
+                            .size(enzui_widgets::text::TextSize::Caption)
+                            .color(palette.text_muted)
+                            .into_element(),
+                    );
+                }
+                let title = context.map_or_else(
                     || w.title.clone(),
                     |context| format!("{} · {context}", w.title),
                 );
                 enzui_widgets::pressable::enz_pressable(
-                    column![
-                        content,
-                        enzui_widgets::text::enz_text(title.clone())
-                            .no_wrap()
-                            .size(enzui_widgets::text::TextSize::Caption)
-                            .into_element()
-                    ]
-                    .width(164)
-                    .spacing(4)
-                    .into(),
+                    column![content, caption].width(164).spacing(4).into(),
                     message(Event::Focus(w.target.clone())),
                 )
                 .style(enzui_widgets::pressable::PressableStyle::Plain)

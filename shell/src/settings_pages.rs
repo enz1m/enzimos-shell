@@ -809,13 +809,14 @@ impl SettingsApp {
                 })
         })
     }
-    /// What Enter in the search field opens: the first result group.
-    pub(super) fn first_search_result(&self) -> Option<Message> {
-        let group = self.matching_search_groups().into_iter().next()?;
-        Some(match group.destination {
-            SearchDestination::Page(page) => Message::Page(page),
-            SearchDestination::Section(route) => Message::RevealSection(route),
-        })
+    pub(super) fn first_search_destination(&self) -> Option<SearchDestination> {
+        if self.filter.trim().is_empty() {
+            return None;
+        }
+        self.matching_search_groups()
+            .into_iter()
+            .next()
+            .map(|group| group.destination)
     }
     fn search_results(&self) -> Column<'_, Message> {
         const PREVIEW_CONTROLS: usize = 2;

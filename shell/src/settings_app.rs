@@ -134,6 +134,7 @@ enum Message {
     SectionObserved(u64, Option<(&'static str, f32)>),
     InterruptScroll(navigation::Interruption),
     FindSetting,
+    Traverse(enzui_core::focus::Traversal, window::Id),
     ToggleSearchGroup(&'static str),
     RevealSection(&'static str),
     Filter(String),
@@ -562,6 +563,7 @@ fn run_gui(presented: Option<SettingsApp>) -> std::process::ExitCode {
             .theme(SettingsApp::theme)
             .subscription(SettingsApp::subscription),
         enzui_widgets::app_setup::AppServices::default()
+            .traversal(enzui_core::focus_traversal::TraversalBinding::Disabled)
             .localizer(enzui_shell::i18n::localizer().clone()),
     );
     match result {

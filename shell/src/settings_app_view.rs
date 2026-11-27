@@ -82,7 +82,11 @@ impl SettingsApp {
             window::resize_events().map(|(id, size)| Message::ViewportHeight(id, size.height)),
             iced::event::listen_with_interest(
                 iced::event::Interest::KEYBOARD,
-                |event, status, _| {
+                |event, status, window| {
+                    if let Some(direction) = enzui_core::focus::traversal_from_event(&event, status)
+                    {
+                        return Some(Message::Traverse(direction, window));
+                    }
                     if status == iced::event::Status::Captured {
                         return None;
                     }
@@ -138,7 +142,7 @@ impl SettingsApp {
         let _scale =
             enzui_theme::text_scale::TextScaleScope::enter(theme.typography.scale_factor());
         ROW_ICON_SCALE.with(|cell| cell.set(f32::from(self.settings.metrics.icon) / 16.0));
-        let page = self.window_view();
+        let page = self.window_view(&theme);
         // Mounted while no dialog is open too, so opening one keeps the
         // page's state (its scroll position) under it.
         #[derive(Clone, Copy)]
@@ -228,10 +232,21 @@ impl SettingsApp {
         );
         self.file_chooser.view(page)
     }
-    fn window_view(&self) -> Element<'_, Message> {
+    fn window_view(&self, theme: &EnzTheme) -> Element<'_, Message> {
+        use enzui_widgets::{app_shell::ShellTokens, sidebar_row::SidebarRowTokens};
+        let scale = theme.typography.scale_factor().factor();
+        let row_tokens = SidebarRowTokens::from_palette(&theme.palette);
+        let sidebar_theme = theme.clone();
+        let top_level_tokens = SidebarRowTokens {
+            row_padding_x: 4.0,
+            icon_gap: 3.0,
+            row_height: (36.0 * scale).max(36.0),
+            ..row_tokens
+        };
         enz_app_shell(|| self.page_view())
             .layout(ShellLayout::TitlebarSidebarContent)
-            .breakpoints(self.tokens().breakpoints)
+            .tokens(ShellTokens::default().sidebar_width(theme.sizing.sidebar_width + 24.0))
+            .breakpoints(theme.breakpoints)
             .on_window_gesture(Message::Window)
             .maximized(self.chrome.maximized())
             .fullscreen(self.chrome.fullscreen())
@@ -243,11 +258,15 @@ impl SettingsApp {
                                 &self.filter,
                                 Message::Filter,
                             );
-                            match self.first_search_result() {
-                                Some(open) if !self.filter.trim().is_empty() => {
-                                    field.on_submit(open)
+                            use enzui_shell::settings_catalog::SearchDestination;
+                            match self.first_search_destination() {
+                                Some(SearchDestination::Page(page)) => {
+                                    field.on_submit(Message::Page(page))
                                 }
-                                _ => field,
+                                Some(SearchDestination::Section(route)) => {
+                                    field.on_submit(Message::RevealSection(route))
+                                }
+                                None => field,
                             }
                         }
                         .placeholder(tr("shell-find-a-setting"))
@@ -258,9 +277,9 @@ impl SettingsApp {
                     .into_element()
             })
             .sidebar_titlebar(|| enz_title_bar().title(tr("shell-settings")).into_element())
-            .sidebar(|| {
+            .sidebar(move || {
                 use enzui_shell::settings_catalog::Category;
-                let theme = self.tokens();
+                let theme = &sidebar_theme;
                 let mut categories = enz_sidebar_content().spacing_scale(theme.spacing);
                 let mut group = None;
                 let mut folder = None;
@@ -301,16 +320,17 @@ impl SettingsApp {
                             ),
                         );
                     }
+                    let sections = self.sections(category);
                     match category.folder() {
                         // A page with one section has nothing to expand: an expander
                         // would only open onto a row repeating the page's own name.
-                        None if self.sections(category).len() <= 1 => {
+                        None if sections.len() <= 1 => {
                             categories = categories.push(
                                 enz_sidebar_row(
                                     category.title(),
                                     Message::Category(category, true),
                                 )
-                                .tokens(self.top_level_row_tokens())
+                                .tokens(top_level_tokens)
                                 .icon(category.icon())
                                 .id(format!("settings-category-{}", category.page()).into())
                                 .selected(self.page == category && self.filter.trim().is_empty())
@@ -328,7 +348,8 @@ impl SettingsApp {
                                 active,
                                 expanded,
                                 Message::Category(category, true),
-                                self.sidebar_sections(category, 16.0),
+                                self.sidebar_sections(sections, 16.0, row_tokens, &theme.palette),
+                                theme,
                             ));
                         }
                         Some(current) if folder == Some(current) => {}
@@ -339,9 +360,10 @@ impl SettingsApp {
                                 .pages()
                                 .filter(|page| self.category_available(*page))
                             {
+                                let sections = self.sections(page);
                                 pages = pages.push(
                                     enz_sidebar_row(page.title(), Message::Page(page))
-                                        .tokens(self.sidebar_row_tokens())
+                                        .tokens(row_tokens)
                                         .icon(page.icon())
                                         .leading_indent(8.0)
                                         .id(format!("settings-category-{}", page.page()).into())
@@ -349,14 +371,19 @@ impl SettingsApp {
                                             self.page == page
                                                 && self.filter.trim().is_empty()
                                                 && (self.navigation.selected.is_none()
-                                                    || self.sections(page).len() <= 1),
+                                                    || sections.len() <= 1),
                                         )
                                         .enabled(!self.closing)
                                         .into_element(),
                                 );
                                 // A single section would only repeat the page's own row.
-                                if self.page == page && self.sections(page).len() > 1 {
-                                    pages = pages.push(self.sidebar_sections(page, 36.0));
+                                if self.page == page && sections.len() > 1 {
+                                    pages = pages.push(self.sidebar_sections(
+                                        sections,
+                                        30.0,
+                                        row_tokens,
+                                        &theme.palette,
+                                    ));
                                 }
                             }
                             let active = self.page.folder() == Some(current);
@@ -376,14 +403,15 @@ impl SettingsApp {
                                 expanded,
                                 Message::Category(if active { self.page } else { first }, true),
                                 pages,
+                                theme,
                             ));
                         }
                     }
                 }
                 enzui_widgets::scroll_view::enz_scroll_view(categories.into_element())
                     .id("settings-navigation".into())
-                    .scrollbar_tokens(self.tokens().scrollbar)
-                    .backdrop(self.tokens().palette.surface)
+                    .scrollbar_tokens(theme.scrollbar)
+                    .backdrop(theme.palette.surface)
                     .into_element()
             })
             .state(self.nav)
@@ -391,40 +419,64 @@ impl SettingsApp {
             .on_sidebar_state(Message::Sidebar)
             .into()
     }
-    pub(super) fn sidebar_row_tokens(&self) -> enzui_widgets::sidebar_row::SidebarRowTokens {
-        enzui_widgets::sidebar_row::SidebarRowTokens::from_palette(&self.tokens().palette)
-    }
-    // A top-level page without sections sits between expander headers, so it
-    // takes their icon column, label column and height.
-    fn top_level_row_tokens(&self) -> enzui_widgets::sidebar_row::SidebarRowTokens {
-        let scale = self.tokens().typography.scale_factor().factor();
-        let mut tokens = self.sidebar_row_tokens();
-        tokens.row_padding_x = 4.0;
-        tokens.icon_gap = 3.0;
-        tokens.row_height = (36.0 * scale).max(36.0);
-        tokens
-    }
     fn sidebar_sections(
         &self,
-        category: enzui_shell::settings_catalog::Category,
+        entries: Vec<enzui_shell::settings_catalog::Section>,
         indent: f32,
+        tokens: enzui_widgets::sidebar_row::SidebarRowTokens,
+        palette: &enzui_theme::Palette,
     ) -> iced::widget::Column<'_, Message> {
-        let mut sections = iced::widget::column![].spacing(2);
-        for section in self.sections(category) {
-            sections = sections.push(
-                enz_sidebar_row(tr(section.label), Message::Section(section.route))
-                    .tokens(self.sidebar_row_tokens())
-                    .leading_indent(indent)
-                    .id(format!("settings-section-{}", section.route).into())
-                    .selected(
-                        self.filter.trim().is_empty()
-                            && self.navigation.selected == Some(section.route),
-                    )
-                    .enabled(!self.closing)
-                    .into_element(),
-            );
-        }
-        sections
+        use enzui_core::semantics::{Role, Semantics};
+        use enzui_widgets::{
+            enz_text,
+            pressable::{PressableStyle, PressableTokens, enz_pressable},
+        };
+        use iced::{Length, Padding, widget::container};
+
+        let surface = PressableTokens {
+            row_chip_selected_bg: tokens.selected_background,
+            ..PressableTokens::from_palette(palette)
+        };
+        let enabled = !self.closing;
+        let searching = !self.filter.trim().is_empty();
+        iced::widget::column(entries.into_iter().map(|section| {
+            let label = tr(section.label);
+            let selected = !searching && self.navigation.selected == Some(section.route);
+            let mut semantics = Semantics::new(Role::ListItem)
+                .label(label)
+                .selected(selected);
+            if enabled {
+                semantics = semantics.default_action();
+            }
+            let text = enz_text(label)
+                .size_px(tokens.label_size)
+                .wrap(true)
+                .width(Length::Fill)
+                .color(if !enabled {
+                    tokens.disabled
+                } else if selected {
+                    tokens.selected_text
+                } else {
+                    tokens.text
+                });
+            let row = enz_pressable(text.into_element(), Message::Section(section.route))
+                .style(PressableStyle::Row)
+                .tokens(surface)
+                .padding(
+                    Padding::from([5.0, tokens.row_padding_x]).left(indent + tokens.row_padding_x),
+                )
+                .min_height(tokens.row_height - 2.0 * tokens.fill_inset_y)
+                .radius(tokens.row_radius)
+                .selected(selected)
+                .enabled(enabled)
+                .semantics(semantics)
+                .id(format!("settings-section-{}", section.route).into());
+            container(row.into_element())
+                .padding([tokens.fill_inset_y, tokens.outer_gutter])
+                .width(Length::Fill)
+                .into()
+        }))
+        .spacing(2)
     }
     #[allow(
         clippy::too_many_arguments,
@@ -439,11 +491,12 @@ impl SettingsApp {
         expanded: bool,
         open: Message,
         content: iced::widget::Column<'a, Message>,
+        theme: &EnzTheme,
     ) -> Element<'a, Message> {
-        let palette = self.tokens().palette;
-        let scale = self.tokens().typography.scale_factor().factor();
+        let palette = &theme.palette;
+        let scale = theme.typography.scale_factor().factor();
         let active = active && self.filter.trim().is_empty();
-        let mut tokens = enzui_widgets::expander::ExpanderTokens::from_palette(&palette);
+        let mut tokens = enzui_widgets::expander::ExpanderTokens::from_palette(palette);
         tokens.header_height = (36.0 * scale).max(36.0);
         tokens.title_size *= scale;
         tokens.subtitle_size *= scale;

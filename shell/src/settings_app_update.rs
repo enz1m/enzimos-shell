@@ -233,6 +233,9 @@ impl SettingsApp {
                 }
             }
             Message::FindSetting => return iced::widget::operation::focus(SEARCH_FIELD),
+            Message::Traverse(direction, window) => {
+                return self.traverse_focus(direction, window);
+            }
             Message::ToggleSearchGroup(route) => {
                 if !self.expanded_search_groups.remove(route) {
                     self.expanded_search_groups.insert(route);

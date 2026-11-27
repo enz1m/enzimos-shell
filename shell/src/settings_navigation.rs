@@ -4,13 +4,36 @@ use iced::{
     Rectangle, Subscription, Task, Vector,
     advanced::widget::{
         Id, Operation,
-        operation::{Outcome, Scrollable},
+        operation::{Focusable, Outcome, Scrollable},
     },
     window,
 };
 use std::time::{Duration, Instant};
 
 impl SettingsApp {
+    pub(super) fn traverse_focus(
+        &self,
+        direction: enzui_core::focus::Traversal,
+        window: window::Id,
+    ) -> Task<Message> {
+        use enzui_core::{app_runtime::window_operation_task, focus::traversal_operation};
+
+        let operation = self.first_search_destination().map_or_else(
+            || traversal_operation(direction),
+            |destination| {
+                Box::new(SearchFocusOrder {
+                    direction,
+                    first_result: format!("find-group-{}", destination.route()).into(),
+                    search: None,
+                    result: None,
+                    focused: None,
+                    total: 0,
+                })
+            },
+        );
+        window_operation_task(window, operation)
+    }
+
     pub(super) fn sections(&self, category: Category) -> Vec<Section> {
         SECTIONS
             .iter()
@@ -453,4 +476,80 @@ pub(super) fn interrupt_subscription() -> Subscription<Message> {
         };
         manual_scroll_interrupt(&event).then_some(Message::InterruptScroll(reason))
     })
+}
+
+struct SearchFocusOrder {
+    direction: enzui_core::focus::Traversal,
+    first_result: Id,
+    search: Option<usize>,
+    result: Option<usize>,
+    focused: Option<usize>,
+    total: usize,
+}
+
+impl Operation for SearchFocusOrder {
+    fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation)) {
+        visit(self);
+    }
+
+    fn focusable(&mut self, id: Option<&Id>, _: Rectangle, state: &mut dyn Focusable) {
+        if id.is_some_and(|id| *id == Id::from(super::SEARCH_FIELD)) {
+            self.search = Some(self.total);
+        }
+        if id == Some(&self.first_result) {
+            self.result = Some(self.total);
+        }
+        if state.is_focused() {
+            self.focused = Some(self.total);
+        }
+        self.total += 1;
+    }
+
+    fn finish(&self) -> Outcome<()> {
+        use enzui_core::focus::{Traversal, traversal_operation, wrap_target};
+
+        let (Some(search), Some(result)) = (self.search, self.result) else {
+            return Outcome::Chain(traversal_operation(self.direction));
+        };
+        let mut order: Vec<_> = (0..self.total).collect();
+        order.remove(search);
+        order.insert(result - usize::from(search < result), search);
+        let current = self
+            .focused
+            .and_then(|focused| order.iter().position(|&index| index == focused));
+        let Some(target) = wrap_target(current, order.len(), self.direction == Traversal::Next)
+        else {
+            return Outcome::None;
+        };
+        Outcome::Chain(Box::new(FocusAt {
+            target: order[target],
+            index: 0,
+        }))
+    }
+}
+
+struct FocusAt {
+    target: usize,
+    index: usize,
+}
+
+impl Operation for FocusAt {
+    fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation)) {
+        visit(self);
+    }
+
+    fn focusable(&mut self, _: Option<&Id>, _: Rectangle, state: &mut dyn Focusable) {
+        if self.index == self.target {
+            if !state.is_focused() {
+                state.focus();
+            }
+        } else if state.is_focused() {
+            state.unfocus();
+        }
+        self.index += 1;
+    }
+
+    fn finish(&self) -> Outcome<()> {
+        Outcome::Chain(enzui_core::focus::reveal_focused_all())
+    }
 }

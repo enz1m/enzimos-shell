@@ -92,11 +92,18 @@ config_check() {
     private_env "$HYPR_BIN" --verify-config --config "$CONFIG"
 }
 start() {
-    local host_display host_socket pid row signature wl_socket
+    local host_display host_socket pid row signature wl_socket config_errors
+    local managed=false
     require python3
     if running; then printf 'Already running: pid=%s display=%s\n' "$(<"$HYPR_PID")" "$(nested_display)"; return; fi
     pid_alive "$HYPR_PID" && die 'running compositor has incomplete metadata; stop it explicitly first'
-    config_check
+    if [[ -s "$RUNROOT/launch.json" ]]; then
+        managed=true
+        ensure_hyprland
+        [[ -f "$CONFIG" ]] || die "config not found: $CONFIG"
+    else
+        config_check
+    fi
     rm -f "$INSTANCE_FILE" "$DISPLAY_FILE" "$HOST_DISPLAY_FILE"
     if [[ ${ENZUI_COMPOSITOR_BACKEND:-} == headless-only ]]; then
         # A remote login's compositor: headless outputs only, no seat and
@@ -126,7 +133,8 @@ start() {
         "$HYPR_BIN" --config "$CONFIG" > "$HYPR_LOG" 2>&1 </dev/null &
     pid=$!; record_pid "$HYPR_PID" "$pid"
     row=''
-    for _ in {1..80}; do
+    local started=$SECONDS
+    while (( SECONDS - started < 21 )); do
         if ! pid_alive "$HYPR_PID"; then tail -n 40 "$HYPR_LOG" >&2; die 'compositor exited during startup'; fi
         row=$(private_env "$HYPRCTL_BIN" instances -j 2>/dev/null | python3 -c '
 import json, sys
@@ -137,14 +145,23 @@ for i in json.load(sys.stdin):
         break
 ' "$pid" 2>/dev/null || true)
         [[ -n "$row" ]] && break
-        sleep .25
+        if (( SECONDS - started < 2 )); then sleep .05; else sleep .25; fi
     done
     if [[ -z "$row" ]]; then terminate_pid "$HYPR_PID" 1; die 'could not discover nested instance'; fi
     IFS=$'\t' read -r signature wl_socket <<<"$row"
     [[ -n "$signature" && -n "$wl_socket" ]] || die 'incomplete instance metadata'
     printf '%s\n' "$signature" > "$INSTANCE_FILE"
     printf '%s\n' "$wl_socket" > "$DISPLAY_FILE"
-    hypr monitors -j >/dev/null
+    if [[ $managed == true ]]; then
+        config_errors=$(hypr configerrors) || die 'could not validate running compositor configuration'
+        if [[ -n $config_errors ]]; then
+            printf '%s\n' "$config_errors" >&2
+            terminate_pid "$HYPR_PID" 1
+            die 'compositor configuration failed'
+        fi
+    else
+        hypr monitors -j >/dev/null
+    fi
     hypr dismissnotify >/dev/null 2>&1 || true
     if [[ -f "$BUILDROOT/shell-plugins/enzui-pointer-events.so" ]]; then
         local plugin bridge_ready=false

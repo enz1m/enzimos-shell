@@ -208,7 +208,7 @@ def profile_name(value):
 def command(arguments, env=None, timeout=10, pass_fds=()):
     result = subprocess.run(arguments, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, pass_fds=pass_fds)
     if result.returncode:
-        reason = next((line.strip() for line in (result.stdout + result.stderr).decode(errors="replace").splitlines() if line.strip()), "")
+        reason = next((line.strip() for line in (result.stderr + result.stdout).decode(errors="replace").splitlines() if line.strip()), "")
         print("Platform child failed:", Path(arguments[0]).name, *(a for a in arguments[1:3] if len(a) < 40), "-", "".join(c for c in reason if c.isprintable())[:200], file=sys.stderr, flush=True)
         raise RuntimeError("Platform child command failed; inspect the private startup log")
     if len(result.stdout) > 2 * 1024 * 1024:
@@ -483,10 +483,11 @@ def prepare_desktop(config):
         clients = json.loads(control(config, identity, "-j", "clients"))
         if same_exe and any(c["pid"] == shell and c["class"] == "dev.enzui.Desktop" for c in clients):
             break
-        time.sleep(.1)
+        time.sleep(.05)
     else:
         raise RuntimeError(incomplete_shell_startup(shell, same_exe, clients))
-    for _ in range(100):
+    frame_deadline = time.monotonic() + 10
+    while time.monotonic() < frame_deadline:
         if not live(shell, ticks) or not member(shell, config["unit"]):
             raise RuntimeError("Shell exited before its desktop frame was ready")
         if frame_strips_ready(config, identity, output):
@@ -499,7 +500,7 @@ def prepare_desktop(config):
                 # Generated XDG autostart units start only after the desktop is ready.
                 start_ready_target()
             return identity
-        time.sleep(.1)
+        time.sleep(.05)
     raise RuntimeError("Desktop frame is incomplete; session is not ready")
 
 

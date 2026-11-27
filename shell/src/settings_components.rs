@@ -53,7 +53,7 @@ impl SettingsApp {
             .into()
     }
     fn header_scale(&self) -> f32 {
-        self.tokens().typography.scale_factor().factor()
+        self.text_px(1.0)
     }
     pub(super) fn controls_live(&self) -> bool {
         !self.closing && !self.suspended.get()
@@ -96,20 +96,18 @@ impl SettingsApp {
         content: impl Into<Element<'a, Message>>,
         decorate: bool,
     ) -> Element<'a, Message> {
-        let highlight = decorate && self.highlighted == Some(key);
-        let theme = self.tokens();
-        let palette = theme.palette;
-        container(content)
+        let target = container(content)
             .id(format!("setting-{key}"))
-            .width(Length::Fill)
+            .width(Length::Fill);
+        if !decorate || self.highlighted != Some(key) {
+            return target.into();
+        }
+        let palette = self.tokens().palette;
+        target
             .style(move |_| container::Style {
-                background: highlight.then_some(palette.accent_soft.into()),
+                background: Some(palette.accent_soft.into()),
                 border: iced::Border {
-                    color: if highlight {
-                        palette.accent
-                    } else {
-                        iced::Color::TRANSPARENT
-                    },
+                    color: palette.accent,
                     width: 1.0,
                     radius: enzui_theme::text_defaults::shape_radius(|shape| shape.row).into(),
                 },

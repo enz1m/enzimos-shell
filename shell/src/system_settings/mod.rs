@@ -790,33 +790,29 @@ impl SystemSettings {
                     .unwrap_or_default(),
             ),
             Panel::Apps => {
-                let screen_sharing = tokio::task::spawn_blocking(screen_sharing)
-                    .await
-                    .unwrap_or_default();
-                Reading::Apps(Apps {
-                    screen_time: crate::screen_time::path()
+                let inventories = tokio::task::spawn_blocking(|| {
+                    let defaults = crate::default_apps::read("");
+                    let startup = crate::startup_apps::read();
+                    let (screen_sharing, screen_sharing_names) = screen_sharing();
+                    let app_names = crate::default_apps::by_window_class()
+                        .into_values()
+                        .map(|(id, _, class)| (class, crate::default_apps::name(&id).unwrap_or(id)))
+                        .collect();
+                    let screen_time = crate::screen_time::path()
                         .map(|path| crate::screen_time::load(&path))
-                        .unwrap_or_default(),
-                    app_names: tokio::task::spawn_blocking(|| {
-                        crate::default_apps::by_window_class()
-                            .into_values()
-                            .map(|(id, _, class)| {
-                                (class, crate::default_apps::name(&id).unwrap_or(id))
-                            })
-                            .collect()
-                    })
-                    .await
-                    .unwrap_or_default(),
-                    defaults: tokio::task::spawn_blocking(|| crate::default_apps::read(""))
-                        .await
-                        .unwrap_or_default(),
-                    startup: tokio::task::spawn_blocking(crate::startup_apps::read)
-                        .await
-                        .unwrap_or_default(),
-                    permissions: crate::app_permissions::read().await,
-                    screen_sharing: screen_sharing.0,
-                    screen_sharing_names: screen_sharing.1,
-                    supervised: if crate::parental::available().await {
+                        .unwrap_or_default();
+                    Apps {
+                        defaults,
+                        startup,
+                        screen_sharing,
+                        screen_sharing_names,
+                        app_names,
+                        screen_time,
+                        ..Apps::default()
+                    }
+                });
+                let supervised_accounts = async {
+                    if crate::parental::available().await {
                         Some(
                             crate::parental::standard_accounts()
                                 .await
@@ -824,7 +820,17 @@ impl SystemSettings {
                         )
                     } else {
                         None
-                    },
+                    }
+                };
+                let (inventories, permissions, supervised) = tokio::join!(
+                    inventories,
+                    crate::app_permissions::read(),
+                    supervised_accounts
+                );
+                Reading::Apps(Apps {
+                    permissions,
+                    supervised,
+                    ..inventories.unwrap_or_default()
                 })
             }
         }

@@ -69,7 +69,7 @@ impl SettingsApp {
         apps: &enzui_shell::system_settings::Apps,
         kind: Kind,
     ) -> Element<'a, Parent> {
-        let candidates = apps.defaults.apps.get(&kind).cloned().unwrap_or_default();
+        let candidates = apps.defaults.apps.get(&kind).map_or(&[][..], Vec::as_slice);
         // The saved choice wins over what this window was started with.
         let current = if kind == Kind::Terminal && !self.settings.compositor.terminal.is_empty() {
             candidates.iter().position(|app| {
@@ -92,21 +92,18 @@ impl SettingsApp {
             Kind::Text => ("file-text", tr("shell-plain-text-and-notes")),
             Kind::Terminal => ("terminal", tr("shell-super-return-opens-it")),
         };
-        let names: Vec<String> = candidates
-            .iter()
-            .map(|app| {
-                if candidates
-                    .iter()
-                    .filter(|other| other.name == app.name)
-                    .count()
-                    > 1
-                {
-                    format!("{} ({})", app.name, app.id.trim_end_matches(".desktop"))
-                } else {
-                    app.name.clone()
-                }
-            })
-            .collect();
+        let label = |index: usize| {
+            let app = &candidates[index];
+            if candidates
+                .iter()
+                .enumerate()
+                .any(|(other, candidate)| other != index && candidate.name == app.name)
+            {
+                format!("{} ({})", app.name, app.id.trim_end_matches(".desktop"))
+            } else {
+                app.name.clone()
+            }
+        };
         let key = format!("apps/defaults/{kind:?}");
         let row = crate::settings_app::settings_row(kind.label())
             .subtitle(subtitle)
@@ -119,25 +116,30 @@ impl SettingsApp {
                     .into_element(),
             )
         } else {
-            let choices: Vec<(String, Parent)> = names
-                .iter()
-                .zip(&candidates)
-                .map(|(name, app)| {
-                    let message = match (kind, &app.program) {
-                        (Kind::Terminal, Some(program)) => {
-                            Parent::Change(enzui_shell::settings::Change::Terminal(program.clone()))
-                        }
-                        _ => Self::request(Request::DefaultApp {
-                            kind,
-                            id: app.id.clone(),
-                        }),
-                    };
-                    (name.clone(), message)
-                })
-                .collect();
+            let open = self.menu.as_deref() == Some(key.as_str());
+            let choices = if open {
+                candidates
+                    .iter()
+                    .enumerate()
+                    .map(|(index, app)| {
+                        let message = match (kind, &app.program) {
+                            (Kind::Terminal, Some(program)) => Parent::Change(
+                                enzui_shell::settings::Change::Terminal(program.clone()),
+                            ),
+                            _ => Self::request(Request::DefaultApp {
+                                kind,
+                                id: app.id.clone(),
+                            }),
+                        };
+                        (label(index), message)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
             row.value_menu(
-                current.map_or_else(|| tr("shell-choose-2").to_owned(), |at| names[at].clone()),
-                self.menu.as_deref() == Some(key.as_str()),
+                current.map_or_else(|| tr("shell-choose-2").to_owned(), label),
+                open,
                 Parent::Menu(key.clone(), true),
                 Parent::Menu(key, false),
                 choices,

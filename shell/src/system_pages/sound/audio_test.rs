@@ -36,10 +36,10 @@ impl std::fmt::Debug for Clip {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::settings_app) struct Meter {
-    pub(super) bar: f32,
-    pub(super) peak_db: f32,
+    pub(super) bar_percent: u8,
+    pub(super) peak_db: i32,
     pub(super) clipping: bool,
     pub(super) quiet: bool,
 }
@@ -94,8 +94,8 @@ impl Levels {
             self.quiet_chunks.saturating_sub(1)
         };
         Meter {
-            bar: (self.bar_db - FLOOR_DB) / -FLOOR_DB,
-            peak_db: self.peak_db,
+            bar_percent: ((self.bar_db - FLOOR_DB) * (100.0 / -FLOOR_DB)).round() as u8,
+            peak_db: self.peak_db.round() as i32,
             clipping: self.clip_hold > 0,
             quiet: self.quiet_chunks >= 16,
         }
@@ -193,6 +193,7 @@ async fn read_samples(
         .ok_or_else(|| io::Error::other("capture pipe missing"))?;
     let mut block = vec![0; CHUNK_BYTES];
     let mut meter = Levels::default();
+    let mut last_meter = None;
     let mut recorded = None;
     loop {
         if request.has_changed().unwrap_or(false) {
@@ -215,13 +216,18 @@ async fn read_samples(
             *maximum = maximum.max(peak);
             (*id, bytes.len() / CHUNK_BYTES)
         });
+        let reading = meter.sample(peak);
+        if progress.is_none() && last_meter == Some(reading) {
+            continue;
+        }
         if events
-            .send(CaptureEvent::Meter(meter.sample(peak), progress))
+            .send(CaptureEvent::Meter(reading, progress))
             .await
             .is_err()
         {
             return Ok(());
         }
+        last_meter = Some(reading);
         if progress.is_some_and(|(_, chunks)| chunks == TEST_CHUNKS)
             && let Some((id, bytes, peak)) = recorded.take()
             && events
@@ -298,18 +304,20 @@ mod tests {
     #[test]
     fn meter_holds_peaks_and_warns_only_for_clipping_or_sustained_weak_signal() {
         let mut meter = Levels::default();
-        assert!(!meter.sample(0.0).quiet);
+        let silent = meter.sample(0.0);
+        assert!(!silent.quiet);
+        assert_eq!(meter.sample(0.0), silent);
         for _ in 0..15 {
             assert!(!meter.sample(0.01).quiet);
         }
         assert!(meter.sample(0.01).quiet);
         let normal = meter.sample(0.25);
         assert!(!normal.quiet);
-        assert!((normal.peak_db + 12.04).abs() < 0.01);
+        assert_eq!(normal.peak_db, -12);
         assert!(!normal.clipping);
         let clipped = meter.sample(FULL_SCALE);
         assert!(clipped.clipping);
-        assert!(clipped.peak_db.abs() < 0.001);
+        assert_eq!(clipped.peak_db, 0);
         for _ in 0..16 {
             assert_eq!(meter.sample(0.0).peak_db, clipped.peak_db);
         }

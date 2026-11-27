@@ -230,23 +230,24 @@ impl SettingsApp {
         let value = meter.map_or_else(
             || "—".into(),
             |meter| {
-                if meter.peak_db <= FLOOR_DB {
+                if meter.peak_db <= FLOOR_DB as i32 {
                     tr!("shell-mic-dbfs", "level" => "≤ −60")
                 } else {
-                    tr!("shell-mic-dbfs", "level" => (meter.peak_db.round() as i32).to_string().replace('-', "−"))
+                    tr!("shell-mic-dbfs", "level" => meter.peak_db.to_string().replace('-', "−"))
                 }
             },
         );
-        let level = enz_progress_bar(meter.map_or(0.0, |meter| meter.bar))
-            .label(tr("shell-mic-live-level"))
-            .value_text(&value)
-            .bar_height(6.0)
-            .tone(if clipping {
-                ProgressTone::Danger
-            } else {
-                ProgressTone::Accent
-            })
-            .into_element();
+        let level =
+            enz_progress_bar(meter.map_or(0.0, |meter| f32::from(meter.bar_percent) / 100.0))
+                .label(tr("shell-mic-live-level"))
+                .value_text(&value)
+                .bar_height(6.0)
+                .tone(if clipping {
+                    ProgressTone::Danger
+                } else {
+                    ProgressTone::Accent
+                })
+                .into_element();
         let mut body = iced::widget::column![level].spacing(8).width(Length::Fill);
         let hint = if mic.tool.is_none() {
             "shell-mic-test-unavailable"

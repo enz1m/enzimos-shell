@@ -936,7 +936,6 @@ def enroll(config_home, kind, identity, name, folder):
 
 def enroll_components(config_home):
     # Calendar reads use the enrolled desktop agent and its broker permission.
-    enroll(config_home, "app", "dev.enzui.Settings", "Settings", "apps")
     enroll(config_home, "app", "io.github.enzui.Calendar", "Calendar", "apps")
     enroll(config_home, "app", "io.github.enzui.Files", "Files", "apps")
     enroll(config_home, "agent", "dev.enzui.Desktop", "Desktop clock", "agents")

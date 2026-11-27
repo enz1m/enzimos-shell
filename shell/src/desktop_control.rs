@@ -50,6 +50,47 @@ fn socket_path() -> Option<PathBuf> {
         .then(|| runtime.join("enzui-assistant-control.sock"))
 }
 
+/// Dispatches an authorized Settings MCP invocation to the live Shell.
+pub async fn settings_tool(
+    tool: &'static str,
+    arguments: Value,
+) -> std::result::Result<Value, &'static str> {
+    let exchange = async {
+        let path = socket_path()?;
+        let shell = executable("enzui-shell").ok()?;
+        let stream = UnixStream::connect(path).await.ok()?;
+        let peer = Peer::new(&stream, &[&shell]).ok()?;
+        let mut stream = BufReader::new(stream);
+        let frame = json!({"method":"settings_tool", "tool":tool, "arguments":arguments});
+        if frame.to_string().len() >= FRAME {
+            return Some(Err("invalid"));
+        }
+        write_frame(stream.get_mut(), &frame).await.ok()?;
+        let mut reply = read_frame(&mut stream).await.ok()?;
+        if !peer.alive() {
+            return None;
+        }
+        Some(if reply["ok"] == true {
+            Ok(reply["result"].take())
+        } else {
+            Err(match reply["error"].as_str() {
+                Some("invalid" | "invalid_value") => "invalid",
+                Some("locked") => "locked",
+                Some("no_backlight") => "no_backlight",
+                Some("app") => "app",
+                Some("folder") => "folder",
+                Some("limit") => "limit",
+                _ => "unavailable",
+            })
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(5), exchange)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(Err("unavailable"))
+}
+
 pub enum Request {
     Allow,
     Revoke,

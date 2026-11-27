@@ -106,6 +106,7 @@ async fn serve(compositor: Compositor, root: PathBuf) -> Result<()> {
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
     let shell = executable("enzui-shell").map_err(|e| e.to_string())?;
     let assistant = executable("enzui-assistant").map_err(|e| e.to_string())?;
+    let settings = executable("enzui-settings").map_err(|e| e.to_string())?;
     let harness = harness_executable().map_err(|e| e.to_string())?;
     let root = Rc::new(root);
     let timers = Arc::new(Semaphore::new(16));
@@ -119,14 +120,22 @@ async fn serve(compositor: Compositor, root: PathBuf) -> Result<()> {
             continue;
         };
         let assistant_peer = Peer::new(&stream, &[&shell, &assistant]);
+        let settings_peer = Peer::new(&stream, &[&settings]).ok();
+        let device_peer = settings_peer
+            .map(|peer| (peer, "settings_tool"))
+            .or_else(|| {
+                Peer::new(&stream, &[&harness])
+                    .ok()
+                    .map(|peer| (peer, "device_tool"))
+            });
         if assistant_peer.is_err()
-            && let Ok(peer) = Peer::new(&stream, &[&harness])
+            && let Some((peer, method)) = device_peer
         {
             let (compositor, root, timers) =
                 (compositor.clone(), Rc::clone(&root), Arc::clone(&timers));
             tokio::task::spawn_local(async move {
                 let _permit = permit;
-                device_client(stream, peer, compositor, root, timers).await;
+                device_client(stream, peer, compositor, root, timers, method).await;
             });
             continue;
         }
@@ -148,12 +157,13 @@ async fn device_client(
     compositor: Compositor,
     root: Rc<PathBuf>,
     timers: Arc<Semaphore>,
+    method: &str,
 ) {
     let mut socket = BufReader::new(stream);
     let Ok(Ok(request)) = tokio::time::timeout(IO_TIMEOUT, read_frame(&mut socket)).await else {
         return;
     };
-    if request["method"] != "device_tool" || !socket.buffer().is_empty() || !peer.alive() {
+    if request["method"] != method || !socket.buffer().is_empty() || !peer.alive() {
         return;
     }
     let result = tokio::select! {

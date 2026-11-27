@@ -179,15 +179,18 @@ pub fn models() -> Result<(String, Vec<String>), String> {
             .filter(|id| crate::welcome::model_id(id))
         {
             models.push(id.to_owned());
-            if item["default"] == true {
+            if item["default"] == true && id != "qwen3.5-0.8b" {
                 default = Some(id.to_owned());
             }
         }
     }
-    let first = models
-        .first()
+    let fallback = models
+        .iter()
+        .find(|id| id.as_str() == crate::welcome::DEFAULT_TEXT_MODEL)
+        .or_else(|| models.iter().find(|id| id.as_str() != "qwen3.5-0.8b"))
+        .or_else(|| models.first())
         .ok_or_else(|| tr("writing-local-unavailable"))?;
-    Ok((default.unwrap_or_else(|| first.clone()), models))
+    Ok((default.unwrap_or_else(|| fallback.clone()), models))
 }
 
 pub fn generate(model: &str, action: &Action, selection: &str) -> Result<String, String> {

@@ -119,6 +119,10 @@ impl SettingsApp {
                 self.agent_approved(id, result, authority)
             }
             Message::AgentCommitted(id, result) => self.agent_committed(id, result),
+            Message::DesktopToolResult(call, result) => {
+                self.desktop_tool_result(call, result);
+                Task::none()
+            }
             Message::AgentDeadline => self.agent_deadline(),
             Message::Controls(message) => self.controls_message(message),
             Message::Numeric(message) => self.numeric_message(message),

@@ -197,6 +197,9 @@ pub fn model_id(id: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
 }
 
+/// The text model selected by the first-login model picker.
+pub const DEFAULT_TEXT_MODEL: &str = "lfm3-vl-2b";
+
 /// The model registry tool.
 pub const MODELS_TOOL: &str = crate::local_ai::MODELS_TOOL;
 
@@ -289,13 +292,13 @@ mod tests {
         assert!(completed(&path));
         let configured = Completion {
             ai: Ai::Configured,
-            queued: vec!["qwen3.5-0.8b".into()],
+            queued: vec!["lfm3-vl-2b".into()],
         };
         record(&path, &configured).unwrap();
         let saved: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(saved["ai"], "configured");
-        assert_eq!(saved["queued"], json!(["qwen3.5-0.8b"]));
+        assert_eq!(saved["queued"], json!(["lfm3-vl-2b"]));
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
         assert_eq!(

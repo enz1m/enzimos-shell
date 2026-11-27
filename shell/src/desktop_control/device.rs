@@ -26,6 +26,12 @@ const INVALID: &str = "invalid";
 #[derive(Deserialize)]
 #[serde(tag = "tool", content = "arguments", deny_unknown_fields)]
 enum Request {
+    #[serde(rename = "search_settings")]
+    SearchSettings(SearchSettings),
+    #[serde(rename = "get_setting")]
+    GetSetting(GetSetting),
+    #[serde(rename = "set_setting")]
+    SetSetting(SetSetting),
     #[serde(rename = "desktop_setting")]
     Setting(Setting),
     #[serde(rename = "desktop_read_setting")]
@@ -38,6 +44,27 @@ enum Request {
     Status(Status),
     #[serde(rename = "find_downloads")]
     Downloads(Downloads),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SearchSettings {
+    query: String,
+    #[serde(default)]
+    offset: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GetSetting {
+    id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetSetting {
+    id: String,
+    value: Value,
 }
 
 #[derive(Deserialize)]
@@ -106,6 +133,13 @@ pub(super) async fn execute(
     }
 
     match request {
+        Request::SearchSettings(SearchSettings { query, offset }) => {
+            settings::search(&query, offset).await
+        }
+        Request::GetSetting(GetSetting { id }) => settings::get(&id).await,
+        Request::SetSetting(SetSetting { id, value }) => {
+            settings::change(compositor, &id, &value).await
+        }
         Request::Setting(arguments) => set(arguments).await,
         Request::ReadSetting(ReadSetting { setting }) => settings::read(&setting).await,
         Request::Open(arguments) => open(compositor, root, arguments).await,

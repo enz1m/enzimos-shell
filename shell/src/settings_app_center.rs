@@ -20,6 +20,10 @@ use serde_json::{Value, json};
 
 #[derive(Debug)]
 pub(super) enum AgentCall {
+    Desktop {
+        tool: &'static str,
+        arguments: Value,
+    },
     List {
         offset: usize,
         limit: usize,
@@ -39,6 +43,7 @@ pub(super) enum AgentCall {
 impl AgentCall {
     fn needs_clock(&self) -> bool {
         match self {
+            Self::Desktop { .. } => false,
             Self::List {
                 scope, category, ..
             } => settings_agent::touches_system(*scope, category.as_deref()),
@@ -119,11 +124,7 @@ pub(super) fn registry() -> AppFunctionRegistry<AgentCall> {
             set_in,
             set_out,
             FunctionRisk::Mutating,
-            vec![
-                ConsentScope::Once,
-                ConsentScope::Session,
-                ConsentScope::Always,
-            ],
+            vec![ConsentScope::Once],
         );
         let system = FunctionSpec::new(
             "settings.set_system",
@@ -133,9 +134,9 @@ pub(super) fn registry() -> AppFunctionRegistry<AgentCall> {
             system_in,
             system_out,
             FunctionRisk::Mutating,
-            vec![ConsentScope::Once, ConsentScope::Session],
+            vec![ConsentScope::Once],
         );
-        AppFunctionRegistry::from_functions(vec![
+        let mut functions = vec![
             AppFunction::typed(list, |args: ListArgs| AgentCall::List {
                 offset: args.offset,
                 limit: args.limit.unwrap_or(settings_agent::PAGE_LIMIT),
@@ -157,9 +158,101 @@ pub(super) fn registry() -> AppFunctionRegistry<AgentCall> {
                 scope: Scope::System,
             })
             .expect("settings.set_system spec"),
-        ])
-        .expect("the settings registry is valid")
+        ];
+        functions.extend(desktop_functions());
+        AppFunctionRegistry::from_functions(functions).expect("the settings registry is valid")
     })
+}
+
+fn desktop_functions() -> Vec<AppFunction<AgentCall>> {
+    let string = || json!({"type":"string"});
+    let function = |id, tool, title, description, properties: Value, required, risk| {
+        let input = json!({
+            "type":"object", "additionalProperties":false,
+            "properties":properties, "required":required,
+        });
+        let spec = FunctionSpec::new(
+            id,
+            title,
+            description,
+            input,
+            json!({"type":"object"}),
+            risk,
+            vec![ConsentScope::Once],
+        )
+        .supports_cancellation(true);
+        AppFunction::typed(spec, move |arguments: Value| AgentCall::Desktop {
+            tool,
+            arguments,
+        })
+        .expect("desktop function spec")
+    };
+    use FunctionRisk::{Mutating, ReadOnly};
+    vec![
+        function(
+            "settings.search",
+            "search_settings",
+            "Search Settings",
+            "Find Settings controls, values and allowed choices by short query. Search before changing a setting.",
+            json!({"query":{"type":"string","maxLength":160},"offset":{"type":"integer","minimum":0}}),
+            json!(["query"]),
+            ReadOnly,
+        ),
+        function(
+            "settings.read",
+            "get_setting",
+            "Read a setting",
+            "Read a setting and its allowed values by id from search_settings.",
+            json!({"id":string()}),
+            json!(["id"]),
+            ReadOnly,
+        ),
+        function(
+            "settings.change",
+            "set_setting",
+            "Change a setting",
+            "Change a setting by id from search_settings, using one of its allowed values. Requires the user's approval.",
+            json!({"id":string(),"value":{"type":["string","boolean","number"]}}),
+            json!(["id", "value"]),
+            Mutating,
+        ),
+        function(
+            "desktop.open",
+            "desktop_open",
+            "Open an app or folder",
+            "Launch an installed app by name. To open a folder, use app Files and the folder name or absolute path.",
+            json!({"app":string(),"folder":string()}),
+            json!(["app"]),
+            Mutating,
+        ),
+        function(
+            "desktop.timer",
+            "desktop_timer",
+            "Start a timer",
+            "Start a countdown that posts a desktop notification when it expires.",
+            json!({"seconds":{"type":"integer","minimum":1,"maximum":86400}}),
+            json!(["seconds"]),
+            Mutating,
+        ),
+        function(
+            "desktop.status",
+            "device_status",
+            "Read device status",
+            "Read live battery, CPU (including busy processes), memory, or network information.",
+            json!({"metric":{"type":"string","enum":["battery","cpu","memory","network"]}}),
+            json!(["metric"]),
+            ReadOnly,
+        ),
+        function(
+            "desktop.downloads",
+            "find_downloads",
+            "Find downloads",
+            "Find Downloads filenames modified today, yesterday, or on a YYYY-MM-DD date. Optional extension, e.g. pdf.",
+            json!({"date":string(),"extension":string()}),
+            json!(["date"]),
+            ReadOnly,
+        ),
+    ]
 }
 
 pub(super) fn metadata() -> AppMetadata {
@@ -174,6 +267,7 @@ pub(super) fn metadata() -> AppMetadata {
 #[derive(Default)]
 pub(super) struct Agent {
     host: Option<CenterHost<AgentCall>>,
+    desktop: Vec<(CenterCall, iced::task::Handle)>,
     // Calls that arrived before the settings file was first read.
     loading: Vec<(CenterCall, AgentCall)>,
     loaded: bool,
@@ -250,7 +344,8 @@ impl Agent {
     // Agent work of Settings' own that must finish before a windowless
     // worker may leave: a first read, a save, a system change or a report.
     pub(super) fn working(&self) -> bool {
-        !self.loading.is_empty()
+        !self.desktop.is_empty()
+            || !self.loading.is_empty()
             || self.clock_reading
             || !self.clock_waiting.is_empty()
             || !self.saving.is_empty()
@@ -297,6 +392,9 @@ impl Agent {
 
     // Final shutdown: refuse new calls, cancel live ones, join the connector.
     pub(super) fn shutdown(&mut self) {
+        for (_, task) in self.desktop.drain(..) {
+            task.abort();
+        }
         // A prompt still open is withdrawn.
         if let Some(withdraw) = self
             .approving
@@ -407,7 +505,15 @@ impl Agent {
     }
 
     // Withdraws the prompt of an approval whose call ended.
-    fn ended(&mut self, ended: &[CenterEnded]) {
+    pub(super) fn ended(&mut self, ended: &[CenterEnded]) {
+        self.desktop.retain(|(call, task)| {
+            if ended.iter().any(|end| end.call == call.reference()) {
+                task.abort();
+                false
+            } else {
+                true
+            }
+        });
         if let Some(approving) = self.approving.as_mut()
             && ended
                 .iter()
@@ -532,7 +638,29 @@ impl SettingsApp {
         )
     }
 
+    pub(super) fn desktop_tool_result(
+        &mut self,
+        reference: CallRef,
+        result: Result<Value, &'static str>,
+    ) {
+        if let Some(index) = self
+            .agent
+            .desktop
+            .iter()
+            .position(|(call, _)| call.reference() == reference)
+        {
+            let (call, _) = self.agent.desktop.swap_remove(index);
+            self.agent.answer(
+                call,
+                result.map_err(|code| CenterFailure::new(code, "Desktop tool failed")),
+            );
+        }
+    }
+
     fn serve(&mut self, call: CenterCall, request: AgentCall) -> Task<Message> {
+        if !self.agent.live(&call) {
+            return Task::none();
+        }
         // A windowless worker watches no files: it answers what is on disk now,
         // not what it read when it started (the shell may have changed dark
         // mode since). A change of its own still being written is kept.
@@ -546,6 +674,16 @@ impl SettingsApp {
         let clock = self.agent_clock();
         let context = self.agent_context(clock.as_ref());
         match request {
+            AgentCall::Desktop { tool, arguments } => {
+                let reference = call.reference();
+                let (task, handle) = Task::future(async move {
+                    let result = enzui_shell::desktop_control::settings_tool(tool, arguments).await;
+                    Message::DesktopToolResult(reference, result)
+                })
+                .abortable();
+                self.agent.desktop.push((call, handle));
+                task
+            }
             AgentCall::List {
                 offset,
                 limit,

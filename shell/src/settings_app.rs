@@ -169,6 +169,10 @@ enum Message {
     ApplicationWake,
     BackgroundTaskRefused(String),
     AgentClock(Box<enzui_shell::system_settings::Reading>),
+    DesktopToolResult(
+        enzui_agent::center::CallRef,
+        Result<serde_json::Value, &'static str>,
+    ),
     // Retain the approving bus connection for the subsequent mutation.
     AgentApproved(
         u64,

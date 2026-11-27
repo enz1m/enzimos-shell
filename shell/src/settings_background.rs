@@ -376,7 +376,8 @@ impl BackgroundApp for Background {
 
     fn wake(&mut self) -> Task<Message> {
         if let Some(host) = self.0.agent.host_mut() {
-            let _ended = host.poll_ended();
+            let ended = host.poll_ended();
+            self.0.agent.ended(&ended);
         }
         Task::none()
     }

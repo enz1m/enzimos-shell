@@ -588,6 +588,12 @@ impl Welcome {
                 Task::none()
             }
             Message::CatalogRead(offers) => {
+                if offers
+                    .iter()
+                    .any(|offer| offer.id == welcome::DEFAULT_TEXT_MODEL)
+                {
+                    self.text_model = Some(welcome::DEFAULT_TEXT_MODEL.into());
+                }
                 self.catalog = Some(offers);
                 Task::none()
             }

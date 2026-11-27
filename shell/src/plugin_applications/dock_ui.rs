@@ -1,4 +1,6 @@
-use crate::{Message, Shell, control_center::TileMenu, resize_chrome, window_settings};
+use crate::{
+    Message, Shell, control_center::TileMenu, dock_motion, resize_chrome, window_settings,
+};
 use enzui_core::{
     context_menu::InvocationKind,
     menu_model::{CheckState, EntryId, MenuEntryModel, MenuModel},
@@ -29,7 +31,10 @@ use iced::{
     widget::{column, container, mouse_area, row, space},
     window,
 };
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Origin {
@@ -46,6 +51,7 @@ pub(crate) enum Event {
     Prepared(u64, Result<(), String>),
     Hover(bool, bool),
     Hide(u64),
+    Frame(window::Id, Instant),
     Click(String),
     DropFolders(FileDrop),
     Reorder(enzui_core::drag::DropRequest),
@@ -80,12 +86,16 @@ pub(crate) struct State {
     pub writes: std::collections::VecDeque<Change>,
     pub writing: Option<(enzui_shell::plugins::service::Owner, u64)>,
     pub write_serial: u64,
+    pub pending_pin_order: Option<Vec<String>>,
     pub preview: crate::dock_hover::State,
     pub window: Option<window::Id>,
     pub geometry: Option<Geometry>,
     pub snapshot: Option<Snapshot>,
     pub apps: Arc<[App]>,
     pub entries: Vec<Entry>,
+    pinned: usize,
+    strip: dock_motion::Strip,
+    reveal: dock_motion::Track,
     pub menu: Option<Menu>,
     pub closed: ContextMenuState,
     pub search_model: MenuModel,
@@ -135,12 +145,16 @@ impl Default for State {
             writes: Default::default(),
             writing: None,
             write_serial: 0,
+            pending_pin_order: None,
             preview: Default::default(),
             window: None,
             geometry: None,
             snapshot: None,
             apps: Arc::default(),
             entries: Vec::new(),
+            pinned: 0,
+            strip: Default::default(),
+            reveal: Default::default(),
             menu: None,
             closed: ContextMenuState::closed(),
             search_model: MenuModel::new(vec![
@@ -176,47 +190,30 @@ fn window_indicator<'a>(
     indicator: Indicator,
     count: usize,
     color: iced::Color,
-    vertical: bool,
-    near_start: bool,
+    edge: Position,
     target: f32,
+    spacing: enzui_theme::SpacingScale,
 ) -> Element<'a, Message> {
     use iced::{Border, Shadow};
-    if indicator == Indicator::Count && count > 1 {
-        use enzui_widgets::badge::{BadgeSizeTokens, BadgeTone, enz_badge};
-        let label = if count > 99 {
-            "99+".into()
-        } else {
-            count.to_string()
-        };
-        return container(
-            enz_badge(&label)
-                .tone(BadgeTone::Default)
-                .size_tokens(BadgeSizeTokens {
-                    height: 14.0,
-                    text_size: 10.0,
-                    radius: 7.0,
-                    padding_x: 3.0,
-                    min_width: 14.0,
-                    icon_size: 0.0,
-                    icon_gap: 0.0,
-                })
-                .into_element(),
-        )
-        .padding(2)
-        .width(target)
-        .height(target)
-        .align_x(if vertical && near_start {
-            iced::alignment::Horizontal::Right
-        } else {
-            iced::alignment::Horizontal::Left
-        })
-        .align_bottom(target)
-        .into();
-    }
+    let vertical = matches!(edge, Position::Left | Position::Right);
     let (thickness, span) = match indicator {
-        Indicator::Dots | Indicator::Count => (3.0, 3.0),
-        Indicator::Glow => (2.0, if count > 1 { 17.0 } else { 11.0 }),
-        _ => (2.0, if count > 1 { 13.0 } else { 6.0 }),
+        Indicator::Dots | Indicator::Count => (spacing.space3 / 2.0, spacing.space3 / 2.0),
+        Indicator::Glow => (
+            spacing.space1,
+            if count > 1 {
+                spacing.lg()
+            } else {
+                spacing.md()
+            },
+        ),
+        _ => (
+            spacing.space1,
+            if count > 1 {
+                spacing.md()
+            } else {
+                spacing.space3
+            },
+        ),
     };
     let mark = || {
         container(space())
@@ -231,7 +228,7 @@ fn window_indicator<'a>(
                 shadow: if indicator == Indicator::Glow {
                     Shadow {
                         color,
-                        blur_radius: 5.0,
+                        blur_radius: spacing.space3,
                         offset: iced::Vector::ZERO,
                     }
                 } else {
@@ -244,31 +241,73 @@ fn window_indicator<'a>(
     let ink: Element<'_, Message> = if indicator == Indicator::Dots && count > 1 {
         let dots = vec![mark(), mark()];
         if vertical {
-            column(dots).spacing(2).into()
+            column(dots).spacing(spacing.space1).into()
         } else {
-            row(dots).spacing(2).into()
+            row(dots).spacing(spacing.space1).into()
         }
     } else {
         mark()
     };
-    let inset = enzui_theme::SpacingScale::default().space1;
-    let position = if near_start {
-        inset
-    } else {
-        target - thickness - inset
+    let mark = container(ink).center(target).padding(spacing.space1);
+    match edge {
+        Position::Left => mark.align_left(target),
+        Position::Right => mark.align_right(target),
+        Position::Top => mark.align_top(target),
+        _ => mark.align_bottom(target),
+    }
+    .into()
+}
+
+fn window_count<'a>(
+    count: usize,
+    active: bool,
+    edge: Position,
+    target: f32,
+    size: enzui_widgets::badge::BadgeSizeTokens,
+    palette: &enzui_theme::Palette,
+    spacing: enzui_theme::SpacingScale,
+) -> Element<'a, Message> {
+    use enzui_widgets::badge::{BadgeTokens, BadgeTone, enz_badge};
+    let fill = palette.filled_color(if active { palette.accent } else { palette.text });
+    let tokens = BadgeTokens {
+        default_bg: fill.color,
+        default_fg: fill.text,
+        ..BadgeTokens::from_palette(palette)
     };
-    if vertical {
-        container(ink)
-            .center_y(target)
-            .padding(iced::Padding::ZERO.left(position))
-            .into()
+    let label = if count > 99 {
+        "99+".into()
     } else {
-        container(ink)
-            .center_x(target)
-            .padding(iced::Padding::ZERO.top(position))
-            .into()
+        count.to_string()
+    };
+    let pill = enz_badge(&label)
+        .tone(BadgeTone::Default)
+        .size_tokens(size)
+        .tokens(tokens)
+        .into_element();
+    let corner = container(pill).center(target).padding(spacing.space1);
+    let corner = if edge == Position::Left {
+        corner.align_left(target)
+    } else {
+        corner.align_right(target)
+    };
+    if edge == Position::Top {
+        corner.align_top(target)
+    } else {
+        corner.align_bottom(target)
+    }
+    .into()
+}
+
+fn group_icon(group: &Group, size: f32, ink: iced::Color) -> Element<'_, Message> {
+    match &group.image {
+        Some(image) => enzui_shell::icon_theme::source(image).into_element(size),
+        None => enzui_widgets::icon::enz_icon(&group.icon)
+            .size(size)
+            .tint(ink)
+            .into_element(),
     }
 }
+
 fn model(group: &Group, p: &dock::Preferences) -> MenuModel {
     if let Some(builtin) = &group.builtin {
         let mut rows = vec![MenuEntryModel::command("open", &group.title)];
@@ -412,9 +451,25 @@ impl Shell {
                 Task::none()
             };
         }
+        let previous_pins = &self.dock.preferences.pins;
+        let pins_changed = previous_pins != &desired.pins;
+        let pin_membership_changed = previous_pins.len() != desired.pins.len()
+            || previous_pins.iter().any(|id| !desired.pins.contains(id));
+        if !owner_changed && pins_changed && !pin_membership_changed {
+            let mut reordered = self.dock.preferences.clone();
+            reordered.pins.clone_from(&desired.pins);
+            if reordered == desired {
+                self.dock.preferences = desired;
+                self.dock_rebuild();
+                return if sidebar_changed {
+                    self.refresh_sidebar(None)
+                } else {
+                    Task::none()
+                };
+            }
+        }
         let bar_material = self.bar_dock_material();
         let was = self.dock.preferences.enabled;
-        let pins_changed = self.dock.preferences.pins != desired.pins;
         self.dock.preferences = desired;
         let bar = if bar_material != self.bar_dock_material() {
             self.refresh_bar_glass()
@@ -463,7 +518,9 @@ impl Shell {
             MenuEntryModel::command("settings", tr("shell-plugin-settings")),
         ]);
         if !self.dock.preferences.enabled {
+            self.dock.strip = Default::default();
             self.dock.entries.clear();
+            self.dock.pinned = 0;
             self.dock.apps = Arc::default();
             self.dock.snapshot = None;
             self.dock.hidden = true;
@@ -475,7 +532,8 @@ impl Shell {
             }
             return Task::batch([bar, sidebar]);
         }
-        let reload = if !was || owner_changed || self.dock.apps.is_empty() || pins_changed {
+        let reload = if !was || owner_changed || self.dock.apps.is_empty() || pin_membership_changed
+        {
             self.dock.apps_busy = false;
             self.dock_load_apps()
         } else {
@@ -606,11 +664,28 @@ impl Shell {
         self.dock
             .preview
             .update_windows(&self.dock.entries, snapshot.screen);
-        let slots = dock::Slots::new(p, self.metrics, self.dock_shares_sidebar());
-        let mut span = slots.span(self.dock.entries.len());
-        if self.dock_separator().is_some() {
-            span += slots.separator_span();
-        }
+        let slots = dock::Slots::new(p, self.metrics, shares_sidebar);
+        let pinned = p.pins.len().min(self.dock.entries.len());
+        self.dock.pinned = pinned;
+        let divider = pinned > 0
+            && self
+                .dock
+                .entries
+                .get(pinned)
+                .is_some_and(|entry| !entry.group.windows.is_empty());
+        let motion = self.tokens().motion;
+        let motion = motion.with_reduced_motion(
+            motion.reduced_motion || self.dock.geometry.is_none() || self.dock.hidden,
+        );
+        self.dock.strip.sync(
+            self.dock.entries[pinned..].iter().map(|entry| &entry.group),
+            &p.pins,
+            divider,
+            Instant::now(),
+            motion,
+        );
+        let span =
+            slots.span(self.dock.entries.len()) + f32::from(divider) * slots.separator_span();
         let mut geometry = dock::geometry(
             p,
             span,
@@ -643,12 +718,53 @@ impl Shell {
                 && self.dock.preview.preview.is_none());
         self.dock.geometry = Some(geometry);
     }
+    pub(crate) fn dock_sync_reveal(&mut self) {
+        let detached = self.dock.preferences.position != Position::Bar;
+        let visible = self.dock.preferences.enabled && detached && !self.dock.hidden;
+        let motion = self.tokens().motion;
+        self.dock.reveal.retarget(
+            f32::from(visible),
+            Instant::now(),
+            motion.with_reduced_motion(
+                motion.reduced_motion
+                    || self.dock.fullscreen
+                    || !detached
+                    || self.dock.window.is_none(),
+            ),
+            enzui_theme::MotionToken::Normal,
+        );
+    }
+
     pub(crate) fn dock_subscription(&self) -> Subscription<Message> {
         if !self.dock.preferences.enabled {
             return Subscription::none();
         }
+        use iced_runtime::futures::subscription;
         let generation = self.dock.badges_generation;
+        let animation_window = if self.dock.preferences.position == Position::Bar {
+            Some(self.panel)
+        } else {
+            self.dock.window
+        };
+        let mut animation = Subscription::none();
+        if let Some(target) = animation_window
+            && (self.dock.reveal.active() || self.dock.strip.active())
+        {
+            animation = subscription::filter_map_with_interest(
+                ("dock-motion", target),
+                iced::event::Interest::REDRAWS,
+                move |event| match event {
+                    subscription::Event::Interaction {
+                        window,
+                        event: iced::Event::Window(window::Event::RedrawRequested(at)),
+                        ..
+                    } if window == target => Some(message(Event::Frame(window, at))),
+                    _ => None,
+                },
+            );
+        }
         Subscription::batch([
+            animation,
             enzui_shell::launcher_badges::subscription(generation)
                 .map(|(generation, badges)| message(Event::Badges(generation, badges))),
             self.compositor
@@ -674,6 +790,21 @@ impl Shell {
             return Task::none();
         }
         match event {
+            Event::Frame(id, at) => {
+                let target = if self.dock.preferences.position == Position::Bar {
+                    Some(self.panel)
+                } else {
+                    self.dock.window
+                };
+                if target == Some(id) && (self.dock.strip.active() || self.dock.reveal.active()) {
+                    self.dock.strip.advance(at);
+                    self.dock.reveal.advance(at);
+                    self.redraw_only = Some(id);
+                } else {
+                    self.quiet = true;
+                }
+                Task::none()
+            }
             Event::Preview(event) => self.dock_preview_event(event),
             Event::Changed => self.dock_refresh(),
             Event::Badges(generation, badges) => {
@@ -793,7 +924,16 @@ impl Shell {
             }
             Event::Reorder(request) => {
                 self.dock.preview.clear();
-                self.dock_save(Change::ReorderPins(request))
+                let change = Change::ReorderPins(request);
+                let mut preview = self.dock.preferences.clone();
+                if let Some(order) = &self.dock.pending_pin_order {
+                    preview.pins.clone_from(order);
+                }
+                if preview.apply(&change).is_ok() {
+                    // Keep the drop position while the delegated store writes the order.
+                    self.dock.pending_pin_order = Some(preview.pins);
+                }
+                self.dock_save(change)
             }
             Event::DropFolders(drop) => {
                 if drop.is_temporary() {
@@ -1156,17 +1296,6 @@ impl Shell {
             }
         }
     }
-    fn dock_separator(&self) -> Option<usize> {
-        let pins = self.dock.preferences.pins.len();
-        (pins > 0
-            && self
-                .dock
-                .entries
-                .get(pins)
-                .is_some_and(|entry| !entry.group.windows.is_empty()))
-        .then_some(pins)
-    }
-
     pub(crate) fn bar_dock_material(&self) -> Option<Material> {
         let p = &self.dock.preferences;
         (p.enabled
@@ -1209,14 +1338,28 @@ impl Shell {
         } else {
             f32::from(p.highlight_radius).min(target / 2.0)
         };
-        let near_start = matches!(
-            (p.position, self.bar),
-            (Position::Right | Position::Bottom, _)
-                | (Position::Bar, enzui_shell::settings::BarEdge::Bottom)
-        );
-        use enzui_widgets::pressable::{PressableStyle, PressableTokens, enz_pressable};
-        let mut pressable = PressableTokens::from_palette(&palette);
-        pressable.card_selected_bg = palette.surface_selected;
+        let edge = match (p.position, self.bar) {
+            (Position::Bar, enzui_shell::settings::BarEdge::Top) => Position::Top,
+            (Position::Bar, enzui_shell::settings::BarEdge::Bottom) => Position::Bottom,
+            (position, _) => position,
+        };
+        let spacing = self.tokens().spacing;
+        use enzui_widgets::pressable::{
+            PressableStyle, PressableTokens, SurfaceColors, enz_pressable,
+        };
+        let pressable = PressableTokens::from_palette(&palette);
+        let badge_size = enzui_widgets::badge::BadgeSizeTokens {
+            height: spacing.lg(),
+            text_size: enzui_theme::TypographyScale::ambient().label_size,
+            radius: spacing.sm(),
+            padding_x: spacing.space1,
+            min_width: spacing.lg(),
+            icon_size: 0.0,
+            icon_gap: 0.0,
+        };
+        let badge_height = badge_size
+            .height
+            .max(enzui_widgets::badge::BadgeSize::Sm.line_height_px());
         use iced::widget::tooltip::Position as Tooltip;
         let tooltip = match p.position {
             Position::Left => Tooltip::Right,
@@ -1225,10 +1368,34 @@ impl Shell {
             Position::Bar if self.bar == enzui_shell::settings::BarEdge::Top => Tooltip::Bottom,
             _ => Tooltip::Top,
         };
+        let pinned = self.dock.pinned;
         let mut buttons = Vec::new();
-        for entry in &self.dock.entries {
-            let group = &entry.group;
+        let mut favorites: Vec<_> = self.dock.entries[..pinned].iter().collect();
+        if let Some(order) = &self.dock.pending_pin_order {
+            favorites.sort_by_key(|entry| {
+                order
+                    .iter()
+                    .position(|id| id == &entry.group.id)
+                    .unwrap_or(order.len())
+            });
+        }
+        let rows = favorites
+            .into_iter()
+            .map(|entry| (&entry.group, Some(&entry.model)))
+            .chain(self.dock.strip.trailing.iter().map(|slot| {
+                let model = self.dock.entries[pinned..]
+                    .iter()
+                    .find(|entry| entry.group.id == slot.group.id)
+                    .map(|entry| &entry.model);
+                (&slot.group, model)
+            }));
+        for (group, model) in rows {
             let id = group.id.clone();
+            let Some(model) = model else {
+                let icon = container(group_icon(group, size, palette.text)).center(target);
+                buttons.push((id, icon.into()));
+                continue;
+            };
             let active = group.windows.iter().any(|w| w.active);
             let running = !group.windows.is_empty();
             let badge = enzui_shell::launcher_badges::group_id(group)
@@ -1236,34 +1403,45 @@ impl Shell {
                 .copied()
                 .unwrap_or_default();
             let urgent = badge.urgent || group.windows.iter().any(|window| window.urgent);
-            let icon = match &group.image {
-                Some(image) => enzui_shell::icon_theme::source(image).into_element(size),
-                None => enzui_widgets::icon::enz_icon(&group.icon)
-                    .size(size)
-                    .tint(palette.text)
-                    .into_element(),
+            let count = group.windows.len();
+            let numbered = p.indicator == Indicator::Count && count > 1;
+            let inset = if numbered {
+                badge_height + spacing.space1
+            } else {
+                0.0
             };
-            let icon = container(icon)
-                .center_x(target)
-                .center_y(target)
-                .style(move |_| container::Style {
-                    border: iced::Border {
-                        width: if urgent { 1.5 } else { 0.0 },
-                        color: palette.warning,
-                        radius: radius.into(),
-                    },
-                    ..Default::default()
-                });
+            let glyph_pad = if edge == Position::Top {
+                iced::Padding::ZERO.top(inset)
+            } else {
+                iced::Padding::ZERO.bottom(inset)
+            };
+            let icon = container(group_icon(
+                group,
+                size.min((target - inset).max(spacing.space1)),
+                palette.text,
+            ))
+            .center(target)
+            .padding(glyph_pad)
+            .style(move |_| container::Style {
+                border: iced::Border {
+                    width: f32::from(urgent),
+                    color: palette.warning,
+                    radius: radius.into(),
+                },
+                ..Default::default()
+            });
             let mut layers: Vec<Element<'_, Message>> = vec![icon.into()];
             if group.builtin.is_none() && p.indicator != Indicator::None {
-                let count = group.windows.len();
                 let color = if active {
                     palette.accent
                 } else {
                     palette.text_muted
                 };
-                let marker =
-                    window_indicator(p.indicator, count, color, vertical, near_start, target);
+                let marker = if numbered {
+                    window_count(count, active, edge, target, badge_size, &palette, spacing)
+                } else {
+                    window_indicator(p.indicator, count, color, edge, target, spacing)
+                };
                 layers.push(
                     enzui_widgets::motion::motion(
                         marker,
@@ -1289,14 +1467,16 @@ impl Shell {
                         icon_gap: 0.0,
                     })
                     .into_element();
-                layers.push(
-                    container(indicator)
-                        .padding(iced::Padding::ZERO.top(2).right(2))
-                        .align_right(target)
-                        .height(target)
-                        .align_y(iced::alignment::Vertical::Top)
-                        .into(),
-                );
+                let notification = container(indicator)
+                    .padding(spacing.space1)
+                    .align_right(target)
+                    .align_top(target);
+                let notification = if edge == Position::Top && numbered {
+                    notification.align_left(target)
+                } else {
+                    notification
+                };
+                layers.push(notification.into());
             }
             let label = if group.builtin.is_some() {
                 group.title.clone()
@@ -1315,7 +1495,15 @@ impl Shell {
             .width(target)
             .padding(0)
             .radius(radius)
-            .selected(active)
+            .surface_colors_resolved({
+                let rest = active.then_some(palette.surface_selected);
+                let hover = palette.surface_hover;
+                move |_| SurfaceColors {
+                    background: rest,
+                    hover_background: Some(hover),
+                    border: None,
+                }
+            })
             .aria_label(label)
             .id(format!("dock-app-{id}").into())
             .enabled(group.builtin.is_some() || group.app.is_some() || running)
@@ -1343,11 +1531,21 @@ impl Shell {
             let button: Element<'_, Message> = if running && p.hover_previews {
                 button.into()
             } else {
-                enzui_widgets::tooltip::enz_tooltip(button.into(), group.title.clone(), tooltip)
+                let tip = enzui_widgets::tooltip::TooltipTokens {
+                    gap: spacing.sm(),
+                    padding_x: spacing.space5,
+                    ..enzui_widgets::tooltip::TooltipTokens::from_palette(&palette)
+                };
+                enzui_widgets::tooltip::enz_tooltip_with_tokens(
+                    button.into(),
+                    group.title.clone(),
+                    tooltip,
+                    tip,
+                )
             };
             buttons.push((
                 group.id.clone(),
-                enz_context_menu_host(button, &entry.model, &self.dock.closed, move |event| {
+                enz_context_menu_host(button, model, &self.dock.closed, move |event| {
                     message(Event::Invoke(id.clone(), origin, event))
                 })
                 .into(),
@@ -1369,31 +1567,19 @@ impl Shell {
                 add
             };
         }
-        let pinned = p.pins.len().min(buttons.len());
-        let separator = self.dock_separator().map(|_| {
-            let mark = container(space())
-                .width(if vertical { target * 0.42 } else { 1.0 })
-                .height(if vertical { 1.0 } else { target * 0.42 })
-                .style(move |_| container::Style {
-                    background: Some(palette.border.into()),
-                    ..Default::default()
-                });
-            if vertical {
-                container(mark).center_x(target).into()
-            } else {
-                container(mark).center_y(target).into()
-            }
-        });
-        let icons = if pinned > 1 {
-            let others = buttons.split_off(pinned);
-            let list = enzui_widgets::reorder_list::enz_reorder_list(buttons, |request| {
+        let trailing = buttons.split_off(pinned);
+        let mut items = Vec::new();
+        if pinned > 0 {
+            let mut list = enzui_widgets::reorder_list::enz_reorder_list(buttons, |request| {
                 message(Event::Reorder(request))
             })
             .spacing(slots.spacing)
             .row_radius(radius)
-            .drag_through_children(true);
+            .row_inset(spacing.space1)
+            .drag_through_children(true)
+            .animate_changes();
             let span = slots.span(pinned);
-            let list = if vertical {
+            list = if vertical {
                 list.width(Length::Fixed(target))
                     .height(Length::Fixed(span))
             } else {
@@ -1401,21 +1587,51 @@ impl Shell {
                     .width(Length::Fixed(span))
                     .height(Length::Fixed(target))
             };
-            let mut items = vec![list.into_element()];
-            items.extend(separator);
-            items.extend(others.into_iter().map(|(_, button)| button));
-            items
-        } else {
-            let mut items: Vec<_> = buttons.into_iter().map(|(_, button)| button).collect();
-            if let Some(separator) = separator {
-                items.insert(pinned, separator);
-            }
-            items
-        };
+            items.push(("dock:pinned-strip".into(), list.into_element()));
+        }
+        let divider = self.dock.strip.divider.value() * slots.separator_span();
+        if divider > 0.0 {
+            let thickness = divider.min(enzui_theme::text_defaults::focus_ring_width() / 2.0);
+            let mark = container(space())
+                .width(if vertical { spacing.lg() } else { thickness })
+                .height(if vertical { thickness } else { spacing.lg() })
+                .style(move |_| container::Style {
+                    background: Some(palette.border_strong.into()),
+                    ..Default::default()
+                });
+            let rule = if vertical {
+                container(mark).center_x(target).center_y(divider)
+            } else {
+                container(mark).center_x(divider).center_y(target)
+            };
+            items.push(("dock:divider".into(), rule.into()));
+        }
+        for (index, ((id, button), slot)) in trailing
+            .into_iter()
+            .zip(&self.dock.strip.trailing)
+            .enumerate()
+        {
+            use enzui_widgets::motion::{MotionEffect, motion};
+            let gap = if index == 0 && pinned == 0 {
+                0.0
+            } else {
+                slots.spacing
+            };
+            let extent = slot.extent() * (target + gap);
+            let button =
+                container(motion(button, !slot.departing, MotionEffect::Fade).enter_on_mount())
+                    .clip(true);
+            let button = if vertical {
+                button.center_x(target).align_bottom(extent)
+            } else {
+                button.align_right(extent).center_y(target)
+            };
+            items.push((id, button.into()));
+        }
         let icons: Element<'_, Message> = if vertical {
-            column(icons).spacing(slots.spacing).into()
+            enzui_widgets::keyed_row::keyed_column(items).into()
         } else {
-            row(icons).spacing(slots.spacing).into()
+            enzui_widgets::keyed_row::keyed_row(items).into()
         };
         if matches!(origin, Origin::Bar) {
             self.dock_folder_target(icons)
@@ -1424,45 +1640,65 @@ impl Shell {
         }
     }
     pub(crate) fn dock_view(&self) -> Element<'_, Message> {
-        let Some(g) = self.dock.geometry.as_ref() else {
+        let Some(rest) = self.dock.geometry.as_ref() else {
             return space().into();
         };
         let p = &self.dock.preferences;
+        let shares_sidebar = self.dock_shares_sidebar();
+        let live = self.dock.strip.active().then(|| {
+            let slots = dock::Slots::new(p, self.metrics, shares_sidebar);
+            dock::geometry(
+                p,
+                self.dock.strip.span(slots, self.dock.pinned),
+                rest.screen,
+                self.bar,
+                self.metrics,
+                self.desktop_edges(),
+                shares_sidebar,
+            )
+        });
+        let g = live.as_ref().unwrap_or(rest);
+        let progress = self.dock.reveal.value();
+        let slide = 1.0 - progress;
+        let offset = match p.position {
+            Position::Left => iced::Vector::new(-(g.body.x + g.body.width) * slide, 0.0),
+            Position::Right => iced::Vector::new((g.screen.width - g.body.x) * slide, 0.0),
+            Position::Top => iced::Vector::new(0.0, -(g.body.y + g.body.height) * slide),
+            _ => iced::Vector::new(0.0, (g.screen.height - g.body.y) * slide),
+        };
         let palette = self.window_tokens(self.dock.window).palette;
         let input = self.dock.window.and_then(|id| self.surface_inputs.get(&id));
         let glass = self.dock_material().filter(|_| {
             input.is_some_and(enzui_shell::surface_input::SurfaceInput::glass_supported)
         });
-        let menu_open = self.dock.menu.is_some();
-        if let Some(input) = input {
-            if menu_open {
-                input.reset();
-            } else if p.position == Position::Bar {
-                input.rounded_rectangles(
-                    &self
-                        .dock
-                        .preview
-                        .preview
-                        .as_ref()
-                        .map(|p| vec![p.bounds])
-                        .unwrap_or_default(),
-                    10.0,
-                );
+        let preview = self.dock.preview.preview.as_ref().map(|p| p.bounds);
+        let screen = iced::Rectangle::new(iced::Point::ORIGIN, g.screen);
+        let visible = g.body + offset;
+        let mask = if self.dock.menu.is_some() {
+            enzui_shell::desktop_glass::InputMask::Full
+        } else {
+            let mut regions = if p.position == Position::Bar {
+                preview.into_iter().map(|bounds| (bounds, 10.0)).collect()
             } else {
-                let regions = dock::input_regions(
-                    g,
-                    p,
-                    self.dock.hidden,
-                    self.dock.fullscreen,
-                    self.dock.preview.preview.as_ref().map(|p| p.bounds),
-                );
-                input.rounded_regions(&regions);
+                dock::input_regions(g, p, true, self.dock.fullscreen, preview)
+            };
+            if p.position != Position::Bar
+                && !self.dock.hidden
+                && let Some(body) = visible.intersection(&screen)
+            {
+                let radius = if p.style == Style::Minimal || g.framed {
+                    0.0
+                } else {
+                    g.radius
+                };
+                regions.push((body, radius));
             }
-        }
+            enzui_shell::desktop_glass::InputMask::Rounded(regions)
+        };
         let mut layers: Vec<Element<'_, Message>> =
             vec![space().width(Length::Fill).height(Length::Fill).into()];
         if p.position != Position::Bar {
-            {
+            if progress > 0.0 {
                 let icons = self.dock_icons(Origin::Dock, g.vertical);
                 let width = (g.body.width - 2.0 * g.padding[1]).max(1.0);
                 let height = (g.body.height - 2.0 * g.padding[0]).max(1.0);
@@ -1504,6 +1740,7 @@ impl Shell {
                 } else {
                     iced::Shadow::default()
                 };
+                let framed = g.framed;
                 let body = self.dock_folder_target(
                     container(scroll.into_element())
                         .padding(g.padding)
@@ -1515,7 +1752,7 @@ impl Shell {
                             border: iced::Border {
                                 radius,
                                 width: f32::from(
-                                    p.style != Style::Minimal && (!g.framed || glass.is_some()),
+                                    p.style != Style::Minimal && (!framed || glass.is_some()),
                                 ),
                                 color: palette.border,
                             },
@@ -1524,26 +1761,13 @@ impl Shell {
                         })
                         .into(),
                 );
-                use enzui_widgets::motion::{MotionEffect, SlideDirection, motion};
-                let effect = if glass.is_some() || self.dock.fullscreen {
-                    MotionEffect::Fade
-                } else {
-                    MotionEffect::Slide(match p.position {
-                        Position::Top => SlideDirection::Up,
-                        Position::Left => SlideDirection::Left,
-                        Position::Right => SlideDirection::Right,
-                        _ => SlideDirection::Down,
-                    })
-                };
-                let body = motion(body, !self.dock.hidden, effect);
+                let body = mouse_area(body)
+                    .on_enter(message(Event::Hover(true, true)))
+                    .on_exit(message(Event::Hover(false, true)));
                 layers.push(
-                    container(
-                        mouse_area(body)
-                            .on_enter(message(Event::Hover(true, true)))
-                            .on_exit(message(Event::Hover(false, true))),
-                    )
-                    .padding(iced::Padding::ZERO.top(g.body.y).left(g.body.x))
-                    .into(),
+                    container(iced::widget::float(body).translate(move |_, _| offset))
+                        .padding(iced::Padding::ZERO.top(g.body.y).left(g.body.x))
+                        .into(),
                 );
             }
             if !self.dock.fullscreen
@@ -1581,12 +1805,12 @@ impl Shell {
         let Some(id) = self.dock.window else {
             return view;
         };
-        let regions = if glass.is_some() && p.position != Position::Bar && !self.dock.hidden {
-            vec![(g.body, if g.framed { 0.0 } else { g.radius })]
+        let regions = if glass.is_some() && p.position != Position::Bar && progress > 0.0 {
+            vec![(visible, if g.framed { 0.0 } else { g.radius })]
         } else {
             Vec::new()
         };
-        enzui_shell::desktop_glass::fixed_glass(
+        enzui_shell::desktop_glass::fixed_glass_with_input(
             view,
             enzui_shell::desktop_glass::WindowGlass {
                 input: input.cloned(),
@@ -1602,6 +1826,7 @@ impl Shell {
                 pending: false,
             },
             regions,
+            mask,
         )
     }
     pub(crate) fn dock_search_host<'a>(

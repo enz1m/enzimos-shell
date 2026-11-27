@@ -6,6 +6,8 @@ mod control_center;
 mod desktop_update;
 #[path = "plugin_applications/hover.rs"]
 mod dock_hover;
+#[path = "plugin_applications/dock_motion.rs"]
+mod dock_motion;
 #[path = "plugin_applications/dock_ui.rs"]
 mod dock_ui;
 mod notification_panel;
@@ -621,6 +623,7 @@ impl Shell {
         }
         let task = self.update_message(message);
         let task = Task::batch([task, self.dock_sync(), self.dock_publish()]);
+        self.dock_sync_reveal();
         self.update_frame();
         let assistant = self.assistant_sync();
         let quiet = self.quiet && assistant.units() == 0;

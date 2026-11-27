@@ -242,6 +242,7 @@ impl Shell {
                 self.dock.writing = None;
                 if self.dock_owner().is_none_or(|c| c.owner != owner) {
                     self.dock.writes.clear();
+                    self.dock.pending_pin_order = None;
                     return Task::none();
                 }
                 match result {
@@ -259,12 +260,21 @@ impl Shell {
                         self.dock.writes.clear();
                     }
                 }
+                if !self
+                    .dock
+                    .writes
+                    .iter()
+                    .any(|change| matches!(change, Change::ReorderPins(_)))
+                {
+                    self.dock.pending_pin_order = None;
+                }
                 self.dock_write_next()
             }
         }
     }
     pub(crate) fn dock_save(&mut self, change: Change) -> Task<Message> {
         if self.dock_owner().is_none() {
+            self.dock.pending_pin_order = None;
             return Task::none();
         }
         self.dock.writes.push_back(change);
@@ -276,6 +286,7 @@ impl Shell {
         }
         let Some(claim) = self.dock_owner() else {
             self.dock.writes.clear();
+            self.dock.pending_pin_order = None;
             return Task::none();
         };
         let owner = claim.owner.clone();
@@ -293,6 +304,7 @@ impl Shell {
             Ok(store) => store,
             Err(error) => {
                 self.notice = Some(error);
+                self.dock.pending_pin_order = None;
                 return Task::none();
             }
         };
@@ -338,6 +350,7 @@ impl Shell {
             self.dock.claim = None;
             self.dock.writes.clear();
             self.dock.writing = None;
+            self.dock.pending_pin_order = None;
         }
         if self
             .dock

@@ -91,6 +91,7 @@ pub fn window_glass<'a, Message: 'a>(
         glass: glass.clone(),
         fixed_regions: None,
         extra: None,
+        input_mask: None,
     })
 }
 
@@ -101,6 +102,30 @@ pub fn fixed_glass<'a, Message: 'a>(
     regions: Vec<(Rectangle, f32)>,
 ) -> Element<'a, Message> {
     fixed_glass_with_extra(content, glass, regions, None)
+}
+
+/// Input shape published with the material regions of a fixed glass surface.
+pub enum InputMask {
+    /// Popups capture across the entire surface.
+    Full,
+    /// Input follows each rounded rectangle.
+    Rounded(Vec<(Rectangle, f32)>),
+}
+
+/// Publishes the draw's input and glass regions in the same surface commit.
+pub fn fixed_glass_with_input<'a, Message: 'a>(
+    content: Element<'a, Message>,
+    glass: WindowGlass,
+    regions: Vec<(Rectangle, f32)>,
+    input_mask: InputMask,
+) -> Element<'a, Message> {
+    Element::new(Root {
+        content,
+        glass,
+        fixed_regions: Some(regions),
+        extra: None,
+        input_mask: Some(input_mask),
+    })
 }
 
 /// Draws fixed regions with an optional independently styled glass region.
@@ -115,6 +140,7 @@ pub fn fixed_glass_with_extra<'a, Message: 'a>(
         glass,
         fixed_regions: Some(regions),
         extra,
+        input_mask: None,
     })
 }
 
@@ -197,6 +223,7 @@ struct Root<'a, Message> {
     glass: WindowGlass,
     fixed_regions: Option<Vec<(Rectangle, f32)>>,
     extra: Option<(Rectangle, f32, MaterialStyle)>,
+    input_mask: Option<InputMask>,
 }
 
 impl<Message> Root<'_, Message> {
@@ -354,6 +381,16 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Root<'_, Message>
         viewport: &Rectangle,
     ) {
         let input = self.glass.input.as_ref();
+        let _commit = self
+            .input_mask
+            .as_ref()
+            .and_then(|_| input.map(SurfaceInput::commit_together));
+        if let Some((input, mask)) = input.zip(self.input_mask.as_ref()) {
+            match mask {
+                InputMask::Full => input.reset(),
+                InputMask::Rounded(regions) => input.rounded_regions(regions),
+            };
+        }
         let material = self.material();
         tree.state
             .downcast_ref::<Drawn>()

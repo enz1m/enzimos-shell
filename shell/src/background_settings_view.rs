@@ -472,7 +472,7 @@ impl SettingsApp {
             scroll,
             vec![footer],
             16.0,
-            (self.viewport.height - 64.0).clamp(120.0, 600.0),
+            (self.viewport_height - 64.0).clamp(120.0, 600.0),
         )
         .into_element();
         let surface = enzui_widgets::modal_surface::enz_modal_surface(content)

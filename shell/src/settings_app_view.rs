@@ -79,7 +79,7 @@ impl SettingsApp {
                         .subscription()
                         .map(|event| Message::SharedTheme(Box::new(event)))
                 }),
-            window::resize_events().map(|(id, size)| Message::Viewport(id, size)),
+            window::resize_events().map(|(id, size)| Message::ViewportHeight(id, size.height)),
             iced::event::listen_with_interest(
                 iced::event::Interest::KEYBOARD,
                 |event, status, _| {
@@ -244,7 +244,9 @@ impl SettingsApp {
                                 Message::Filter,
                             );
                             match self.first_search_result() {
-                                Some(open) if !self.filter.trim().is_empty() => field.on_submit(open),
+                                Some(open) if !self.filter.trim().is_empty() => {
+                                    field.on_submit(open)
+                                }
                                 _ => field,
                             }
                         }

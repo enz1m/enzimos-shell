@@ -977,7 +977,7 @@ impl SettingsApp {
             scroll,
             vec![footer],
             16.0,
-            (self.viewport.height - 64.0).clamp(160.0, 720.0),
+            (self.viewport_height - 64.0).clamp(160.0, 720.0),
         )
         .into_element();
         Some(

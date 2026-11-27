@@ -142,20 +142,21 @@ impl SettingsApp {
                     self.chrome
                         .update(enzui_widgets::app_shell::ShellWindowEvent::Observed(id))
                         .map(Message::WindowState),
-                    window::size(id).map(move |size| Message::Viewport(id, size)),
+                    window::size(id).map(move |size| Message::ViewportHeight(id, size.height)),
                     self.activate_pending_launches(id),
                 ])
             }
-            Message::Viewport(id, size) => {
+            Message::ViewportHeight(id, height) => {
                 if self.window == Some(id)
-                    && size.width.is_finite()
-                    && size.height.is_finite()
-                    && size.width > 0.0
-                    && size.height > 0.0
+                    && height.is_finite()
+                    && height > 0.0
+                    && self.viewport_height != height
                 {
-                    self.viewport = size;
+                    self.viewport_height = height;
+                    Task::none()
+                } else {
+                    window::invalidate(window::Invalidation::none())
                 }
-                Task::none()
             }
             Message::Category(category, expanded) if !self.closing => {
                 if expanded {
@@ -178,8 +179,14 @@ impl SettingsApp {
                 self.dev_tools_launch.cancel(false);
                 self.section(route)
             }
-            Message::PageScrolled if !self.closing => self.observe_scrolled_section(),
-            Message::PageScrolled => Task::none(),
+            Message::PageScrolled => {
+                let task = if self.closing {
+                    Task::none()
+                } else {
+                    self.observe_scrolled_section()
+                };
+                Task::batch([task, window::invalidate(window::Invalidation::none())])
+            }
             Message::SectionObserved(revision, route) => {
                 if revision == self.navigation.spy_revision
                     && self.filter.trim().is_empty()
@@ -190,10 +197,13 @@ impl SettingsApp {
                             .any(|section| section.route == *route)
                     })
                     && let Some(route) = self.navigation.observed(route, offset)
+                    && self.navigation.selected != Some(route)
                 {
                     self.navigation.selected = Some(route);
+                    Task::none()
+                } else {
+                    window::invalidate(window::Invalidation::none())
                 }
-                Task::none()
             }
             Message::SectionLocated(epoch, position) => {
                 let ms = self.tokens().motion.ms(enzui_theme::MotionToken::Normal) * 1.5;
@@ -216,7 +226,11 @@ impl SettingsApp {
                 } else if relocate {
                     self.reveal_pending = true;
                 }
-                Task::none()
+                if relocate {
+                    Task::none()
+                } else {
+                    window::invalidate(window::Invalidation::none())
+                }
             }
             Message::FindSetting => return iced::widget::operation::focus(SEARCH_FIELD),
             Message::ToggleSearchGroup(route) => {

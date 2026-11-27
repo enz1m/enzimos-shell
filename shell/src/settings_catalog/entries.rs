@@ -1270,6 +1270,13 @@ pub static ENTRIES: &[Entry] = &[
         "shell-microphone-level-gain-mute"
     ),
     entry!(
+        Sound,
+        "sound/microphone_test",
+        "shell-mic-test",
+        "shell-input",
+        "shell-mic-test-search"
+    ),
+    entry!(
         Power,
         "power/battery",
         "shell-battery",

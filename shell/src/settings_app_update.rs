@@ -60,7 +60,7 @@ impl SettingsApp {
         } else {
             Task::none()
         };
-        let task = Task::batch([task, capture]);
+        let task = Task::batch([task, capture, self.sync_microphone()]);
         let Some((kind, answer)) = poll else {
             return task;
         };

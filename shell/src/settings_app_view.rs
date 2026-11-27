@@ -71,6 +71,7 @@ impl SettingsApp {
                 Subscription::none()
             },
             self.chrome.subscription().map(Message::WindowState),
+            self.microphone_window_events(),
             self.themes
                 .as_ref()
                 .map_or_else(Subscription::none, |themes| {

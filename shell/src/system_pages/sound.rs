@@ -1,12 +1,15 @@
 use super::*;
+mod audio_test;
+mod microphone;
 use enzui_shell::audio_devices::Kind;
 use enzui_shell::i18n::tr;
 use enzui_shell::system_settings::{Level, Sound};
 use enzui_widgets::{slider::enz_slider, toolbar_icon::enz_toolbar_icon};
 use iced::{
     Alignment,
-    widget::{column, container, row},
+    widget::{column, container, row, sensor::Sensor},
 };
+pub(super) use microphone::{Event as MicrophoneEvent, Microphone};
 
 impl SettingsApp {
     fn device_choice<'a>(
@@ -166,13 +169,15 @@ impl SettingsApp {
         if let Some(choice) = choice("sound/input", Kind::Input) {
             input = input.push(choice);
         }
-        let input = input.push(self.level_row(
-            "sound/input_volume",
-            sound.input,
-            ("mic", "mic-off"),
-            Request::InputVolume,
-            Request::InputMute,
-        ));
+        let input = input
+            .push(self.level_row(
+                "sound/input_volume",
+                sound.input,
+                ("mic", "mic-off"),
+                Request::InputVolume,
+                Request::InputMute,
+            ))
+            .push(self.microphone_test_view(&sound));
         body.push(
             self.section_card_for("sound/output", output)
                 .title(tr("shell-output"))
@@ -180,10 +185,16 @@ impl SettingsApp {
                 .into_element(),
         )
         .push(
-            self.section_card_for("sound/input", input)
-                .title(tr("shell-input"))
-                .description(tr("shell-the-microphone-applications-record-from"))
-                .into_element(),
+            Sensor::new(
+                self.section_card_for("sound/input", input)
+                    .title(tr("shell-input"))
+                    .description(tr("shell-the-microphone-applications-record-from"))
+                    .into_element(),
+            )
+            .on_show(|_| Parent::System(Message::Microphone(MicrophoneEvent::Visible(true))))
+            .on_hide(Parent::System(Message::Microphone(
+                MicrophoneEvent::Visible(false),
+            ))),
         )
     }
 }

@@ -98,6 +98,7 @@ pub(super) struct State {
     remote: remote::Remote,
     phone: phone_link::Phone,
     screen_reader: accessibility::ScreenReader,
+    microphone: sound::Microphone,
     // About's package list is open.
     about_details: bool,
 }
@@ -119,8 +120,10 @@ pub(super) enum JobState {
 }
 impl State {
     pub(super) fn for_environment() -> Self {
+        let backend = SystemSettings::from_environment();
         Self {
-            backend: SystemSettings::from_environment(),
+            microphone: sound::Microphone::new(backend.microphone_test_tool()),
+            backend,
             readings: HashMap::new(),
             read_at: HashMap::new(),
             in_flight: None,
@@ -174,6 +177,7 @@ impl State {
 #[derive(Clone, Debug)]
 pub(super) enum Message {
     Loaded(Box<Reading>),
+    Microphone(sound::MicrophoneEvent),
     // A page's reading took too long; the last one stays.
     ReadTimedOut(Panel),
     Request(Request),
@@ -371,6 +375,18 @@ impl SettingsApp {
         self.system.platform.is_some()
             && !enzui_shell::platform::shows(self.system.platform.as_ref(), route)
     }
+    pub(super) fn microphone_window_events(&self) -> iced::Subscription<Parent> {
+        iced::window::events().filter_map(|(id, event)| {
+            let focused = match event {
+                iced::window::Event::Focused => true,
+                iced::window::Event::Unfocused => false,
+                _ => return None,
+            };
+            Some(Parent::System(Message::Microphone(
+                sound::MicrophoneEvent::Focused(id, focused),
+            )))
+        })
+    }
     pub(super) fn display_confirm_pending(&self) -> bool {
         self.system.display_confirm.is_some()
     }
@@ -532,6 +548,7 @@ impl SettingsApp {
     }
     pub(super) fn system_message(&mut self, message: Message) -> Task<Parent> {
         match message {
+            Message::Microphone(event) => self.microphone_event(event),
             Message::BatteryRisk(action) => {
                 self.menu = None;
                 self.system.battery_risk = action;
@@ -649,6 +666,9 @@ impl SettingsApp {
                 self.system.in_flight = None;
                 if !self.system.busy && self.system.queue.is_empty() {
                     self.system.drafts.clear();
+                    if panel == Panel::Sound && !self.system.reread {
+                        self.system.microphone.route_changing = false;
+                    }
                 }
                 // A busy backend's refusal keeps the last good page and is
                 // read again at the next refresh.
@@ -998,6 +1018,9 @@ impl SettingsApp {
                 if !self.system.backend.allows(&request) {
                     self.error = Some(tr("shell-system-changes-are-off-in-this-preview").into());
                     return Task::none();
+                }
+                if matches!(request, Request::AudioDevice(_)) {
+                    self.system.microphone.route_changing = true;
                 }
                 self.system.drafts.retain(|d| !d.same_slot(&request));
                 self.system.drafts.push(request.clone());

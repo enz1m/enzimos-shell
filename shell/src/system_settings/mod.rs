@@ -630,6 +630,13 @@ impl SystemSettings {
             enzimos: Default::default(),
         }
     }
+    /// The native PipeWire audio tool, when the real backend supports microphone testing.
+    pub fn microphone_test_tool(&self) -> Option<std::path::PathBuf> {
+        if self.demo || self.controls.tool("wpctl").is_none() {
+            return None;
+        }
+        self.controls.tool("pw-cat")
+    }
     /// The enzimOS system backend, when this system has one.
     pub async fn enzimos(&self) -> Option<enzimos::Backend> {
         if self.demo {

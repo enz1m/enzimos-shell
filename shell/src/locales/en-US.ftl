@@ -1400,6 +1400,7 @@ shell-hide-when-windows-overlap = Hide when windows overlap
 shell-hide-for-fullscreen-apps = Hide for fullscreen apps
 shell-invalid-dock-preferences = Invalid dock preferences
 shell-dock = Dock
+shell-dock-settings = Dock settings
 shell-dock-search-enabled = enable disable turn on turn off app application dock launcher taskbar
 shell-dock-search-visible = show hide display dock
 shell-dock-search-position = move placement dock edge top bottom left right bar

@@ -1453,6 +1453,7 @@ shell-hide-when-windows-overlap = Ocultar cuando las ventanas se superponen
 shell-hide-for-fullscreen-apps = Ocultar para aplicaciones de pantalla completa
 shell-invalid-dock-preferences = Preferencias de acoplamiento no válidas
 shell-dock = Dock
+shell-dock-settings = Ajustes del Dock
 shell-dock-search-enabled = activar desactivar encender apagar dock lanzador barra de tareas
 shell-dock-search-visible = mostrar ocultar dock
 shell-dock-search-position = mover ubicación borde arriba abajo izquierda derecha barra

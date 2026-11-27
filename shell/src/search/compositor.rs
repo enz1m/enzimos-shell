@@ -823,6 +823,20 @@ impl Compositor {
     }
 
     pub async fn execute_search_target(&self, root: &Path, target: Target) -> Result<(), String> {
+        self.execute_target(root, target, true).await
+    }
+
+    /// Requests a fresh launch, preserving activation for single-instance Shell apps.
+    pub async fn launch_dock_app(&self, root: &Path, app: AppTarget) -> Result<(), String> {
+        self.execute_target(root, Target::App(app), false).await
+    }
+
+    async fn execute_target(
+        &self,
+        root: &Path,
+        target: Target,
+        focus_existing: bool,
+    ) -> Result<(), String> {
         drop(session::Target::from_environment()?.connect()?);
         let mut command = tokio::process::Command::new("/usr/bin/gio");
         match target {
@@ -836,9 +850,10 @@ impl Compositor {
                 if !crate::parental::program_allowed(&crate::catalog::executable(root, &id)) {
                     return Err(tr("shell-this-app-is-not-allowed-on-this-account").into());
                 }
-                if self
-                    .focus_catalogue_app(root, &AppTarget::Prepared(id.clone()))
-                    .await?
+                if (focus_existing || matches!(id.as_str(), "enzui-settings" | "enzui-assistant"))
+                    && self
+                        .focus_catalogue_app(root, &AppTarget::Prepared(id.clone()))
+                        .await?
                 {
                     return Ok(());
                 }
@@ -860,15 +875,16 @@ impl Compositor {
                 if !crate::parental::entry_allowed(&path) {
                     return Err(tr("shell-this-app-is-not-allowed-on-this-account").into());
                 }
-                if self
-                    .focus_catalogue_app(
-                        root,
-                        &AppTarget::Desktop {
-                            path: path.clone(),
-                            identity: identity.clone(),
-                        },
-                    )
-                    .await?
+                if focus_existing
+                    && self
+                        .focus_catalogue_app(
+                            root,
+                            &AppTarget::Desktop {
+                                path: path.clone(),
+                                identity: identity.clone(),
+                            },
+                        )
+                        .await?
                 {
                     return Ok(());
                 }

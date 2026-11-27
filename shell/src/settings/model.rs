@@ -30,6 +30,8 @@ pub struct Settings {
     pub controller_notifications: bool,
     pub assistant_corner: super::AssistantCorner,
     pub assistant_width: u16,
+    pub assistant_shortcuts:
+        std::collections::BTreeMap<crate::shortcut_map::AssistantShortcut, String>,
     /// The shadow of the bar, islands and frame, 0 (off, the default) to 4.
     pub bar_shadow: u8,
     /// The shadow of panels opened from the bar, 0 (off) to 4.
@@ -94,6 +96,7 @@ impl Default for Settings {
             controller_notifications: true,
             assistant_corner: super::AssistantCorner::BottomRight,
             assistant_width: DEFAULT_ASSISTANT_WIDTH,
+            assistant_shortcuts: Default::default(),
             bar_shadow: 0,
             panel_shadow: 2,
             panel_glass: 0,
@@ -168,6 +171,14 @@ impl Settings {
             Change::AssistantCorner(value) => self.assistant_corner = value,
             Change::AssistantWidth(value) => {
                 self.assistant_width = clamp_assistant_width(value.into());
+            }
+            Change::AssistantShortcut(action, ref chord) => {
+                crate::shortcut_map::set_assistant_shortcut(
+                    &mut self.assistant_shortcuts,
+                    action,
+                    chord.as_deref(),
+                    &self.compositor,
+                )?;
             }
             Change::BarShadow(value) => self.bar_shadow = value.min(4),
             Change::PanelGlass(value) => {
@@ -293,6 +304,7 @@ pub enum Change {
     ControllerNotifications(bool),
     AssistantCorner(super::AssistantCorner),
     AssistantWidth(u16),
+    AssistantShortcut(crate::shortcut_map::AssistantShortcut, Option<String>),
     BarShadow(u8),
     PanelGlass(u8),
     PanelShadow(u8),
@@ -498,6 +510,10 @@ pub(super) fn parse(value: &serde_json::Value) -> Result<Settings, String> {
         assistant_width: value["assistant_width"]
             .as_u64()
             .map_or(DEFAULT_ASSISTANT_WIDTH, clamp_assistant_width),
+        assistant_shortcuts: value
+            .get("assistant_shortcuts")
+            .and_then(|shortcuts| serde_json::from_value(shortcuts.clone()).ok())
+            .unwrap_or_default(),
         // An earlier on/off choice reads as Small.
         bar_shadow: match value.get("bar_shadow") {
             None | Some(serde_json::Value::Bool(false)) => 0,

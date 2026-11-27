@@ -6,7 +6,9 @@ use enzui_shell::{
 };
 mod attachments;
 mod client;
+mod models;
 mod resize;
+mod shortcuts;
 mod transcript;
 mod view;
 
@@ -35,6 +37,8 @@ pub(crate) enum Message {
     Service(client::Service),
     Attachments(attachments::Message),
     Resize(resize::Message),
+    Models(models::Message),
+    Shortcut(shortcuts::Message),
     Regenerate,
     EditLast,
     CancelEdit,
@@ -61,7 +65,6 @@ pub(crate) enum Message {
     Edit(text_editor::Action),
     Send,
     Stop,
-    Suggest(&'static str),
     NewChat,
     History(bool),
     Open(String),
@@ -151,7 +154,8 @@ pub(crate) struct State {
     pub panel: Option<Pane>,
     panel_serial: u64,
     panel_opening: bool,
-    resize: resize::State,
+    drag: Option<resize::Drag>,
+    model_picker: models::State,
     pub service: Option<Result<(), String>>,
     /// The model the service answers with, for the composer.
     pub model: String,
@@ -175,6 +179,7 @@ pub(crate) struct State {
     history_search: String,
     history_action: Option<HistoryAction>,
     shortcuts: bool,
+    shortcut_editor: shortcuts::State,
     steering: bool,
     pub export_failed: bool,
     pub running: Option<Running>,
@@ -345,7 +350,25 @@ impl Shell {
         iced::Subscription::batch([
             client::service().map(|state| message(Message::Service(state))),
             self.assistant.attachment_loader.subscription(),
-            self.assistant.resize.subscription(),
+            if self.assistant.shortcuts
+                || (self.assistant.panel.is_some()
+                    && !self.desired_settings.assistant_shortcuts.is_empty())
+            {
+                shortcuts::subscription()
+            } else {
+                iced::Subscription::none()
+            },
+            if self.assistant.shortcuts {
+                enzui_shell::shortcut_map::key_labels_subscription()
+                    .map(|labels| shortcuts::event(shortcuts::Message::Labels(labels)))
+            } else {
+                iced::Subscription::none()
+            },
+            if self.assistant.drag.is_some() {
+                resize::subscription()
+            } else {
+                iced::Subscription::none()
+            },
             if self.assistant.running.is_some() {
                 iced::time::every(Duration::from_millis(500)).map(|_| message(Message::Tick))
             } else {
@@ -408,9 +431,20 @@ impl Shell {
         match msg {
             Message::Attachments(event) => self.assistant_attachments(event),
             Message::Resize(event) => self.assistant_resize(event),
+            Message::Models(event) => self.assistant_models(event),
+            Message::Shortcut(event) => self.assistant_shortcut(event),
             Message::Shortcuts(show) => {
+                self.assistant.model_picker.close();
                 self.assistant.shortcuts = show;
-                Task::none()
+                if show {
+                    self.assistant.history = false;
+                    Task::none()
+                } else {
+                    Task::batch([
+                        self.cancel_assistant_shortcut(),
+                        iced::widget::operation::focus(COMPOSER),
+                    ])
+                }
             }
             Message::HistorySearch(query) => {
                 self.assistant.history_search = query;
@@ -694,6 +728,10 @@ impl Shell {
                     Ok(value) => {
                         self.assistant.approval_mode = ApprovalMode::read(&value["approval_mode"]);
                         self.assistant.screenshots = Screenshots::read(&value["screenshots"]);
+                        value["model"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .clone_into(&mut self.assistant.model);
                         self.assistant.completed = value["last_turn_revision"].as_u64();
                         self.assistant
                             .transcript
@@ -838,10 +876,6 @@ impl Shell {
                 }
                 self.assistant_send(text)
             }
-            Message::Suggest(prompt) => {
-                self.assistant.composer = text_editor::Content::with_text(prompt);
-                iced::widget::operation::focus(COMPOSER)
-            }
             Message::Retry => match (
                 self.assistant.session.clone(),
                 self.assistant.transcript.last_prompt(),
@@ -884,19 +918,29 @@ impl Shell {
                 self.assistant.export_failed = false;
                 self.assistant_new_approval();
                 self.assistant.title = String::new();
+                self.assistant.model_picker.close();
                 self.assistant.transcript.clear();
                 self.assistant.shortcuts = false;
                 self.assistant.history = false;
                 self.assistant.error = None;
-                Task::batch([revoke, iced::widget::operation::focus(COMPOSER)])
+                Task::batch([
+                    revoke,
+                    self.cancel_assistant_shortcut(),
+                    iced::widget::operation::focus(COMPOSER),
+                ])
             }
             Message::History(open) => {
                 self.assistant.history_action = None;
                 self.assistant.history = open;
                 self.assistant.shortcuts = false;
+                self.assistant.model_picker.close();
                 if open {
                     self.assistant.history_search.clear();
-                    Task::batch([list(), iced::widget::operation::focus("assistant-search")])
+                    Task::batch([
+                        self.cancel_assistant_shortcut(),
+                        list(),
+                        iced::widget::operation::focus("assistant-search"),
+                    ])
                 } else {
                     iced::widget::operation::focus(COMPOSER)
                 }
@@ -1164,6 +1208,7 @@ impl Shell {
         self.assistant.loaded = true;
         self.assistant.history = false;
         self.assistant.choosing_approval = false;
+        self.assistant.model_picker.close();
         if self.assistant.running.is_some() {
             // Mid-turn: the message steers the running turn.
             let Some(session) = self.assistant.session.clone() else {
@@ -1191,9 +1236,13 @@ impl Shell {
                 self.assistant.approval_busy = true;
                 let mode = self.assistant.approval_mode;
                 let screenshots = self.assistant.screenshots;
-                perform(
-                    async move { Message::Created(text, client::open(mode, screenshots).await) },
-                )
+                let choice = self.assistant.model_picker.selected.clone();
+                if let Some(choice) = &choice {
+                    self.assistant.model.clone_from(&choice.model);
+                }
+                perform(async move {
+                    Message::Created(text, client::open(mode, screenshots, choice).await)
+                })
             }
         }
     }
@@ -1321,12 +1370,11 @@ impl Shell {
             self.bar,
             self.desired_settings.assistant_corner,
         );
-        let width = self.desired_settings.assistant_width;
         perform(async move {
             Message::PanelPrepared(
                 serial,
                 compositor
-                    .prepare_assistant_panel(metrics, bar, corner, width)
+                    .prepare_assistant_panel(metrics, bar, corner)
                     .await,
             )
         })
@@ -1334,26 +1382,32 @@ impl Shell {
 
     pub(crate) fn close_assistant(&mut self) -> Task<ShellMessage> {
         self.assistant.attachment_loader.cancel();
-        self.assistant.resize.drag = None;
+        self.assistant.drag = None;
+        self.assistant.model_picker.close();
         self.assistant.panel_opening = false;
         self.assistant.history_action = None;
         self.assistant.history = false;
-        match self.assistant.panel.as_mut() {
+        self.assistant.shortcuts = false;
+        let cancel = self.cancel_assistant_shortcut();
+        let close = match self.assistant.panel.as_mut() {
             Some(pane) if pane.started => {
                 pane.visible = false;
                 Task::none()
             }
             Some(_) => self.force_close_assistant(),
             None => Task::none(),
-        }
+        };
+        Task::batch([cancel, close])
     }
 
     pub(crate) fn force_close_assistant(&mut self) -> Task<ShellMessage> {
         self.assistant.attachment_loader.cancel();
-        self.assistant.resize.drag = None;
+        self.assistant.drag = None;
+        self.assistant.model_picker.close();
         self.assistant.panel_opening = false;
+        let cancel = self.cancel_assistant_shortcut();
         let Some(pane) = self.assistant.panel.take() else {
-            return Task::none();
+            return cancel;
         };
         // Pressing the button can nudge its window; it returns to its corner.
         let trigger = self
@@ -1362,7 +1416,7 @@ impl Shell {
             .as_ref()
             .map(|trigger| trigger.window);
         let place = trigger.map_or_else(Task::none, |id| self.assistant_mapped(id));
-        Task::batch([self.finish_panel_close(pane.window), place])
+        Task::batch([cancel, self.finish_panel_close(pane.window), place])
     }
 
     pub(crate) fn assistant_window_event(
@@ -1395,6 +1449,10 @@ impl Shell {
                 }
                 Task::none()
             }
+            window::Event::Unfocused => {
+                self.assistant.drag = None;
+                self.cancel_assistant_shortcut()
+            }
             window::Event::CloseRequested => self.close_assistant(),
             window::Event::Closed => {
                 if self.assistant.owns_panel(id) {
@@ -1415,7 +1473,6 @@ impl Shell {
             self.desired_settings.assistant_corner,
         );
         let trigger = self.assistant.owns_trigger(id);
-        let width = self.desired_settings.assistant_width;
         // Once now and once more after the first frames have settled.
         let delays = if trigger {
             vec![Duration::ZERO, Duration::from_millis(400)]
@@ -1443,7 +1500,7 @@ impl Shell {
                 } else {
                     Message::Placed(
                         compositor
-                            .prepare_assistant_panel(metrics, bar, corner, width)
+                            .prepare_assistant_panel(metrics, bar, corner)
                             .await
                             .map(drop),
                     )
@@ -1459,8 +1516,7 @@ impl Shell {
             }
             if self.assistant.history || self.assistant.shortcuts {
                 self.assistant.history = false;
-                self.assistant.shortcuts = false;
-                return iced::widget::operation::focus(COMPOSER);
+                return self.assistant_message(Message::Shortcuts(false));
             }
             if self.assistant.revision.is_some() && self.assistant.running.is_none() {
                 return self.assistant_message(Message::CancelEdit);

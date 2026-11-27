@@ -782,8 +782,7 @@ pub fn request(method: &str, fields: Value) -> Result<Value, String> {
     }
 }
 
-/// List chat models that the selected gateway provider offers.
-pub fn models(gateway: &str, provider: &str) -> Result<Vec<String>, String> {
+fn gateway_get(gateway: &str, route: &str) -> Result<Value, String> {
     let path = Path::new(gateway);
     if !path.is_absolute() {
         return Err(tr("shell-no-gateway-is-configured").into());
@@ -791,18 +790,7 @@ pub fn models(gateway: &str, provider: &str) -> Result<Vec<String>, String> {
     let mut stream =
         private_socket(path).map_err(|_| tr("shell-the-ai-gateway-is-not-running").to_owned())?;
     stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
-    use std::fmt::Write as _;
-    let mut query = String::new();
-    for byte in provider.bytes() {
-        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
-            query.push(char::from(byte));
-        } else {
-            let _ = write!(query, "%{byte:02X}");
-        }
-    }
-    let request = format!(
-        "GET /v1/models?provider={query} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
-    );
+    let request = format!("GET {route} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
     stream
         .write_all(request.as_bytes())
         .map_err(|_| tr("shell-the-ai-gateway-did-not-answer"))?;
@@ -822,16 +810,50 @@ pub fn models(gateway: &str, provider: &str) -> Result<Vec<String>, String> {
     {
         return Err(tr("shell-the-ai-gateway-did-not-list-its-models").into());
     }
-    let value: Value = serde_json::from_str(body.trim())
-        .map_err(|_| tr("shell-the-ai-gateway-answered-in-an-unknown-form"))?;
+    serde_json::from_str(body.trim())
+        .map_err(|_| tr("shell-the-ai-gateway-answered-in-an-unknown-form").into())
+}
+
+/// Lists enabled chat providers the harness is configured to accept.
+pub fn chat_providers(setup: &Summary) -> Result<Vec<(String, String)>, String> {
+    let result = gateway_get(&setup.gateway, "/v1/providers")?;
+    Ok(result["providers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|provider| {
+            let id = provider["id"].as_str()?;
+            let kind = provider["kind"].as_str()?;
+            let enabled = provider["enabled"].as_bool().unwrap_or(kind == "local");
+            let chat = matches!(kind, "local" | "chatgpt-login")
+                || provider["capabilities"]
+                    .as_array()
+                    .is_some_and(|caps| caps.iter().any(|cap| cap == "chat"));
+            (enabled && chat && setup.providers.iter().any(|allowed| allowed == id))
+                .then(|| (id.to_owned(), kind.to_owned()))
+        })
+        .collect())
+}
+
+/// Lists the chat models offered by a gateway provider.
+pub fn models(gateway: &str, provider: &str) -> Result<Vec<String>, String> {
+    use std::fmt::Write as _;
+    let mut query = String::new();
+    for byte in provider.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+            query.push(char::from(byte));
+        } else {
+            let _ = write!(query, "%{byte:02X}");
+        }
+    }
+    let value = gateway_get(gateway, &format!("/v1/models?provider={query}"))?;
     Ok(value["data"]
         .as_array()
         .into_iter()
         .flatten()
         .filter(|model| model["kind"] != "speech")
         .filter_map(|model| model["id"].as_str())
-        .filter(|id| (1..=128).contains(&id.len()))
-        .take(64)
+        .filter(|id| (1..=128).contains(&id.chars().count()) && !id.chars().any(char::is_control))
         .map(str::to_owned)
         .collect())
 }

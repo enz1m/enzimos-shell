@@ -65,7 +65,7 @@ fn settings_behaviour() {
         assert_eq!(std::fs::read(store.path()).unwrap(), bytes);
     }
     {
-        use crate::shortcut_map::{CustomShortcut, CustomTarget, important};
+        use crate::shortcut_map::{AssistantShortcut, CustomShortcut, CustomTarget, important};
         let temp = tempfile::tempdir().unwrap();
         let store = Store::at(temp.path().join("settings.json")).unwrap();
         std::fs::write(
@@ -100,6 +100,27 @@ fn settings_behaviour() {
             store.load().unwrap().compositor.custom_shortcuts[&id],
             custom
         );
+        let send = AssistantShortcut::Send;
+        for conflicting in ["SHIFT + Return", "SUPER + slash", "SUPER + J"] {
+            assert!(
+                store
+                    .update(Change::AssistantShortcut(send, Some(conflicting.into())))
+                    .is_err()
+            );
+        }
+        store
+            .update(Change::AssistantShortcut(
+                send,
+                Some("CTRL + Return".into()),
+            ))
+            .unwrap();
+        assert_eq!(
+            send.chord(&store.load().unwrap().assistant_shortcuts),
+            "CTRL + Return"
+        );
+        store.update(Change::AssistantShortcut(send, None)).unwrap();
+        assert!(store.load().unwrap().assistant_shortcuts.is_empty());
+
         store
             .update(Change::Shortcut("search".into(), None))
             .unwrap();

@@ -264,6 +264,8 @@ pub struct Reveal {
     pub shape: Shape,
     pub radius: f32,
     pub color: Color,
+    /// Limit input to the panel shape when its window contains unused space.
+    pub shape_input: bool,
 }
 #[derive(Clone, Debug)]
 pub struct Frame {
@@ -299,6 +301,7 @@ impl Reveal {
             },
             radius,
             color,
+            shape_input: false,
         }
     }
     /// The panel's shadow as (blur, downward offset, opacity), for a body the

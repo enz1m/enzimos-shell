@@ -159,6 +159,13 @@ impl Store {
                     value["assistant_width"] =
                         super::model::clamp_assistant_width(width.into()).into();
                 }
+                Change::AssistantShortcut(..) => {
+                    let mut settings = super::model::parse(value)?;
+                    settings.preview(change)?;
+                    value["assistant_shortcuts"] =
+                        serde_json::to_value(settings.assistant_shortcuts)
+                            .map_err(|_| tr("shell-invalid-keyboard-shortcuts"))?;
+                }
                 Change::ThemeScheme(ref id) => {
                     if crate::theme_palette::Scheme::from_id_str(id).is_none() {
                         return Err(tr("shell-invalid-theme-style").into());

@@ -109,6 +109,27 @@ pub(crate) fn popup_fitted<'a>(
     popup: Popup,
     fit: Option<FitHeight>,
 ) -> Element<'a, Message> {
+    popup_with_input_shape(content, popup, fit, false)
+}
+
+pub(crate) fn popup_in_slot(content: Element<'_, Message>, popup: Popup) -> Element<'_, Message> {
+    popup_with_input_shape(content, popup, None, true)
+}
+
+fn popup_with_input_shape<'a>(
+    content: Element<'a, Message>,
+    popup: Popup,
+    fit: Option<FitHeight>,
+    shape_input: bool,
+) -> Element<'a, Message> {
+    let mut reveal = enzui_shell::reveal::Reveal::popup(
+        popup.bottom,
+        popup.attachment,
+        popup.radius,
+        popup.color,
+        popup.shadow,
+    );
+    reveal.shape_input = shape_input;
     view_fitted(
         content,
         popup.visible,
@@ -119,13 +140,7 @@ pub(crate) fn popup_fitted<'a>(
         },
         popup.hidden,
         &popup.theme,
-        enzui_shell::reveal::Reveal::popup(
-            popup.bottom,
-            popup.attachment,
-            popup.radius,
-            popup.color,
-            popup.shadow,
-        ),
+        reveal,
         popup.input,
         fit,
         popup.glass,

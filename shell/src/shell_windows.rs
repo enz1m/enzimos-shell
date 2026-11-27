@@ -134,7 +134,17 @@ impl Shell {
             Message::Window(id, event) if self.assistant.owns(id) => {
                 self.assistant_window_event(id, &event)
             }
-            Message::Escape(id) if self.assistant.owns(id) => self.assistant_escape(id),
+            Message::Escape(id) if self.assistant.owns(id) => {
+                if self
+                    .desired_settings
+                    .assistant_shortcuts
+                    .contains_key(&enzui_shell::shortcut_map::AssistantShortcut::Close)
+                {
+                    Task::none()
+                } else {
+                    self.assistant_escape(id)
+                }
+            }
             Message::Opened(id) if self.assistant.owns(id) => self.assistant_mapped(id),
             Message::Window(id, event) if self.search.window == Some(id) => {
                 self.search_window(id, &event)

@@ -515,6 +515,7 @@ impl Shell {
                     Message::OverviewHidden(id),
                     &self.tokens().iced_theme(),
                     enzui_shell::reveal::Reveal {
+                        shape_input: false,
                         shape: enzui_shell::reveal::Shape::Overview {
                             left: self.desktop_edges().0 as f32,
                             right: self.desktop_edges().1 as f32,

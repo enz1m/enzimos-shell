@@ -239,6 +239,7 @@ pub(crate) fn rail<'a>(shell: &'a Shell, state: &'a Snapshot) -> Element<'a, Mes
         SlideDirection::Right
     };
     let reveal = enzui_shell::reveal::Reveal {
+        shape_input: false,
         shape: if shell.metrics.islands.is_some() {
             enzui_shell::reveal::Shape::FloatingRail {
                 right: state.side == SidebarEdge::Right,

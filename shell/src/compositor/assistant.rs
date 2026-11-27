@@ -2,7 +2,7 @@ use super::{
     Compositor, ControlGeometry,
     policy::{control_geometry, shadowed},
 };
-use crate::settings::{AssistantCorner, BarEdge, Metrics};
+use crate::settings::{AssistantCorner, BarEdge, MAX_ASSISTANT_WIDTH, Metrics};
 use enzui_shell::i18n::tr;
 use iced::{Rectangle, Size};
 
@@ -338,13 +338,12 @@ impl Compositor {
         Ok((name, layout))
     }
 
-    /// Places the assistant panel with room for its shadow.
+    /// Places the assistant surface at its maximum extent so the panel can reflow within it.
     pub async fn prepare_assistant_panel(
         &self,
         metrics: Metrics,
         bar: BarEdge,
         corner: AssistantCorner,
-        preferred_width: u16,
     ) -> Result<ControlGeometry, String> {
         let output = self.desktop_output().await?;
         control_geometry(&output)?;
@@ -358,7 +357,7 @@ impl Compositor {
             metrics,
             bar,
             corner,
-            Size::new(preferred_width.into(), PANEL_HEIGHT),
+            Size::new(MAX_ASSISTANT_WIDTH.into(), PANEL_HEIGHT),
         )?;
         let (x, y, w, h) = shadowed(
             rect.x,

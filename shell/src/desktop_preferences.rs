@@ -482,7 +482,7 @@ impl CompositorPreferences {
         self.keyboard_layouts = unique.join(",");
         Ok(())
     }
-    fn shortcut_keys(&self) -> crate::shortcut_map::KeyLabels {
+    pub(crate) fn shortcut_keys(&self) -> crate::shortcut_map::KeyLabels {
         let (layout, variant, options) = keyboard(self, &system_keyboard());
         crate::shortcut_map::KeyLabels::configured(&layout, &variant, &options)
     }

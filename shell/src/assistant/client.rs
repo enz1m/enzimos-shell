@@ -10,7 +10,7 @@ use std::{path::PathBuf, time::Duration};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tokio::time::Instant;
 
-use super::Screenshots;
+use super::{Screenshots, models::Choice};
 
 const MAX_FRAME: usize = 1 << 20;
 
@@ -42,14 +42,22 @@ fn owns_harness() -> bool {
 }
 
 /// Open a session in the first folder configured in Settings › Agents.
-pub(super) async fn open(mode: ApprovalMode, screenshots: Screenshots) -> Result<String, String> {
+pub(super) async fn open(
+    mode: ApprovalMode,
+    screenshots: Screenshots,
+    choice: Option<Choice>,
+) -> Result<String, String> {
     let mut fields = if socket() == agent_harness::socket_path() {
-        tokio::task::spawn_blocking(|| {
+        let choice = choice.clone();
+        tokio::task::spawn_blocking(move || {
             let config = agent_harness::load()?.unwrap_or_else(agent_harness::starter);
             let setup = agent_harness::summary(&config);
             let unset =
                 || tr("shell-choose-a-workspace-folder-in-settings-agents-first").to_owned();
             let workspace = setup.roots.first().cloned().ok_or_else(unset)?;
+            if let Some(choice) = choice {
+                return Ok(json!({"workspace": workspace, "model": choice.model, "provider": choice.provider}));
+            }
             let model = if setup.model.is_empty() && setup.provider != "local" {
                 agent_harness::models(&setup.gateway, &setup.provider)?
                     .into_iter()
@@ -64,6 +72,8 @@ pub(super) async fn open(mode: ApprovalMode, screenshots: Screenshots) -> Result
         })
         .await
         .map_err(|_| tr("shell-a-new-chat-could-not-be-started").to_owned())??
+    } else if let Some(choice) = choice {
+        json!({"provider": choice.provider, "model": choice.model})
     } else {
         json!({})
     };

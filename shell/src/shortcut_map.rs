@@ -486,6 +486,125 @@ fn overlaps(a: &str, b: &str, keys: &KeyLabels) -> bool {
     }
 }
 
+/// A keyboard action handled by the Assistant panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantShortcut {
+    /// Send the current message.
+    Send,
+    /// Insert a line break in the composer.
+    NewLine,
+    /// Return to the chat or dismiss the panel.
+    Close,
+    /// Move focus to the next control.
+    FocusNext,
+}
+
+impl AssistantShortcut {
+    /// The editable panel actions in display order.
+    pub const ALL: [Self; 4] = [Self::Send, Self::NewLine, Self::Close, Self::FocusNext];
+
+    /// Names the action in the desktop language.
+    pub fn label(self) -> &'static str {
+        tr(match self {
+            Self::Send => "shell-assistant-shortcut-send",
+            Self::NewLine => "shell-assistant-shortcut-newline",
+            Self::Close => "shell-assistant-shortcut-close",
+            Self::FocusNext => "shell-assistant-shortcut-tab",
+        })
+    }
+
+    /// The chord used without an override.
+    pub const fn default_chord(self) -> &'static str {
+        match self {
+            Self::Send => "Return",
+            Self::NewLine => "SHIFT + Return",
+            Self::Close => "Escape",
+            Self::FocusNext => "Tab",
+        }
+    }
+
+    /// The effective chord in this account.
+    pub fn chord(self, choices: &BTreeMap<Self, String>) -> &str {
+        choices
+            .get(&self)
+            .map_or_else(|| self.default_chord(), String::as_str)
+    }
+}
+
+/// Encodes an Assistant key event, including its unmodified navigation keys.
+pub fn assistant_chord(
+    key: &iced::keyboard::Key,
+    physical: iced::keyboard::key::Physical,
+    modifiers: iced::keyboard::Modifiers,
+) -> Option<Result<String, String>> {
+    use iced::keyboard::{Key, key::Named};
+    let named = match key {
+        Key::Named(Named::Enter) => Some("Return"),
+        Key::Named(Named::Escape) => Some("Escape"),
+        Key::Named(Named::Tab) => Some("Tab"),
+        _ => None,
+    };
+    if let Some(key) = named {
+        return Some(Ok(format_chord(Modifier::from_iced(modifiers), key)));
+    }
+    capture_chord(key, physical, modifiers)
+}
+
+fn checked_assistant_chord(chord: &str) -> Result<String, String> {
+    if let Some(shortcut) = from_chord(chord)
+        && matches!(
+            shortcut.key(),
+            ShortcutKey::Named(NamedKey::Enter | NamedKey::Escape | NamedKey::Tab)
+        )
+        && let Some(canonical) = to_chord(&shortcut)
+    {
+        return Ok(canonical);
+    }
+    checked_chord(chord)?.ok_or_else(|| tr("shell-invalid-keyboard-shortcuts").to_owned())
+}
+
+pub(crate) fn set_assistant_shortcut(
+    choices: &mut BTreeMap<AssistantShortcut, String>,
+    action: AssistantShortcut,
+    requested: Option<&str>,
+    desktop: &crate::desktop_preferences::CompositorPreferences,
+) -> Result<(), String> {
+    let requested = checked_assistant_chord(requested.unwrap_or_else(|| action.default_chord()))?;
+    let keys = desktop.shortcut_keys();
+    let local = AssistantShortcut::ALL
+        .into_iter()
+        .filter(|&other| other != action)
+        .map(|other| (other.chord(choices), other.label()));
+    let global = ACTIONS.iter().map(|other| {
+        (
+            chord(other, &desktop.shortcuts),
+            crate::i18n::label(other.name),
+        )
+    });
+    let custom = desktop
+        .custom_shortcuts
+        .values()
+        .map(|other| (other.chord.as_str(), other.name.as_str()));
+    if let Some((_, name)) = local
+        .chain(global)
+        .chain(custom)
+        .find(|(chord, _)| overlaps(chord, &requested, &keys))
+    {
+        return Err(conflict(&keys, &requested, name));
+    }
+    if requested == action.default_chord() {
+        choices.remove(&action);
+    } else {
+        choices.insert(action, requested);
+    }
+    Ok(())
+}
+
+fn conflict(keys: &KeyLabels, chord: &str, action: &str) -> String {
+    tr!("shell-shortcuts-conflict", "shortcut" => keys.badge(chord), "action" => action.to_owned())
+}
+
 fn checked_chord(chord: &str) -> Result<Option<String>, String> {
     if chord.is_empty() {
         return Ok(None);
@@ -526,8 +645,7 @@ pub(crate) fn validate(
                 } else {
                     (&key, *prior_name)
                 };
-                return Err(tr!("shell-shortcuts-conflict",
-                    "shortcut" => keys.badge(requested), "action" => assigned.to_owned()));
+                return Err(conflict(keys, requested, assigned));
             }
             taken.push((key, id, name));
         }

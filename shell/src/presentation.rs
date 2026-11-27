@@ -475,14 +475,25 @@ impl<Message: Clone> Widget<Message, iced::Theme, iced::Renderer> for Slide<'_, 
         if let Some(input) = &self.input {
             let _commit = input.commit_together();
             let island = self.reveal.is_some_and(crate::reveal::Reveal::is_island);
-            let frame = self.frame(
-                tree.state.downcast_ref::<SlideState>(),
-                layout.bounds().size(),
-            );
-            if island || self.fit.is_some() {
+            let bounds = layout.bounds();
+            let origin = Vector::new(bounds.x, bounds.y);
+            let mut frame = self.frame(tree.state.downcast_ref::<SlideState>(), bounds.size());
+            if let Some(frame) = &mut frame {
+                for (rect, _) in &mut frame.fills {
+                    *rect += origin;
+                }
+                for (rect, _, _) in &mut frame.corners {
+                    *rect += origin;
+                }
+            }
+            if island || self.fit.is_some() || self.reveal.is_some_and(|reveal| reveal.shape_input)
+            {
                 match &frame {
                     Some(frame) if self.interactive && frame.extended => {
-                        input.shape(frame, layout.bounds().size());
+                        input.shape(
+                            frame,
+                            Size::new(bounds.x + bounds.width, bounds.y + bounds.height),
+                        );
                     }
                     _ => {
                         input.empty();

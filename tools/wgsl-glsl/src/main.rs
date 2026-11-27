@@ -22,6 +22,11 @@ fn main() {
     header.push_str("struct Binding {\n    const char* name;\n    unsigned binding;\n};\nstruct Program {\n    const char* vertex;\n    const char* fragment;\n    Binding blocks[4];\n    unsigned blockCount;\n    Binding samplers[4];\n    unsigned samplerCount;\n};\n\n");
     for (name, file, vertex, fragment) in programs {
         let source = std::fs::read_to_string(format!("{dir}/{file}")).unwrap_or_else(|error| fail(&format!("{file}: {error}")));
+        let source = if file == "material.wgsl" {
+            compositor_corners(source)
+        } else {
+            source
+        };
         let source = format!("const ENCODED: bool = true;\n{source}");
         let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|error| fail(&error.emit_to_string(&source)));
         let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
@@ -80,6 +85,28 @@ fn main() {
     }
     header.push_str("} // namespace EnzMaterialShaders\n");
     std::fs::write(out, header).unwrap_or_else(|error| fail(&format!("{out}: {error}")));
+}
+
+fn compositor_corners(mut source: String) -> String {
+    for (from, to) in [
+        ("    policy: vec4<f32>,", "    policy: vec4<f32>,\n    corners: vec4<f32>,"),
+        (
+            "fn rounded_sdf(p: vec2<f32>, radius: f32) -> f32 {",
+            "fn rounded_sdf(p: vec2<f32>, minimum: f32) -> f32 {
+    let offset = p - u.region.xy;
+    let left = select(u.corners.z, u.corners.x, offset.y < 0.0);
+    let right = select(u.corners.w, u.corners.y, offset.y < 0.0);
+    let radius = max(select(right, left, offset.x < 0.0), minimum);",
+        ),
+        ("return rounded_sdf(p, u.shape.x);", "return rounded_sdf(p, 0.0);"),
+        ("min(max(u.shape.x, rim), short_half)", "min(rim, short_half)"),
+    ] {
+        if source.matches(from).count() != 1 {
+            fail(&format!("material.wgsl: expected one occurrence of {from}"));
+        }
+        source = source.replace(from, to);
+    }
+    source
 }
 
 fn fail(message: &str) -> ! {

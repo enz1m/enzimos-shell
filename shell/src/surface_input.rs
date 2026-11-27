@@ -152,13 +152,20 @@ pub fn luminance_changes() -> tokio::sync::watch::Receiver<u64> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GlassRegion {
     pub bounds: Rectangle,
-    pub radius: f32,
+    pub radius: border::Radius,
     pub tint: Color,
 }
 /// Defers [`SurfaceInput`] commits until dropped; see [`SurfaceInput::commit_together`].
 pub struct CommitTogether<'a> {
     input: &'a SurfaceInput,
     owner: bool,
+    with_buffer: bool,
+}
+impl CommitTogether<'_> {
+    pub(crate) fn with_buffer(mut self) -> Self {
+        self.with_buffer = true;
+        self
+    }
 }
 impl Drop for CommitTogether<'_> {
     fn drop(&mut self) {
@@ -173,7 +180,9 @@ impl Drop for CommitTogether<'_> {
             .and_then(|mut batch| batch.take())
             .unwrap_or(false);
         if owed && inner.surface.is_alive() {
-            inner.surface.commit();
+            if !self.with_buffer {
+                inner.surface.commit();
+            }
             let _ = inner.globals.0.connection.flush();
         }
     }
@@ -268,7 +277,11 @@ impl SurfaceInput {
             batch.get_or_insert(false);
             owner
         });
-        CommitTogether { input: self, owner }
+        CommitTogether {
+            input: self,
+            owner,
+            with_buffer: false,
+        }
     }
     fn commit(&self) -> bool {
         if let Ok(mut batch) = self.0.batch.lock()
@@ -333,9 +346,16 @@ impl SurfaceInput {
         });
         let fills: Vec<_> = regions
             .iter()
-            .map(|(r, radius)| (*r, border::Radius::from(*radius)))
+            .map(|&(bounds, radius)| (bounds, radius.into()))
             .collect();
-        match raster(&fills, &[], canvas) {
+        self.shaped_regions(&fills, canvas)
+    }
+    pub(crate) fn shaped_regions(
+        &self,
+        regions: &[(Rectangle, border::Radius)],
+        canvas: Size,
+    ) -> bool {
+        match raster(regions, &[], canvas) {
             Some(spans) => self.apply(Mask::Spans(spans)),
             None => {
                 self.empty();
@@ -366,7 +386,7 @@ impl SurfaceInput {
             .iter()
             .map(|&(bounds, radius)| GlassRegion {
                 bounds,
-                radius,
+                radius: radius.into(),
                 tint,
             })
             .collect();
@@ -388,6 +408,7 @@ impl SurfaceInput {
         regions: impl IntoIterator<Item = (GlassRegion, enzui_theme::MaterialTokens)>,
         shadow: Option<(f32, f32, f32)>,
     ) -> bool {
+        let independent_corners = self.glass_supports_corners();
         let bytes: Vec<u8> = regions
             .into_iter()
             .take(32)
@@ -398,12 +419,13 @@ impl SurfaceInput {
                 let tint = light_frost_tint(&tokens, region.tint)
                     .into_rgba8()
                     .map(|channel| f32::from(channel) / 255.0);
+                let radius = region.radius;
                 [
                     rect.x,
                     rect.y,
                     rect.width.max(0.0),
                     rect.height.max(0.0),
-                    region.radius.max(0.0),
+                    radius.top_left.max(0.0),
                     t.blur_sigma,
                     t.refraction,
                     t.bevel_width,
@@ -425,6 +447,13 @@ impl SurfaceInput {
                     tint[2],
                     tint[3],
                 ]
+                .into_iter()
+                .chain(
+                    [radius.top_right, radius.bottom_left, radius.bottom_right]
+                        .into_iter()
+                        .map(|r| r.max(0.0))
+                        .take(if independent_corners { 3 } else { 0 }),
+                )
             })
             .map(|value| if value.is_finite() { value } else { 0.0 })
             .flat_map(f32::to_le_bytes)
@@ -486,6 +515,14 @@ impl SurfaceInput {
             .material
             .as_ref()
             .is_some_and(wayland_client::Proxy::is_alive)
+    }
+    pub fn glass_supports_corners(&self) -> bool {
+        self.0
+            .globals
+            .0
+            .material
+            .as_ref()
+            .is_some_and(|manager| manager.is_alive() && manager.version() >= 4)
     }
     pub fn clear_glass(&self) {
         let _ = self.send_glass(Vec::new(), Default::default());
@@ -549,16 +586,22 @@ impl SurfaceInput {
             );
             glass.shadow = shadow;
         }
-        let count = bytes.len() / (25 * 4);
+        let independent_corners = object.version() >= 4;
+        let record_bytes = if independent_corners { 28 * 4 } else { 25 * 4 };
+        let count = bytes.len() / record_bytes;
         if glass
             .sent
             .as_ref()
-            .is_none_or(|sent| sent.len() / (25 * 4) != count)
+            .is_none_or(|sent| sent.len() / record_bytes != count)
             && let Ok(mut luminance) = self.0.backdrop.luminance.lock()
         {
             luminance.clear();
         }
-        object.set_regions(bytes.clone());
+        if independent_corners {
+            object.set_regions_with_corners(bytes.clone());
+        } else {
+            object.set_regions(bytes.clone());
+        }
         glass.sent = Some(bytes);
         // Double-buffered: an unchanged pixel buffer may be reused (a new
         // shell colour waited for the content's next repaint), so the
@@ -676,7 +719,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Discovery {
             if interface == "wl_compositor" && state.compositor.is_none() {
                 state.compositor = Some(registry.bind(name, version.min(4), qh, ()));
             } else if interface == "enzui_material_manager_v1" && state.material.is_none() {
-                state.material = Some(registry.bind(name, version.min(2), qh, ()));
+                state.material = Some(registry.bind(name, version.min(4), qh, ()));
             } else if interface == "wp_alpha_modifier_v1" && state.alpha.is_none() {
                 state.alpha = Some(registry.bind(name, 1, qh, ()));
             }
@@ -1093,7 +1136,21 @@ mod tests {
                 requests(&mut server).last(),
                 Some(&(surface, SURFACE_COMMIT))
             );
+            let hide = input.commit_together().with_buffer();
             input.clear_glass();
+            input.empty();
+            drop(hide);
+            let pending = requests(&mut server);
+            assert!(pending.contains(&(surface, SURFACE_SET_INPUT_REGION)));
+            assert!(
+                pending
+                    .iter()
+                    .any(|&(id, opcode)| id != surface && opcode == MATERIAL_SET_REGIONS)
+            );
+            assert_eq!(commits(&pending), 0);
+
+            input.0.surface.commit();
+            input.0.globals.0.connection.flush().unwrap();
             assert_eq!(commits(&requests(&mut server)), 1);
         }
     }

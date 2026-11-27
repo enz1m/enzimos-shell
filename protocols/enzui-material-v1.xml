@@ -17,7 +17,7 @@
     the client's to make and the compositor never guesses an appearance.
   </description>
 
-  <interface name="enzui_material_manager_v1" version="3">
+  <interface name="enzui_material_manager_v1" version="4">
     <request name="destroy" type="destructor">
       <description summary="unbind the manager">
         Existing surface materials are unaffected.
@@ -37,7 +37,7 @@
     </enum>
   </interface>
 
-  <interface name="enzui_surface_material_v1" version="3">
+  <interface name="enzui_surface_material_v1" version="4">
     <request name="destroy" type="destructor">
       <description summary="stop painting glass">
         The regions are removed on the surface's next commit.
@@ -116,6 +116,16 @@
         a protocol error.
       </description>
       <arg name="cutouts" type="array"/>
+    </request>
+
+    <request name="set_regions_with_corners" since="4">
+      <description summary="replace the glass regions with independent corner radii">
+        Double-buffered like set_regions, with the same validation and limit.
+        Each record has 28 floats. The first 25 use the set_regions layout,
+        with the top-left radius in slot 4. Slots 25–27 are the top-right,
+        bottom-left and bottom-right radii in surface-local logical pixels.
+      </description>
+      <arg name="regions" type="array"/>
     </request>
 
     <enum name="error">

@@ -109,14 +109,17 @@ pub enum InputMask {
     /// Popups capture across the entire surface.
     Full,
     /// Input follows each rounded rectangle.
-    Rounded(Vec<(Rectangle, f32)>),
+    Rounded {
+        regions: Vec<(Rectangle, iced::border::Radius)>,
+        canvas: Size,
+    },
 }
 
 /// Publishes the draw's input and glass regions in the same surface commit.
 pub fn fixed_glass_with_input<'a, Message: 'a>(
     content: Element<'a, Message>,
     glass: WindowGlass,
-    regions: Vec<(Rectangle, f32)>,
+    regions: Vec<(Rectangle, iced::border::Radius)>,
     input_mask: InputMask,
 ) -> Element<'a, Message> {
     Element::new(Root {
@@ -138,7 +141,12 @@ pub fn fixed_glass_with_extra<'a, Message: 'a>(
     Element::new(Root {
         content,
         glass,
-        fixed_regions: Some(regions),
+        fixed_regions: Some(
+            regions
+                .into_iter()
+                .map(|(bounds, radius)| (bounds, radius.into()))
+                .collect(),
+        ),
         extra,
         input_mask: None,
     })
@@ -221,7 +229,7 @@ impl<'a, Message: 'a> From<GlassPane<'a, Message>> for Element<'a, Message> {
 struct Root<'a, Message> {
     content: Element<'a, Message>,
     glass: WindowGlass,
-    fixed_regions: Option<Vec<(Rectangle, f32)>>,
+    fixed_regions: Option<Vec<(Rectangle, iced::border::Radius)>>,
     extra: Option<(Rectangle, f32, MaterialStyle)>,
     input_mask: Option<InputMask>,
 }
@@ -241,7 +249,10 @@ impl<Message> Root<'_, Message> {
 
 // Changes in glass availability or ink require another frame until the drawn state agrees.
 #[derive(Default)]
-struct Drawn(Cell<Option<(bool, Option<u8>)>>);
+struct Drawn {
+    appearance: Cell<Option<(bool, Option<u8>)>>,
+    fixed_regions: RefCell<Vec<(Rectangle, iced::border::Radius)>>,
+}
 
 impl WindowGlass {
     fn drawn(&self, material: Option<MaterialStyle>) -> (bool, Option<u8>) {
@@ -353,7 +364,8 @@ trait Stale {
 }
 impl<Message> Stale for Root<'_, Message> {
     fn stale(&self, tree: &Tree) -> bool {
-        tree.state.downcast_ref::<Drawn>().0.get() != Some(self.glass.drawn(self.material()))
+        tree.state.downcast_ref::<Drawn>().appearance.get()
+            != Some(self.glass.drawn(self.material()))
     }
 }
 impl<Message> Stale for GlassPane<'_, Message> {
@@ -381,21 +393,32 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Root<'_, Message>
         viewport: &Rectangle,
     ) {
         let input = self.glass.input.as_ref();
-        let _commit = self
-            .input_mask
-            .as_ref()
-            .and_then(|_| input.map(SurfaceInput::commit_together));
+        let material = self.material();
+        let drawn = tree.state.downcast_ref::<Drawn>();
+        let _commit = self.input_mask.as_ref().and(input).map(|input| {
+            let batch = input.commit_together();
+            let visible = if material.is_some() {
+                self.fixed_regions.as_deref().unwrap_or_default()
+            } else {
+                &[]
+            };
+            let mut previous = drawn.fixed_regions.borrow_mut();
+            if previous.as_slice() == visible {
+                batch
+            } else {
+                previous.clear();
+                previous.extend_from_slice(visible);
+                // Publish moving or disappearing glass with the matching buffer.
+                batch.with_buffer()
+            }
+        });
         if let Some((input, mask)) = input.zip(self.input_mask.as_ref()) {
             match mask {
                 InputMask::Full => input.reset(),
-                InputMask::Rounded(regions) => input.rounded_regions(regions),
+                InputMask::Rounded { regions, canvas } => input.shaped_regions(regions, *canvas),
             };
         }
-        let material = self.material();
-        tree.state
-            .downcast_ref::<Drawn>()
-            .0
-            .set(Some(self.glass.drawn(material)));
+        drawn.appearance.set(Some(self.glass.drawn(material)));
         if self.glass.pending && input.is_none() && self.glass.style.is_some() {
             return;
         }
@@ -451,7 +474,7 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Root<'_, Message>
                     });
                 let region = crate::surface_input::GlassRegion {
                     bounds,
-                    radius,
+                    radius: radius.into(),
                     tint: self.glass.tint,
                 };
                 let tokens = crate::reveal::glass_tokens(extra, reduced);
@@ -494,7 +517,7 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for GlassPane<'_, Mes
             cell.borrow_mut().as_mut().map(|placed| {
                 placed.panes.push(crate::surface_input::GlassRegion {
                     bounds: shape,
-                    radius: self.radius,
+                    radius: self.radius.into(),
                     tint: placed.tint,
                 });
                 placed.theme.clone()

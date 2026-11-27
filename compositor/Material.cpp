@@ -48,7 +48,9 @@ static Render::IHyprRenderer& renderer() { return **rendererSlot; }
 namespace EnzMaterial {
 
 constexpr size_t REGION_FLOATS = 25;
+constexpr size_t CORNER_REGION_FLOATS = 28;
 constexpr size_t MAX_REGIONS = 32;
+constexpr size_t MATERIAL_UNIFORM_FLOATS = 36;
 // The framework's own limits (iced_wgpu material.rs), so the same tokens
 // spend the same filter.
 constexpr float MAX_BLUR_SIGMA = 32.0F;
@@ -59,12 +61,17 @@ struct Tokens {
     float blur_sigma, refraction, bevel_width, index_of_refraction, dispersion, color_diffusion, color_reach, optical_depth, tint_opacity, saturation,
         highlight, brightness, light_angle, profile_curvature, contrast_protection, protected_inset;
 };
-struct Region {
+struct RegionRecord {
     float x, y, w, h, radius;
     Tokens t;
     float tint[4];
 };
-static_assert(sizeof(Region) == REGION_FLOATS * sizeof(float));
+static_assert(sizeof(RegionRecord) == REGION_FLOATS * sizeof(float));
+
+struct Region : RegionRecord {
+    std::array<float, 4> corners;
+    bool independentCorners;
+};
 
 struct Shadow {
     float blur = 0, offset = 0, opacity = 0;
@@ -126,31 +133,45 @@ static Material* forSurface(CWLSurfaceResource* surface) {
 
 static void materialDestroy(wl_client*, wl_resource* resource) { wl_resource_destroy(resource); }
 
-static bool finite(const Region& r) {
-    const float* v = reinterpret_cast<const float*>(&r);
-    for (size_t i = 0; i < REGION_FLOATS; ++i)
-        if (!std::isfinite(v[i]))
-            return false;
-    return r.w >= 0 && r.h >= 0 && r.radius >= 0;
-}
-
-static void materialSetRegions(wl_client*, wl_resource* resource, wl_array* array) {
+static void setRegions(wl_resource* resource, wl_array* array, bool independentCorners) {
     auto it = materials.find(resource);
     if (it == materials.end())
         return;
-    if (array->size % (REGION_FLOATS * sizeof(float)) != 0 || array->size / (REGION_FLOATS * sizeof(float)) > MAX_REGIONS) {
-        wl_resource_post_error(resource, ENZUI_SURFACE_MATERIAL_V1_ERROR_INVALID_REGIONS, "regions must be whole 25-float records, at most 32");
+    const size_t count = independentCorners ? CORNER_REGION_FLOATS : REGION_FLOATS;
+    const size_t recordBytes = count * sizeof(float);
+    if (array->size % recordBytes != 0 || array->size / recordBytes > MAX_REGIONS) {
+        wl_resource_post_error(resource, ENZUI_SURFACE_MATERIAL_V1_ERROR_INVALID_REGIONS, "expected whole region records, at most 32");
         return;
     }
-    std::vector<Region> regions(array->size / sizeof(Region));
-    std::memcpy(regions.data(), array->data, array->size);
-    for (const auto& r : regions)
-        if (!finite(r)) {
-            wl_resource_post_error(resource, ENZUI_SURFACE_MATERIAL_V1_ERROR_INVALID_REGIONS, "a region is not finite or has a negative size");
+    std::vector<Region> regions;
+    regions.reserve(array->size / recordBytes);
+    const auto* bytes = static_cast<const char*>(array->data);
+    for (size_t offset = 0; offset < array->size; offset += recordBytes) {
+        std::array<float, CORNER_REGION_FLOATS> record{};
+        std::memcpy(record.data(), bytes + offset, recordBytes);
+        Region region{};
+        std::memcpy(static_cast<RegionRecord*>(&region), record.data(), sizeof(RegionRecord));
+        region.corners.fill(region.radius);
+        region.independentCorners = independentCorners;
+        if (independentCorners)
+            std::copy_n(record.begin() + REGION_FLOATS, 3, region.corners.begin() + 1);
+        if (!std::all_of(record.begin(), record.end(), [](float value) { return std::isfinite(value); }) ||
+            region.w < 0 || region.h < 0 || std::any_of(region.corners.begin(), region.corners.end(), [](float radius) { return radius < 0; })) {
+            wl_resource_post_error(resource, ENZUI_SURFACE_MATERIAL_V1_ERROR_INVALID_REGIONS, "a region is not finite or has a negative size or radius");
             return;
         }
+        regions.push_back(region);
+    }
     it->second->pending = std::move(regions);
     it->second->dirty = true;
+}
+
+static void materialSetRegions(wl_client*, wl_resource* resource, wl_array* array) {
+    setRegions(resource, array, false);
+}
+
+static void materialSetRegionsWithCorners(wl_client*, wl_resource* resource, wl_array* array) {
+    setRegions(resource, array, true);
 }
 
 static void materialSetShadow(wl_client*, wl_resource* resource, wl_fixed_t blur, wl_fixed_t offset, wl_fixed_t opacity) {
@@ -196,6 +217,7 @@ static const struct enzui_surface_material_v1_interface materialImpl = {
     .set_shadow = materialSetShadow,
     .set_measure_only = materialSetMeasureOnly,
     .set_cutouts = materialSetCutouts,
+    .set_regions_with_corners = materialSetRegionsWithCorners,
 };
 
 // Match the material shader's 0.75-pixel antialias band in damage and cache bounds.
@@ -378,7 +400,7 @@ static const struct enzui_material_manager_v1_interface managerImpl = {
 };
 
 static void bindManager(wl_client* client, void*, uint32_t version, uint32_t id) {
-    auto resource = wl_resource_create(client, &enzui_material_manager_v1_interface, std::min<uint32_t>(version, 3), id);
+    auto resource = wl_resource_create(client, &enzui_material_manager_v1_interface, std::min<uint32_t>(version, 4), id);
     if (!resource) {
         wl_client_post_no_memory(client);
         return;
@@ -428,8 +450,9 @@ uniform vec4 shape;
 uniform vec4 shadow;
 out vec4 frag;
 float sdf(vec2 p) {
-    float radius = shape.x;
-    vec2 q = abs(p - region.xy) - region.zw + radius;
+    vec2 delta = p - region.xy;
+    float radius = delta.y < 0.0 ? (delta.x < 0.0 ? shape.x : shape.y) : (delta.x < 0.0 ? shape.z : shape.w);
+    vec2 q = abs(delta) - region.zw + radius;
     return length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - radius;
 }
 void main() {
@@ -544,7 +567,7 @@ struct Target {
 struct GL {
     bool tried = false;
     GLuint filter = 0, material = 0, shadow = 0, probe = 0, fade = 0, vao = 0;
-    // The framework's uniform blocks: `Material` (binding 4) and `Filter` (1).
+    // Material (binding 4) extends the framework block with corner radii.
     GLuint materialBlock = 0, filterBlock = 0;
     // Source copy, filter scratch, blurred and diffused results; one texel per
     // measured region; a fading window's composite. A wide filter runs on a
@@ -566,7 +589,7 @@ struct GL {
             glGetIntegerv(GL_UNIFORM_BUFFER_BINDING, &previous);
             glGenBuffers(1, &materialBlock);
             glBindBuffer(GL_UNIFORM_BUFFER, materialBlock);
-            glBufferData(GL_UNIFORM_BUFFER, 32 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+            glBufferData(GL_UNIFORM_BUFFER, MATERIAL_UNIFORM_FLOATS * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
             glGenBuffers(1, &filterBlock);
             glBindBuffer(GL_UNIFORM_BUFFER, filterBlock);
             glBufferData(GL_UNIFORM_BUFFER, 8 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
@@ -756,7 +779,6 @@ static void eachDamaged(const CRegion& damage, F draw) {
 
 
 static float shortHalf(float w, float h) { return (w <= 0 || h <= 0) ? 0.F : std::min(w, h) / 2.F; }
-static float uniformRadius(const Region& r) { return std::clamp(r.radius, 0.F, shortHalf(r.w, r.h)); }
 static float bevelWidth(const Region& r) {
     const float half = shortHalf(r.w, r.h);
     return half <= 0 ? 0.F : std::max(0.F, std::min(r.t.bevel_width, half));
@@ -976,7 +998,8 @@ class GlassPass final : public IPassElement {
         glUniform4f(glGetUniformLocation(gl.shadow, "surface"), fbw, fbh, scale, 0);
         glUniform4f(glGetUniformLocation(gl.shadow, "region"), x + halfW, y + halfH, halfW, halfH);
         glUniform1f(glGetUniformLocation(gl.shadow, "reach"), reach);
-        glUniform4f(glGetUniformLocation(gl.shadow, "shape"), uniformRadius(r) * stretch.x * scale, 0, 0, 0);
+        const float sx = stretch.x * scale;
+        glUniform4f(glGetUniformLocation(gl.shadow, "shape"), r.corners[0] * sx, r.corners[1] * sx, r.corners[2] * sx, r.corners[3] * sx);
         glUniform4f(glGetUniformLocation(gl.shadow, "shadow"), shadow.blur * scale, shadow.offset * scale, shadow.opacity * alpha, 0);
         eachDamaged(damage, [] { glDrawArrays(GL_TRIANGLES, 0, 6); });
     }
@@ -1190,19 +1213,19 @@ class GlassPass final : public IPassElement {
                 continue;
             }
             const float sigma = blurSigma(r) * scale;
-            // Matches iced_core::material::Uniform in physical pixels; the
-            // copy's origin is the cluster's.
+            // The framework's uniform followed by the compositor corner radii, in physical pixels.
             const float sx = stretch.x * scale;
             auto block = [&](float originX, float originY, float surfaceW, float surfaceH, int cx0, int cy0) {
-                return std::array<float, 32>{
+                return std::array<float, MATERIAL_UNIFORM_FLOATS>{
                     surfaceW, surfaceH, scale, 0,
                     float(x + w / 2 - originX), float(y + h / 2 - originY), float(w / 2), float(h / 2),
-                    uniformRadius(r) * sx, bevelWidth(r) * sx, opticalDepth(r) * sx, r.t.profile_curvature,
+                    0, bevelWidth(r) * sx, opticalDepth(r) * sx, r.t.profile_curvature,
                     r.t.refraction, r.t.index_of_refraction, r.t.dispersion, sigma,
                     r.t.tint_opacity, r.t.saturation, r.t.color_diffusion, r.t.color_reach * scale,
                     r.t.highlight, r.t.brightness, r.t.light_angle * float(M_PI) / 180.F, r.t.contrast_protection,
                     r.tint[0], r.tint[1], r.tint[2], r.tint[3],
                     r.t.protected_inset * scale, float(cx0) - originX, float(cy0) - originY, r.t.tint_opacity >= 1.F ? 1.F : 0.F,
+                    r.corners[0] * sx, r.corners[1] * sx, r.corners[2] * sx, r.corners[3] * sx,
                 };
             };
             for (const auto& group : groups) {
@@ -1404,29 +1427,38 @@ static void addForWindow(PHLWINDOW w) {
     const auto size = w->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
     const float shownX = geometry.x, shownY = geometry.y;
     const float shownW = stretch.x > 0 ? size.x / stretch.x : 0.F, shownH = stretch.y > 0 ? size.y / stretch.y : 0.F;
+    const auto windowOrigin = origin + Vector2D{shownX, shownY} * stretch;
+    const bool coversOutput = std::abs(windowOrigin.x) <= 1 && std::abs(windowOrigin.y) <= 1 &&
+        std::abs(size.x - monitor->m_size.x) <= 1 && std::abs(size.y - monitor->m_size.y) <= 1;
     auto regions = m->current;
     for (auto& r : regions) {
         const float x0 = std::max(r.x, shownX), y0 = std::max(r.y, shownY);
         const float x1 = std::min(r.x + r.w, shownX + shownW), y1 = std::min(r.y + r.h, shownY + shownH);
-        r.x = x0;
-        r.y = y0;
-        r.w = std::max(0.F, x1 - x0);
-        r.h = std::max(0.F, y1 - y0);
-        r.radius = std::min(r.radius, std::min(r.w, r.h) / 2);
+        // An output-sized surface already clips at the framebuffer edge; keep the
+        // pane's original shape when it slides across that edge.
+        const bool keepShape = r.independentCorners && coversOutput && x1 > x0 && y1 > y0 && r.w <= shownW && r.h <= shownH;
+        if (!keepShape) {
+            r.x = x0;
+            r.y = y0;
+            r.w = std::max(0.F, x1 - x0);
+            r.h = std::max(0.F, y1 - y0);
+        }
+        for (auto& radius : r.corners)
+            radius = std::min(radius, shortHalf(r.w, r.h));
     }
-    // Hyprland rounds the window's corners after the glass is drawn beneath
-    // it: glass reaching a corner of the window keeps inside that rounding,
-    // so none shows past the border. A region has one radius, so one that
-    // reaches any corner is rounded: while a window grows ahead of its
-    // client, the glass reaches only the corners it shares with the window.
+    // Uniform panes also share the legacy radius at every corner.
     const float rounding = w->presentation().rounding();
     if (rounding > 0)
         for (auto& r : regions) {
             constexpr float NEAR = 1.F;
             const bool left = r.x <= shownX + NEAR, top = r.y <= shownY + NEAR;
             const bool right = r.x + r.w >= shownX + shownW - NEAR, bottom = r.y + r.h >= shownY + shownH - NEAR;
-            if ((left || right) && (top || bottom))
-                r.radius = std::max(r.radius, std::min(rounding, std::min(r.w, r.h) / 2));
+            const std::array touching{top && left, top && right, bottom && left, bottom && right};
+            const bool uniform = std::ranges::all_of(r.corners, [&](float radius) { return radius == r.corners.front(); });
+            const bool roundAll = uniform && (left || right) && (top || bottom);
+            for (size_t index = 0; index < touching.size(); ++index)
+                if (touching[index] || roundAll)
+                    r.corners[index] = std::max(r.corners[index], std::min(rounding, shortHalf(r.w, r.h)));
         }
     renderer().addPassElement(makeUnique<GlassPass>(std::move(regions), m->currentShadow, origin, stretch, w->presentation().alphaTotal(),
                                                     wl_resource_get_version(m->resource) >= 2 ? m : nullptr, m->currentMeasureOnly,
@@ -1447,7 +1479,7 @@ void init(HANDLE handle) {
     if (name.find("llvmpipe") != std::string_view::npos || name.find("softpipe") != std::string_view::npos || name.find("SwiftShader") != std::string_view::npos) {
         LOG(Log::DEBUG, "enzui-material: software renderer {}, no liquid glass", name);
     } else {
-        global = wl_global_create(compositor().m_wlDisplay, &enzui_material_manager_v1_interface, 3, nullptr, bindManager);
+        global = wl_global_create(compositor().m_wlDisplay, &enzui_material_manager_v1_interface, 4, nullptr, bindManager);
         if (!global)
             throw std::runtime_error("enzui-material: cannot create the global");
     }

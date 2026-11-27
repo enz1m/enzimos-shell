@@ -2274,31 +2274,47 @@ impl Shell {
         let palette = self.window_tokens(self.dock.window).palette;
         let input = self.dock.window.and_then(|id| self.surface_inputs.get(&id));
         let glass = self.dock_material().filter(|_| {
-            input.is_some_and(enzui_shell::surface_input::SurfaceInput::glass_supported)
+            input.is_some_and(|input| {
+                input.glass_supported() && (!g.framed || input.glass_supports_corners())
+            })
         });
         let preview = self.dock.preview.preview.as_ref().map(|p| p.bounds);
-        let screen = iced::Rectangle::new(iced::Point::ORIGIN, g.screen);
         let visible = g.body + offset;
+        let radius = iced::border::Radius::new(g.radius);
+        let radius = if g.framed {
+            match p.position {
+                Position::Left => radius.left(0.0),
+                Position::Right => radius.right(0.0),
+                Position::Top => radius.top(0.0),
+                _ => radius.bottom(0.0),
+            }
+        } else {
+            radius
+        };
         let mask = if self.dock.menu.is_some() {
             enzui_shell::desktop_glass::InputMask::Full
         } else {
-            let mut regions = if p.position == Position::Bar {
+            let regions = if p.position == Position::Bar {
                 preview.into_iter().map(|bounds| (bounds, 10.0)).collect()
             } else {
                 dock::input_regions(g, p, true, self.dock.fullscreen, preview)
             };
-            if p.position != Position::Bar
-                && !self.dock.hidden
-                && let Some(body) = visible.intersection(&screen)
-            {
-                let radius = if p.style == Style::Minimal || g.framed {
-                    0.0
+            let mut regions: Vec<_> = regions
+                .into_iter()
+                .map(|(bounds, radius)| (bounds, radius.into()))
+                .collect();
+            if p.position != Position::Bar && !self.dock.hidden && progress > 0.0 {
+                let input_radius = if p.style == Style::Minimal {
+                    0.0.into()
                 } else {
-                    g.radius
+                    radius
                 };
-                regions.push((body, radius));
+                regions.push((visible, input_radius));
             }
-            enzui_shell::desktop_glass::InputMask::Rounded(regions)
+            enzui_shell::desktop_glass::InputMask::Rounded {
+                regions,
+                canvas: g.screen,
+            }
         };
         let mut layers: Vec<Element<'_, Message>> =
             vec![space().width(Length::Fill).height(Length::Fill).into()];
@@ -2313,17 +2329,6 @@ impl Shell {
                 if !g.vertical {
                     scroll = scroll.axis(enzui_widgets::scroll_view::Axis::Horizontal);
                 }
-                let radius = iced::border::Radius::new(g.radius);
-                let radius = if g.framed {
-                    match p.position {
-                        Position::Left => radius.left(0.0),
-                        Position::Right => radius.right(0.0),
-                        Position::Top => radius.top(0.0),
-                        _ => radius.bottom(0.0),
-                    }
-                } else {
-                    radius
-                };
                 let shadow = if !g.framed
                     && p.style != Style::Minimal
                     && p.style != Style::Panel
@@ -2346,7 +2351,7 @@ impl Shell {
                     iced::Shadow::default()
                 };
                 let framed = g.framed;
-                let contour = if glass.is_none() && self.chrome_light() {
+                let contour = if self.chrome_light() {
                     palette.border_strong
                 } else {
                     palette.border
@@ -2420,7 +2425,7 @@ impl Shell {
             return view;
         };
         let regions = if glass.is_some() && p.position != Position::Bar && progress > 0.0 {
-            vec![(visible, if g.framed { 0.0 } else { g.radius })]
+            vec![(visible, radius)]
         } else {
             Vec::new()
         };
@@ -2432,11 +2437,15 @@ impl Shell {
                 tint: self.glass_tint(id, self.tokens().palette.surface),
                 light_ink: self.window_ink(id),
                 reduced_motion: self.tokens().motion.reduced_motion,
-                shadow: enzui_shell::desktop_frame::bar_glass_shadow(
-                    self.desired_settings.bar_shadow,
-                    self.light,
-                    p.position == Position::Bottom,
-                ),
+                shadow: (!g.framed && p.style != Style::Panel)
+                    .then(|| {
+                        enzui_shell::desktop_frame::bar_glass_shadow(
+                            self.desired_settings.bar_shadow,
+                            self.light,
+                            p.position == Position::Bottom,
+                        )
+                    })
+                    .flatten(),
                 pending: false,
             },
             regions,

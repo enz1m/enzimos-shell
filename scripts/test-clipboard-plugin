@@ -65,14 +65,17 @@ class ClipboardTest(unittest.TestCase):
         self.assertFalse(any(n.get('key') == 'status' for n in self.messages[-1]['elements'][0]['panel']['nodes']))
 
     def test_expiration_is_not_extended_by_duplicate_entries(self):
+        self.assertIsNone(self.clipboard.expiry_timeout())
         self.entry(1)
         self.now = 50
         self.entry(1)
-        self.now = 61
-        self.clipboard.handle({'type': 'ping', 'sequence': 1})
+        self.assertEqual(self.clipboard.expiry_timeout(), 10)
+        self.now = 60
+        self.assertEqual(self.clipboard.expiry_timeout(), 0)
+        self.assertTrue(self.clipboard.trim())
         self.assertFalse(self.clipboard.entries)
+        self.assertIsNone(self.clipboard.expiry_timeout())
         self.assertTrue(any(m.get('request', {}).get('blobs') == [f'{1:032x}'] for m in self.messages))
-        self.assertTrue(any(m.get('type') == 'pong' for m in self.messages))
 
     def test_size_eviction_and_live_config_reduction_release_oldest(self):
         self.entry(1, 700000)

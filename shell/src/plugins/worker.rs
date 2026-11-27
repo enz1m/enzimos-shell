@@ -72,17 +72,22 @@ impl Lines {
                 return Err(Fault::FrameTooLarge);
             }
             scanned = self.buffer.len();
-            let mut bytes = [0u8; 4096];
-            let limit = bytes.len().min(MAX_FRAME_BYTES + 1 - self.buffer.len());
-            let count = reader
-                .read(&mut bytes[..limit])
-                .await
-                .map_err(|_| Fault::Exited)?;
-            if count == 0 {
-                return Err(Fault::Exited);
-            }
-            self.buffer.extend_from_slice(&bytes[..count]);
+            self.read_chunk(reader).await?;
         }
+    }
+
+    async fn read_chunk<R: AsyncRead + Unpin>(&mut self, reader: &mut R) -> Result<(), Fault> {
+        let mut bytes = [0u8; 4096];
+        let limit = bytes.len().min(MAX_FRAME_BYTES + 1 - self.buffer.len());
+        let count = reader
+            .read(&mut bytes[..limit])
+            .await
+            .map_err(|_| Fault::Exited)?;
+        if count == 0 {
+            return Err(Fault::Exited);
+        }
+        self.buffer.extend_from_slice(&bytes[..count]);
+        Ok(())
     }
 }
 struct Rate {
@@ -230,6 +235,16 @@ impl Worker {
     pub async fn receive(&mut self) -> Result<Value, Fault> {
         self.receive_with_deadline(FRAME_DEADLINE).await
     }
+    pub(super) async fn receive_idle(&mut self) -> Result<Value, Fault> {
+        if self.stopped {
+            return Err(Fault::Exited);
+        }
+        if self.read_deadline.is_none() && self.lines.buffer.is_empty() {
+            self.lines.read_chunk(&mut self.output).await?;
+        }
+        self.receive_with_deadline(FRAME_DEADLINE).await
+    }
+
     async fn receive_with_deadline(&mut self, deadline: Duration) -> Result<Value, Fault> {
         if self.stopped {
             return Err(Fault::Exited);

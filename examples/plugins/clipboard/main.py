@@ -1,4 +1,6 @@
 import json
+import os
+import select
 import sys
 import time
 from collections import OrderedDict
@@ -27,6 +29,12 @@ class Clipboard:
     def release(self, handles):
         for offset in range(0, len(handles), 128):
             self.request('blobs.release', blobs=handles[offset:offset + 128])
+
+    def expiry_timeout(self):
+        if not self.entries:
+            return None
+        oldest = min(item['at'] for item in self.entries.values())
+        return max(0, oldest + self.config['retention_minutes'] * 60 - self.clock())
 
     def trim(self):
         now = self.clock()
@@ -176,10 +184,25 @@ def main():
     def send(value):
         print(json.dumps(value, separators=(',', ':'), ensure_ascii=False), flush=True)
     send({'type': 'hello', 'protocol': 1, 'plugin': 'clipboard'})
-    initial = json.loads(sys.stdin.readline())
-    clipboard = Clipboard(initial['config'], send)
-    for line in sys.stdin:
-        clipboard.handle(json.loads(line))
+    source = sys.stdin.fileno()
+    pending = b''
+    clipboard = None
+    while True:
+        timeout = clipboard.expiry_timeout() if clipboard is not None else None
+        if not select.select([source], [], [], timeout)[0]:
+            if clipboard.trim():
+                clipboard.snapshot()
+            continue
+        chunk = os.read(source, 65536)
+        if not chunk:
+            return
+        *frames, pending = (pending + chunk).split(b'\n')
+        for frame in frames:
+            message = json.loads(frame)
+            if clipboard is None:
+                clipboard = Clipboard(message['config'], send)
+            else:
+                clipboard.handle(message)
 
 
 if __name__ == '__main__':

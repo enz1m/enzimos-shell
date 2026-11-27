@@ -15,7 +15,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio::{
     sync::{mpsc, oneshot},
@@ -195,34 +195,50 @@ fn start_actor(
     let task = tokio::spawn(async move {
         let result=async {
             let mut worker=tokio::select!{biased; _=&mut stopping=>return Ok(()),worker=Worker::spawn(&pool,&package,actor_record.config(),actor_record.grants())=>worker?};
-            let mut heartbeat=tokio::time::interval(Duration::from_secs(1));heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            let mut sequence=0u64;let mut waiting:Option<(u64,Instant)>=None;let mut latest:Option<Arc<Snapshot>>=None;let mut request_id=0u64;
-            let result=loop {
-                let result=tokio::select!{
-                    _=&mut stopping=>break Ok(()),
-                    command=commands.recv()=>{
-                        match command {
-                            None=>break Ok(()),
-                            Some(ActorCommand::Input{element,revision,action,value,gesture})=>{
-                                if latest.as_ref().is_some_and(|ui|ui.revision==revision&&ui.permits_action(&element,&action,value)) {
-                                    worker.send(&json!({"type":"action","element":element,"revision":revision,"action":action,"value":value,"gesture":gesture})).await
-                                }else{Ok(())}
-                            },
-                            Some(ActorCommand::Reply{id,result})=>worker.send(&json!({"type":"response","id":id,"result":result})).await,
-                            Some(ActorCommand::Provider(data))=>worker.send(&json!({"type":"provider","data":data})).await,
-                            Some(ActorCommand::Config(config))=>worker.send(&json!({"type":"config","config":config})).await,
-                        }
-                    },
-                    _=heartbeat.tick()=>async {
-                        if waiting.as_ref().is_some_and(|(_,at)|at.elapsed()>Duration::from_secs(2)){Err(Fault::Deadline)}
-                        else if waiting.is_none(){sequence=sequence.checked_add(1).ok_or(Fault::Protocol)?;worker.send(&json!({"type":"ping","sequence":sequence})).await?;waiting=Some((sequence,Instant::now()));Ok(())}
-                        else{Ok(())}
+            let mut sequence = 0u64;
+            let mut pong_deadline = None;
+            let mut needs_ping = true;
+            let mut latest: Option<Arc<Snapshot>> = None;
+            let mut request_id = 0u64;
+            let result = loop {
+                let result = tokio::select! {
+                    _ = &mut stopping => break Ok(()),
+                    command = commands.recv() => {
+                        let frame = match command {
+                            None => break Ok(()),
+                            Some(ActorCommand::Input { element, revision, action, value, gesture }) => {
+                                if !latest.as_ref().is_some_and(|ui| {
+                                    ui.revision == revision && ui.permits_action(&element, &action, value)
+                                }) {
+                                    continue;
+                                }
+                                json!({"type":"action","element":element,"revision":revision,"action":action,"value":value,"gesture":gesture})
+                            }
+                            Some(ActorCommand::Reply { id, result }) => json!({"type":"response","id":id,"result":result}),
+                            Some(ActorCommand::Provider(data)) => json!({"type":"provider","data":data}),
+                            Some(ActorCommand::Config(config)) => json!({"type":"config","config":config}),
+                        };
+                        needs_ping = true;
+                        worker.send(&frame).await
+                    }
+                    () = std::future::ready(()), if needs_ping && pong_deadline.is_none() => async {
+                        sequence = sequence.checked_add(1).ok_or(Fault::Protocol)?;
+                        worker.send(&json!({"type":"ping","sequence":sequence})).await?;
+                        pong_deadline = Some(tokio::time::Instant::now() + Duration::from_secs(3));
+                        needs_ping = false;
+                        Ok(())
                     }.await,
-                    frame=worker.receive()=>async {
+                    () = async { tokio::time::sleep_until(pong_deadline.expect("pending ping")).await },
+                        if pong_deadline.is_some() => Err(Fault::Deadline),
+                    frame=worker.receive_idle()=>async {
                         let frame=frame?;let output=protocol::decode(&frame,package.manifest(),actor_record.grants()).map_err(|_|Fault::Protocol)?;
                         match output {
                             Output::Ready=>Ok(()),
-                            Output::Pong(got)=>{if waiting.as_ref().is_some_and(|(expected,_)|*expected==got){waiting=None;Ok(())}else{Err(Fault::Protocol)}},
+                            Output::Pong(got) if got == sequence && pong_deadline.is_some() => {
+                                pong_deadline = None;
+                                Ok(())
+                            }
+                            Output::Pong(_) => Err(Fault::Protocol),
                             Output::Snapshot(snapshot)=>{
                                 if latest.as_ref().is_some_and(|old|snapshot.revision<=old.revision){Err(Fault::Protocol)}else{
                                     latest=Some(Arc::new(snapshot.clone()));events.send(ActorEvent::Output{owner:actor_owner.clone(),output:Output::Snapshot(snapshot)}).await.map_err(|_|Fault::Exited)
@@ -432,7 +448,8 @@ async fn run(
     let mut defaults_ready = false;
     // The shell's folder watch sends Refresh when the store changes; the timer
     // is only a safety net, for a store the watch cannot see.
-    let mut timer = tokio::time::interval(Duration::from_secs(10));
+    let fallback = Duration::from_secs(60);
+    let mut timer = tokio::time::interval_at(tokio::time::Instant::now() + fallback, fallback);
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         if refresh {

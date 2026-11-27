@@ -12,7 +12,8 @@ bundler packages source without approving or executing it. See
 The worker first sends `{"type":"hello","protocol":1,"plugin":"its-id"}` and
 reads the host initialization/configuration. Subsequent newline-delimited JSON
 frames are bounded to 64 KiB, with existing rate/deadline limits. Answer each
-`ping` with a `pong` carrying the same `sequence`. `config` replaces the complete
+`ping` with a `pong` carrying the same `sequence`. Idle workers can go without
+input indefinitely, so schedule worker maintenance independently. `config` replaces the complete
 typed configuration. `snapshot` replaces declarative UI and has a monotonically
 increasing positive `revision`. Actions are checked against the current owner,
 revision, element and enabled action; an action message contains a host-generated

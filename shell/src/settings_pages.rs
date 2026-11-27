@@ -517,6 +517,17 @@ impl SettingsApp {
                 .into_element(),
             );
         }
+        let body = if self.layout_preview
+            && let Some(dock) = self.dock_settings()
+        {
+            body.push(
+                self.section_card_for("dock/enabled", dock)
+                    .title(tr("shell-dock"))
+                    .into_element(),
+            )
+        } else {
+            body
+        };
         let body = body.push(
             self.section_card_for("controls/network", self.control_editor())
                 .title(tr("shell-quick-controls"))
@@ -799,7 +810,11 @@ impl SettingsApp {
                         || !matches!(entry.page(), "plugins" | "notifications" | "bar-layout")
                 })
                 .filter(|entry| entry.page() != "wallpaper" || self.wallpaper.supported)
+                .filter(|entry| {
+                    entry.route.strip_prefix("dock/").is_none_or(|route| self.dock_route_shown(route))
+                })
                 .filter(|entry| self.route_shown(*entry))
+                .take(30)
                 .collect();
             if entries.is_empty() {
                 body = body.push(

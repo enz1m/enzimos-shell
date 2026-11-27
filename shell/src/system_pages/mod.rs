@@ -302,6 +302,9 @@ impl SettingsApp {
     }
 
     pub(super) fn route_ready(&self, route: &str) -> bool {
+        if route.starts_with("dock/") {
+            return self.dock_settings_ready();
+        }
         if route.starts_with("users/") {
             return self.users_ready();
         }
@@ -358,6 +361,7 @@ impl SettingsApp {
     /// Whether a catalog route is listed: its page and the setting itself.
     pub(super) fn route_shown(&self, entry: enzui_shell::settings_catalog::Entry) -> bool {
         self.category_available(entry.category())
+            && self.local_ai_route_shown(entry.route)
             && enzui_shell::platform::shows(self.system.platform.as_ref(), entry.route)
     }
     /// Whether a launch request or search choice for `route` is refused:

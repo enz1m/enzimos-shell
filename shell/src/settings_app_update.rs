@@ -6,6 +6,7 @@ impl SettingsApp {
     /// for the current choice, such as the wallpaper kind.
     fn show_route_section(&mut self, route: &str) {
         use enzui_shell::desktop_preferences::WallpaperKind;
+        self.reveal_local_ai_route(route);
         if route == "wallpaper/color" {
             self.wallpaper.reveal_color_editor();
         }
@@ -240,7 +241,7 @@ impl SettingsApp {
                 self.highlighted = None;
                 self.reveal_pending = true;
                 self.menu = None;
-                Task::none()
+                self.read_local_ai_for_search()
             }
             Message::Menu(key, open) => {
                 // The trigger opens and, pressed again, closes its menu.

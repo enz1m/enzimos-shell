@@ -301,6 +301,5 @@ pub fn search(query: &str) -> Vec<Entry> {
             entry.title(),
         )
     });
-    found.truncate(30);
     found
 }

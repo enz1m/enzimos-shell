@@ -99,6 +99,11 @@ const SECTIONS: &[Section] = &[
     },
     Section {
         category: Category::Shell,
+        label: "shell-dock",
+        route: "dock/enabled",
+    },
+    Section {
+        category: Category::Shell,
         label: "shell-quick-controls",
         route: "controls/network",
     },
@@ -521,6 +526,7 @@ impl SettingsApp {
                             | "plugins/installed"
                     )
             })
+            .filter(|s| s.route != "dock/enabled" || self.dock_route_shown("enabled"))
             .filter(|s| s.route != "wallpaper/source" || self.wallpaper.supported)
             .filter(|s| {
                 s.route != "sizing/frame_width"

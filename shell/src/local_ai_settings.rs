@@ -266,6 +266,47 @@ impl SettingsApp {
         }
     }
 
+    pub(super) fn local_ai_route_shown(&self, route: &str) -> bool {
+        let inference = self
+            .local_ai
+            .inference
+            .as_ref()
+            .and_then(|state| state.as_ref().ok());
+        match route {
+            "agents/local-ai-enable" | "agents/local-ai-import" | "agents/speech-import" => {
+                self.model_import_offered()
+            }
+            "agents/default-text-model" => {
+                self.local_ai.enabled && inference.is_some_and(|state| !state.models.is_empty())
+            }
+            "agents/add-ai-provider" => self.local_ai.gateway.as_ref().is_some_and(Result::is_ok),
+            _ if route.starts_with("agents/runtime-") => {
+                self.local_ai.enabled && inference.is_some()
+            }
+            _ => true,
+        }
+    }
+
+    pub(super) fn reveal_local_ai_route(&mut self, route: &str) {
+        if route.starts_with("agents/runtime-") && route != "agents/runtime-options" {
+            self.local_ai.advanced = true;
+        }
+    }
+
+    pub(super) fn read_local_ai_for_search(&mut self) -> Task<ParentMessage> {
+        if self.local_ai.inference.is_some() || self.local_ai.reading {
+            return Task::none();
+        }
+        if enzui_shell::settings_catalog::search(&self.filter)
+            .iter()
+            .any(|entry| !self.local_ai_route_shown(entry.route))
+        {
+            self.local_ai_read()
+        } else {
+            Task::none()
+        }
+    }
+
     pub(super) fn local_ai_read(&mut self) -> Task<ParentMessage> {
         if self.local_ai.reading || self.local_ai.inference.is_some() {
             return Task::none();
@@ -597,7 +638,8 @@ impl SettingsApp {
                     .into_element(),
             );
         }
-        let choice = |title: &'static str,
+        let choice = |route: &'static str,
+                      title: &'static str,
                       subtitle: &'static str,
                       id: &'static str,
                       names: Vec<String>,
@@ -614,15 +656,19 @@ impl SettingsApp {
                 .width(220)
                 .id(id.into())
                 .into_element();
-            crate::settings_app::settings_row(title)
-                .subtitle(subtitle)
-                .control(control)
-                .into_element()
+            self.mark_setting(
+                route,
+                crate::settings_app::settings_row(title)
+                    .subtitle(subtitle)
+                    .control(control)
+                    .into_element(),
+            )
         };
         if !inference.models.is_empty() {
             let models = inference.models.clone();
             let current_model = models.iter().position(|m| *m == p.default_model);
             rows = rows.push(choice(
+                "agents/default-text-model",
                 tr("shell-model-default-text"),
                 tr("shell-used-when-an-app-or-the-assistant-does-not-ask-for-one"),
                 "local-ai-model",
@@ -635,28 +681,32 @@ impl SettingsApp {
             ));
         }
         rows = rows.push(
-            crate::settings_app::settings_row(tr("shell-model-runtime-options"))
-                .icon("sliders-horizontal")
-                .control(
-                    enz_button(
-                        if self.local_ai.advanced {
-                            tr("shell-hide")
-                        } else {
-                            tr("shell-show")
-                        },
-                        send(Message::ToggleAdvanced),
+            self.mark_setting(
+                "agents/runtime-options",
+                crate::settings_app::settings_row(tr("shell-model-runtime-options"))
+                    .icon("sliders-horizontal")
+                    .control(
+                        enz_button(
+                            if self.local_ai.advanced {
+                                tr("shell-hide")
+                            } else {
+                                tr("shell-show")
+                            },
+                            send(Message::ToggleAdvanced),
+                        )
+                        .id("local-ai-advanced".into())
+                        .kind(ButtonKind::Secondary)
+                        .into_element(),
                     )
-                    .id("local-ai-advanced".into())
-                    .kind(ButtonKind::Secondary)
                     .into_element(),
-                )
-                .into_element(),
+            ),
         );
         if !self.local_ai.advanced {
             return rows;
         }
         let threads: [Option<u8>; 3] = [None, Some(1), Some(2)];
         rows = rows.push(choice(
+            "agents/runtime-threads",
             tr("shell-processor-threads"),
             tr("shell-how-much-of-the-processor-a-request-may-use"),
             "local-ai-threads",
@@ -670,6 +720,7 @@ impl SettingsApp {
         ));
         let memory = presets(p.memory_mib, &[512, 1024, 1536, 1900, 2048]);
         rows = rows.push(choice(
+            "agents/runtime-memory",
             tr("shell-memory-limit"),
             tr("shell-larger-models-need-more"),
             "local-ai-memory",
@@ -682,6 +733,7 @@ impl SettingsApp {
         ));
         let idle = presets(p.idle_seconds, &[30, 60, 300, 900, 3600]);
         rows = rows.push(choice(
+            "agents/runtime-idle",
             tr("shell-free-memory-when-idle"),
             tr("shell-the-model-unloads-after-this-long-without-a-request"),
             "local-ai-idle",
@@ -691,6 +743,7 @@ impl SettingsApp {
         ));
         let context = presets(p.context, &[4096, 6144, 8192]);
         rows = rows.push(choice(
+            "agents/runtime-context",
             tr("shell-context-length"),
             tr("shell-how-much-text-a-request-can-carry-longer-uses-more-memory"),
             "local-ai-context",
@@ -721,6 +774,7 @@ impl SettingsApp {
             .collect();
         let selected = engines.iter().position(|e| *e == p.backend);
         rows = rows.push(choice(
+            "agents/runtime-engine",
             enzui_shell::i18n::tr("shell-engine"),
             tr("shell-automatic-picks-the-qualified-one-for-this-computer"),
             "local-ai-engine",
@@ -901,7 +955,7 @@ impl SettingsApp {
                 .padding([4, 16]),
             );
         }
-        form.into()
+        self.mark_setting("agents/add-ai-provider", form)
     }
 
     fn model_title<'a>(&'a self, id: &'a str) -> &'a str {
@@ -1020,18 +1074,21 @@ impl SettingsApp {
                     .control(model)
                     .into_element()
             ),
-            settings_row(tr("writing-shortcut"))
-                .control(
-                    enz_button(
-                        tr("writing-shortcut-edit"),
-                        ParentMessage::Section("keyboard/shortcut-writing-tools")
+            self.mark_setting(
+                "agents/writing-shortcut",
+                settings_row(tr("writing-shortcut"))
+                    .control(
+                        enz_button(
+                            tr("writing-shortcut-edit"),
+                            ParentMessage::Section("keyboard/shortcut-writing-tools")
+                        )
+                        .kind(ButtonKind::Secondary)
+                        .enabled(self.controls_live())
+                        .id("writing-shortcut-edit".into())
+                        .into_element()
                     )
-                    .kind(ButtonKind::Secondary)
-                    .enabled(self.controls_live())
-                    .id("writing-shortcut-edit".into())
-                    .into_element()
-                )
-                .into_element(),
+                    .into_element(),
+            ),
         ]
         .spacing(2);
         if let Some(error) = &state.writing_error {
@@ -1051,12 +1108,15 @@ impl SettingsApp {
         let mut on_device = column![].spacing(2);
         if self.model_import_offered() {
             on_device = on_device.push(
-                crate::settings_app::settings_row(tr("shell-model-enable-local"))
-                    .icon("cpu")
-                    .subtitle(tr("shell-model-enable-local-description"))
-                    .switch(state.enabled, |enabled| send(Message::SetEnabled(enabled)))
-                    .enabled(!state.model_busy() && self.controls_live())
-                    .into_element(),
+                self.mark_setting(
+                    "agents/local-ai-enable",
+                    crate::settings_app::settings_row(tr("shell-model-enable-local"))
+                        .icon("cpu")
+                        .subtitle(tr("shell-model-enable-local-description"))
+                        .switch(state.enabled, |enabled| send(Message::SetEnabled(enabled)))
+                        .enabled(!state.model_busy() && self.controls_live())
+                        .into_element(),
+                ),
             );
         }
         match &state.inference {
@@ -1109,12 +1169,17 @@ impl SettingsApp {
                     .control(add)
                     .into_element();
             on_device = on_device.push(
-                enzui_widgets::file_drop::enz_file_drop_target_with_receipt(target, |drop| {
-                    send(Message::Dropped(drop))
-                })
-                .enabled(!state.model_busy() && state.native_drop.is_none() && self.controls_live())
-                .copy_only(true)
-                .key("local-ai-model-import"),
+                self.mark_setting(
+                    "agents/local-ai-import",
+                    enzui_widgets::file_drop::enz_file_drop_target_with_receipt(target, |drop| {
+                        send(Message::Dropped(drop))
+                    })
+                    .enabled(
+                        !state.model_busy() && state.native_drop.is_none() && self.controls_live(),
+                    )
+                    .copy_only(true)
+                    .key("local-ai-model-import"),
+                ),
             );
         }
         on_device = self.available_model_rows(on_device, false);
@@ -1172,23 +1237,26 @@ impl SettingsApp {
         speech = self.available_model_rows(speech, true);
         if self.model_import_offered() {
             speech = speech.push(
-                crate::settings_app::settings_row(tr("shell-model-import-speech-folder"))
-                    .subtitle(tr("shell-model-import-speech-folder-description"))
-                    .subtitle_wrap(true)
-                    .icon("folder-open")
-                    .control(
-                        enz_button(
-                            tr("shell-model-browse"),
-                            ParentMessage::FileChooser(
-                                super::settings_file_chooser::Message::OpenModelFolder,
-                            ),
+                self.mark_setting(
+                    "agents/speech-import",
+                    crate::settings_app::settings_row(tr("shell-model-import-speech-folder"))
+                        .subtitle(tr("shell-model-import-speech-folder-description"))
+                        .subtitle_wrap(true)
+                        .icon("folder-open")
+                        .control(
+                            enz_button(
+                                tr("shell-model-browse"),
+                                ParentMessage::FileChooser(
+                                    super::settings_file_chooser::Message::OpenModelFolder,
+                                ),
+                            )
+                            .id("local-ai-speech-import".into())
+                            .kind(ButtonKind::Secondary)
+                            .enabled(!state.model_busy() && self.controls_live())
+                            .into_element(),
                         )
-                        .id("local-ai-speech-import".into())
-                        .kind(ButtonKind::Secondary)
-                        .enabled(!state.model_busy() && self.controls_live())
                         .into_element(),
-                    )
-                    .into_element(),
+                ),
             );
         }
         if let Some(notice) = self.local_ai_notice(Service::Inference) {

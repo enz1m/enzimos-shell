@@ -19,7 +19,7 @@ pub static ENTRIES: &[Entry] = &[
     entry!(
         Phone,
         "phone/overview",
-        "shell-phone-link",
+        "shell-phone-enable",
         "shell-phone-devices",
         "shell-phone-link-keywords"
     ),
@@ -956,6 +956,132 @@ pub static ENTRIES: &[Entry] = &[
     ),
     entry!(
         Shell,
+        "dock/enabled",
+        "shell-dock",
+        "shell-dock",
+        "shell-dock-search-enabled"
+    ),
+    entry!(
+        Shell,
+        "dock/visible",
+        "shell-dock-show",
+        "shell-dock",
+        "shell-dock-search-visible"
+    ),
+    entry!(
+        Shell,
+        "dock/position",
+        "shell-position",
+        "shell-dock",
+        "shell-dock-search-position"
+    ),
+    entry!(
+        Shell,
+        "dock/style",
+        "shell-style",
+        "shell-dock",
+        "shell-dock-search-style"
+    ),
+    entry!(
+        Shell,
+        "dock/visibility",
+        "shell-dock-visibility",
+        "shell-dock",
+        "shell-dock-search-visibility"
+    ),
+    entry!(
+        Shell,
+        "dock/icon_size",
+        "shell-icon-size",
+        "shell-dock",
+        "shell-dock-search-icon-size"
+    ),
+    entry!(
+        Shell,
+        "dock/spacing",
+        "shell-dock-icon-spacing",
+        "shell-dock",
+        "shell-dock-search-spacing"
+    ),
+    entry!(
+        Shell,
+        "dock/radius",
+        "shell-dock-radius",
+        "shell-dock",
+        "shell-dock-search-radius"
+    ),
+    entry!(
+        Shell,
+        "dock/highlight_radius",
+        "shell-dock-highlight-radius",
+        "shell-dock",
+        "shell-dock-search-highlight-radius"
+    ),
+    entry!(
+        Shell,
+        "dock/margin",
+        "shell-dock-margin",
+        "shell-dock",
+        "shell-dock-search-margin"
+    ),
+    entry!(
+        Shell,
+        "dock/show_running",
+        "shell-dock-show-running",
+        "shell-dock",
+        "shell-dock-search-show-running"
+    ),
+    entry!(
+        Shell,
+        "dock/current_desktop",
+        "shell-dock-current-desktop",
+        "shell-dock",
+        "shell-dock-search-current-desktop"
+    ),
+    entry!(
+        Shell,
+        "dock/pins",
+        "shell-dock-app-favorites",
+        "shell-dock",
+        "shell-dock-search-pins"
+    ),
+    entry!(
+        Shell,
+        "dock/folders",
+        "shell-dock-folder-favorites",
+        "shell-dock",
+        "shell-dock-search-folders"
+    ),
+    entry!(
+        Shell,
+        "dock/hover_previews",
+        "shell-dock-live-previews",
+        "shell-dock",
+        "shell-dock-search-hover-previews"
+    ),
+    entry!(
+        Shell,
+        "dock/overview",
+        "shell-dock-window-overview",
+        "shell-dock",
+        "shell-dock-search-overview"
+    ),
+    entry!(
+        Shell,
+        "dock/applications",
+        "shell-dock-app-launcher",
+        "shell-dock",
+        "shell-dock-search-applications"
+    ),
+    entry!(
+        Shell,
+        "dock/downloads",
+        "shell-dock-downloads",
+        "shell-dock",
+        "shell-dock-search-downloads"
+    ),
+    entry!(
+        Shell,
         "plugins/installed",
         "shell-installed-plugins",
         "shell-plugins",
@@ -964,7 +1090,7 @@ pub static ENTRIES: &[Entry] = &[
     entry!(
         Shell,
         "plugins/install",
-        "shell-install-a-plugin",
+        "shell-local-package",
         "shell-plugins",
         "shell-package-review-permissions-extension"
     ),
@@ -1790,8 +1916,8 @@ pub static ENTRIES: &[Entry] = &[
     entry!(
         Agents,
         "agents/writing-tools",
-        "writing-tools",
         "writing-enabled",
+        "writing-tools",
         "writing-search-keywords"
     ),
     entry!(
@@ -1810,15 +1936,99 @@ pub static ENTRIES: &[Entry] = &[
     ),
     entry!(
         Agents,
+        "agents/default-text-model",
+        "shell-model-default-text",
+        "shell-on-device-ai",
+        "shell-ai-search-default-text-model"
+    ),
+    entry!(
+        Agents,
+        "agents/runtime-options",
+        "shell-model-runtime-options",
+        "shell-on-device-ai",
+        "shell-ai-search-runtime-options"
+    ),
+    entry!(
+        Agents,
+        "agents/runtime-threads",
+        "shell-processor-threads",
+        "shell-on-device-ai",
+        "shell-ai-search-runtime-threads"
+    ),
+    entry!(
+        Agents,
+        "agents/runtime-memory",
+        "shell-memory-limit",
+        "shell-on-device-ai",
+        "shell-ai-search-runtime-memory"
+    ),
+    entry!(
+        Agents,
+        "agents/runtime-idle",
+        "shell-free-memory-when-idle",
+        "shell-on-device-ai",
+        "shell-ai-search-runtime-idle"
+    ),
+    entry!(
+        Agents,
+        "agents/runtime-context",
+        "shell-context-length",
+        "shell-on-device-ai",
+        "shell-ai-search-runtime-context"
+    ),
+    entry!(
+        Agents,
+        "agents/runtime-engine",
+        "shell-engine",
+        "shell-on-device-ai",
+        "shell-ai-search-runtime-engine"
+    ),
+    entry!(
+        Agents,
         "agents/voice-typing",
-        "shell-voice-typing",
+        "shell-model-default-speech",
         "shell-voice-typing",
         "shell-dictation-voice-typing-speech-quick-action"
     ),
     entry!(
         Agents,
         "agents/ai-providers",
+        "shell-default-provider",
         "shell-ai-providers",
+        "shell-ai-provider-cloud-default-openai-gateway-online"
+    ),
+    entry!(
+        Agents,
+        "agents/writing-shortcut",
+        "writing-shortcut",
+        "writing-tools",
+        "writing-search-keywords"
+    ),
+    entry!(
+        Agents,
+        "agents/local-ai-enable",
+        "shell-model-enable-local",
+        "shell-on-device-ai",
+        "shell-local-ai-model-inference-llm-memory-threads-context-engine-offline-private"
+    ),
+    entry!(
+        Agents,
+        "agents/local-ai-import",
+        "shell-model-import-file",
+        "shell-on-device-ai",
+        "shell-local-ai-model-inference-llm-memory-threads-context-engine-offline-private"
+    ),
+    entry!(
+        Agents,
+        "agents/speech-import",
+        "shell-model-import-speech-folder",
+        "shell-voice-typing",
+        "shell-dictation-voice-typing-speech-quick-action"
+    ),
+    entry!(
+        Agents,
+        "agents/add-ai-provider",
+        "shell-add-an-online-provider",
         "shell-ai-providers",
         "shell-ai-provider-cloud-default-openai-gateway-online"
     ),

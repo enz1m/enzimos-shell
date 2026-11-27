@@ -196,6 +196,28 @@ impl State {
     pub(super) fn select_from_launch(&mut self, id: Option<String>) {
         self.selected = id;
     }
+    fn dock(&self) -> Option<(&Record, &Package)> {
+        let data = self.data.as_ref()?;
+        let id = enzui_shell::plugins::applications::DOCK_PLUGIN;
+        let record = data
+            .registry
+            .entries
+            .iter()
+            .find(|record| record.id() == id)?;
+        Some((record, data.packages.get(id)?.as_ref()))
+    }
+
+    fn dock_route_shown(&self, route: &str) -> bool {
+        self.dock().is_some_and(|(_, package)| {
+            route == "enabled"
+                || package
+                    .manifest()
+                    .settings
+                    .iter()
+                    .any(|spec| spec.key == route)
+        })
+    }
+
     /// Installed plugins' names by id.
     pub(super) fn names(&self) -> std::collections::BTreeMap<String, String> {
         self.data.as_ref().map_or_else(Default::default, |data| {
@@ -974,6 +996,176 @@ impl SettingsApp {
         body.into()
     }
 
+    pub(super) fn dock_route_shown(&self, route: &str) -> bool {
+        self.layout_preview && self.plugins.dock_route_shown(route)
+    }
+
+    pub(super) fn dock_settings_ready(&self) -> bool {
+        !self.layout_preview || self.plugins.data.is_some() || self.plugins.read_error.is_some()
+    }
+
+    pub(super) fn dock_settings(&self) -> Option<Element<'_, AppMessage>> {
+        let (record, package) = self.plugins.dock()?;
+        let enabled = self.plugins.enabled(record);
+        let id = record.id().to_owned();
+        let toggle = self.dependent(enabled || runtime_available(), || {
+            self.switch_setting("dock/enabled", enabled, move |value| {
+                message(Message::Enable(id.clone(), value))
+            })
+        });
+        let rows = self.plugin_config_rows(record, package, !self.closing, true);
+        Some(column![toggle, rows].spacing(4).into())
+    }
+
+    fn plugin_config_rows<'a>(
+        &'a self,
+        record: &'a Record,
+        package: &'a Package,
+        enabled: bool,
+        inline: bool,
+    ) -> iced::widget::Column<'a, AppMessage> {
+        let id = record.id();
+        let palette = self.tokens().palette;
+        let mut rows = column![].spacing(4);
+        for spec in &package.manifest().settings {
+            let current = self.plugins.config(record, &spec.key);
+            let plugin = id.to_owned();
+            let key = spec.key.clone();
+            let dock = id == enzui_shell::plugins::applications::DOCK_PLUGIN;
+            let route = dock.then(|| format!("dock/{key}"));
+            let label = match route.as_deref().and_then(enzui_shell::settings_catalog::find) {
+                Some(entry) => entry.title(),
+                None => &spec.label,
+            };
+            let control_id = if inline {
+                format!("control-dock/{key}")
+            } else {
+                format!("plugin-{id}-{key}")
+            };
+            let control: Element<'_, AppMessage> = match &spec.kind {
+                SettingKind::DockFolders => {
+                    let folders = current.as_array().map(Vec::as_slice).unwrap_or_default();
+                    let mut pinned = column![enz_text(label).into_element()].spacing(4);
+                    if folders.is_empty() {
+                        pinned = pinned.push(
+                            enz_text(tr("shell-dock-drop-folder"))
+                                .size(enzui_widgets::text::TextSize::Caption)
+                                .into_element(),
+                        );
+                    }
+                    for path in folders.iter().filter_map(|folder| {
+                        folder.as_str().and_then(enzui_shell::dock::folder_path)
+                    }) {
+                        pinned = pinned.push(
+                            enz_text(path.to_string_lossy().into_owned())
+                                .single_line_elided()
+                                .muted_on(palette.surface)
+                                .into_element(),
+                        );
+                    }
+                    pinned.padding([6, 10]).into()
+                }
+                SettingKind::Applications { .. } => {
+                    let ids = current
+                        .as_array()
+                        .map(|v| {
+                            v.iter()
+                                .filter_map(Value::as_str)
+                                .map(|v| v.trim_start_matches("app:"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_default();
+                    column![enz_text(label).into_element(),enz_text(if ids.is_empty() {tr("shell-no-favorites-yet").into()} else {ids}).muted_on(palette.surface).into_element(),enz_text(tr("shell-right-click-applications-in-search-or-the-dock-to-change-favorites")).size(enzui_widgets::text::TextSize::Caption).into_element()].spacing(4).padding([6, 10]).into()
+                }
+                // The same rows as every other preference: the name on
+                // the left, its control on the right. Labels above
+                // full-width fields read as a different app.
+                SettingKind::Toggle { .. } => crate::settings_app::settings_row(label)
+                    .id_prefix(control_id)
+                    .switch(current.as_bool().unwrap_or(false), move |v| {
+                        message(Message::Config(plugin.clone(), key.clone(), json!(v)))
+                    })
+                    .enabled(enabled)
+                    .into_element(),
+                SettingKind::Integer { min, max, .. } => crate::settings_app::settings_row(label)
+                    .control(
+                        enz_stepper(current.as_i64().unwrap_or(*min) as i32, move |v| {
+                            message(Message::Config(plugin.clone(), key.clone(), json!(v)))
+                        })
+                        .aria_label(label)
+                        .min(*min as i32)
+                        .max(*max as i32)
+                        .id(control_id)
+                        .enabled(enabled)
+                        .into_element(),
+                    )
+                    .enabled(enabled)
+                    .into_element(),
+                SettingKind::Choice {
+                    choices, labels, ..
+                } => {
+                    let choice_label = |value: &str| {
+                        use enzui_shell::dock::{Position, Style, Visibility};
+                        let translated = if dock {
+                            match key.as_str() {
+                                "position" => Position::ALL
+                                    .iter()
+                                    .find(|p| p.key() == value)
+                                    .map(|p| p.label()),
+                                "style" => Style::ALL
+                                    .iter()
+                                    .find(|s| s.key() == value)
+                                    .map(|s| s.label()),
+                                "visibility" => Visibility::ALL
+                                    .iter()
+                                    .find(|v| v.key() == value)
+                                    .map(|v| v.label()),
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        };
+                        translated.map_or_else(
+                            || labels.get(value).map_or(value, String::as_str).to_owned(),
+                            str::to_owned,
+                        )
+                    };
+                    let mapping = choices
+                        .iter()
+                        .map(|v| (choice_label(v), v.clone()))
+                        .collect::<BTreeMap<_, _>>();
+                    let field = enz_combo_box(
+                        "",
+                        choices.iter().map(|v| choice_label(v)).collect(),
+                        current.as_str().map(choice_label),
+                        move |v| {
+                            message(Message::Config(
+                                plugin.clone(),
+                                key.clone(),
+                                json!(mapping.get(&v).unwrap_or(&v)),
+                            ))
+                        },
+                    )
+                    .aria_label(label)
+                    .id_prefix(control_id)
+                    .size(enzui_widgets::text_field::TextFieldSize::Sm)
+                    .enabled(enabled)
+                    .into_element();
+                    crate::settings_app::settings_row(label)
+                        .control(field)
+                        .enabled(enabled)
+                        .into_element()
+                }
+            };
+            rows = rows.push(match route {
+                Some(route) if inline => self.mark_setting(&route, control),
+                _ => control,
+            });
+        }
+        rows
+    }
+
     pub(super) fn plugin_details_dialog(&self) -> Option<Element<'_, AppMessage>> {
         let data = self.plugins.data.as_ref()?;
         let record = self
@@ -998,155 +1190,7 @@ impl SettingsApp {
                 .enabled(enabled)
                 .into_element(),
             );
-            for spec in &package.manifest().settings {
-                let current = self.plugins.config(record, &spec.key);
-                let plugin = id.clone();
-                let key = spec.key.clone();
-                let label = if id == enzui_shell::plugins::applications::DOCK_PLUGIN {
-                    match key.as_str() {
-                        "visible" => tr("shell-dock-show"),
-                        "position" => tr("shell-position"),
-                        "style" => tr("shell-style"),
-                        "visibility" => tr("shell-dock-visibility"),
-                        "icon_size" => tr("shell-icon-size"),
-                        "spacing" => tr("shell-dock-icon-spacing"),
-                        "radius" => tr("shell-dock-radius"),
-                        "highlight_radius" => tr("shell-dock-highlight-radius"),
-                        "margin" => tr("shell-dock-margin"),
-                        "show_running" => tr("shell-dock-show-running"),
-                        "current_desktop" => tr("shell-dock-current-desktop"),
-                        "pins" => tr("shell-dock-app-favorites"),
-                        "folders" => tr("shell-dock-folder-favorites"),
-                        "hover_previews" => tr("shell-dock-live-previews"),
-                        "overview" => tr("shell-dock-window-overview"),
-                        "applications" => tr("shell-dock-app-launcher"),
-                        "downloads" => tr("shell-dock-downloads"),
-                        _ => &spec.label,
-                    }
-                } else {
-                    &spec.label
-                };
-                let control: Element<'_, AppMessage> = match &spec.kind {
-                    SettingKind::DockFolders => {
-                        let folders = current.as_array().map(Vec::as_slice).unwrap_or_default();
-                        let mut pinned = column![enz_text(label).into_element()].spacing(4);
-                        if folders.is_empty() {
-                            pinned = pinned.push(
-                                enz_text(tr("shell-dock-drop-folder"))
-                                    .size(enzui_widgets::text::TextSize::Caption)
-                                    .into_element(),
-                            );
-                        }
-                        for path in folders.iter().filter_map(|folder| {
-                            folder.as_str().and_then(enzui_shell::dock::folder_path)
-                        }) {
-                            pinned = pinned.push(
-                                enz_text(path.to_string_lossy().into_owned())
-                                    .single_line_elided()
-                                    .muted_on(palette.surface)
-                                    .into_element(),
-                            );
-                        }
-                        pinned.padding([6, 10]).into()
-                    }
-                    SettingKind::Applications { .. } => {
-                        let ids = current
-                            .as_array()
-                            .map(|v| {
-                                v.iter()
-                                    .filter_map(Value::as_str)
-                                    .map(|v| v.trim_start_matches("app:"))
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            })
-                            .unwrap_or_default();
-                        column![enz_text(label).into_element(),enz_text(if ids.is_empty() {tr("shell-no-favorites-yet").into()} else {ids}).muted_on(palette.surface).into_element(),enz_text(tr("shell-right-click-applications-in-search-or-the-dock-to-change-favorites")).size(enzui_widgets::text::TextSize::Caption).into_element()].spacing(4).padding([6, 10]).into()
-                    }
-                    // The same rows as every other preference: the name on
-                    // the left, its control on the right. Labels above
-                    // full-width fields read as a different app.
-                    SettingKind::Toggle { .. } => crate::settings_app::settings_row(label)
-                        .id_prefix(format!("plugin-{id}-{}", spec.key))
-                        .switch(current.as_bool().unwrap_or(false), move |v| {
-                            message(Message::Config(plugin.clone(), key.clone(), json!(v)))
-                        })
-                        .enabled(enabled)
-                        .into_element(),
-                    SettingKind::Integer { min, max, .. } => {
-                        crate::settings_app::settings_row(label)
-                            .control(
-                                enz_stepper(current.as_i64().unwrap_or(*min) as i32, move |v| {
-                                    message(Message::Config(plugin.clone(), key.clone(), json!(v)))
-                                })
-                                .aria_label(label)
-                                .min(*min as i32)
-                                .max(*max as i32)
-                                .id(format!("plugin-{id}-{}", spec.key))
-                                .enabled(enabled)
-                                .into_element(),
-                            )
-                            .enabled(enabled)
-                            .into_element()
-                    }
-                    SettingKind::Choice {
-                        choices, labels, ..
-                    } => {
-                        let choice_label = |value: &str| {
-                            use enzui_shell::dock::{Position, Style, Visibility};
-                            let translated =
-                                if id == enzui_shell::plugins::applications::DOCK_PLUGIN {
-                                    match key.as_str() {
-                                        "position" => Position::ALL
-                                            .iter()
-                                            .find(|p| p.key() == value)
-                                            .map(|p| p.label()),
-                                        "style" => Style::ALL
-                                            .iter()
-                                            .find(|s| s.key() == value)
-                                            .map(|s| s.label()),
-                                        "visibility" => Visibility::ALL
-                                            .iter()
-                                            .find(|v| v.key() == value)
-                                            .map(|v| v.label()),
-                                        _ => None,
-                                    }
-                                } else {
-                                    None
-                                };
-                            translated.map_or_else(
-                                || labels.get(value).map_or(value, String::as_str).to_owned(),
-                                str::to_owned,
-                            )
-                        };
-                        let mapping = choices
-                            .iter()
-                            .map(|v| (choice_label(v), v.clone()))
-                            .collect::<BTreeMap<_, _>>();
-                        let field = enz_combo_box(
-                            "",
-                            choices.iter().map(|v| choice_label(v)).collect(),
-                            current.as_str().map(choice_label),
-                            move |v| {
-                                message(Message::Config(
-                                    plugin.clone(),
-                                    key.clone(),
-                                    json!(mapping.get(&v).unwrap_or(&v)),
-                                ))
-                            },
-                        )
-                        .aria_label(label)
-                        .id_prefix(format!("plugin-{id}-{}", spec.key))
-                        .size(enzui_widgets::text_field::TextFieldSize::Sm)
-                        .enabled(enabled)
-                        .into_element();
-                        crate::settings_app::settings_row(label)
-                            .control(field)
-                            .enabled(enabled)
-                            .into_element()
-                    }
-                };
-                details = details.push(control);
-            }
+            details = details.push(self.plugin_config_rows(record, package, enabled, false));
         } else {
             details=details.push(enz_text(tr("shell-package-is-missing-or-invalid-disable-or-remove-it-no-unverified-program-wil")).into_element());
         }
@@ -1240,6 +1284,43 @@ mod tests {
         app.plugins.data = Some(read(store).unwrap());
         (root, app, package)
     }
+    #[test]
+    fn dock_settings_search_reveals_installed_preferences() {
+        use enzui_shell::{i18n, settings_catalog};
+
+        let (_root, mut app, _) = fixture();
+        let store = app.plugins.store.as_ref().unwrap();
+        store.initialize_defaults().unwrap();
+        app.plugins.data = Some(read(store).unwrap());
+        i18n::canonical(|| {
+            let (_, package) = app.plugins.dock().unwrap();
+            for spec in &package.manifest().settings {
+                let route = format!("dock/{}", spec.key);
+                let entry = settings_catalog::find(&route).unwrap();
+                assert!(app.dock_route_shown(&spec.key));
+                assert!(
+                    settings_catalog::search(entry.title())
+                        .iter()
+                        .any(|entry| entry.route == route),
+                    "missing Dock result for {}",
+                    entry.title()
+                );
+            }
+            let first = settings_catalog::search("dock")[0];
+            assert_eq!(first.route, "dock/enabled");
+            assert!(
+                settings_catalog::search("autohide")
+                    .iter()
+                    .any(|entry| entry.route == "dock/visibility")
+            );
+            app.filter = "dock".into();
+            let _ = app.update(AppMessage::Reveal(first.route));
+            assert_eq!(app.page, super::super::Page::Shell);
+            assert_eq!(app.highlighted, Some(first.route));
+            assert!(app.filter.is_empty());
+        });
+    }
+
     #[test]
     fn approval_keeps_the_reviewed_bytes_and_explicitly_selected_grants() {
         let (_root, mut app, package) = fixture();

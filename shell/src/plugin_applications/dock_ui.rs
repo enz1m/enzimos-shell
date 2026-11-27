@@ -29,6 +29,7 @@ use iced::{
     window,
 };
 use std::{
+    collections::HashSet,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -49,6 +50,8 @@ pub(crate) enum Event {
     Loaded(u64, Result<Snapshot, String>),
     Prepared(u64, Result<(), String>),
     Hover(bool, bool),
+    TouchContact(iced::touch::Finger, bool),
+    RestorePointerHover(iced::Point),
     Hide(u64),
     Frame(window::Id, Instant),
     KeyboardReady(window::Id, Result<(), String>),
@@ -122,6 +125,8 @@ pub(crate) struct State {
     pub hovered: bool,
     pub hover_body: bool,
     pub hover_sensor: bool,
+    touches: HashSet<iced::touch::Finger>,
+    touch_cursor: bool,
     pub hide_serial: u64,
     hide_pending: bool,
     pub hidden: bool,
@@ -189,6 +194,8 @@ impl Default for State {
             hovered: false,
             hover_body: false,
             hover_sensor: false,
+            touches: HashSet::new(),
+            touch_cursor: false,
             hide_serial: 0,
             hide_pending: false,
             hidden: false,
@@ -570,6 +577,7 @@ impl Shell {
         self.dock.hovered = false;
         self.dock.hover_body = false;
         self.dock.hover_sensor = false;
+        self.dock.touches.clear();
         self.dock.hide_pending = false;
         self.dock.hide_serial = self.dock.hide_serial.wrapping_add(1);
         self.dock.sent_policy = None;
@@ -587,6 +595,7 @@ impl Shell {
         ]);
         if !self.dock.preferences.enabled {
             self.dock.strip = Default::default();
+            self.dock.touch_cursor = false;
             self.dock.entries.clear();
             self.dock.pinned = 0;
             self.dock.apps = Arc::default();
@@ -795,6 +804,7 @@ impl Shell {
             self.dock.hovered = false;
             self.dock.hover_body = false;
             self.dock.hover_sensor = false;
+            self.dock.touches.clear();
             self.dock.hide_pending = false;
             self.dock.hide_serial = self.dock.hide_serial.wrapping_add(1);
         }
@@ -934,8 +944,47 @@ impl Shell {
                 },
             );
         }
+        let restore_pointer = self.dock.touch_cursor && self.dock.touches.is_empty();
+        let touch = if let Some(target) = self.dock.window
+            && self.dock.preferences.position != Position::Bar
+            && matches!(
+                self.dock.preferences.visibility,
+                dock::Visibility::Always | dock::Visibility::Overlap
+            ) {
+            subscription::filter_map_with_interest(
+                ("dock-touch", target, restore_pointer),
+                iced::event::Interest::POINTER,
+                move |event| match event {
+                    subscription::Event::Interaction {
+                        window,
+                        event: iced::Event::Touch(event),
+                        ..
+                    } if window == target => match event {
+                        iced::touch::Event::FingerPressed { id, .. } => {
+                            Some(message(Event::TouchContact(id, true)))
+                        }
+                        iced::touch::Event::FingerLifted { id, .. }
+                        | iced::touch::Event::FingerLost { id, .. } => {
+                            Some(message(Event::TouchContact(id, false)))
+                        }
+                        _ => None,
+                    },
+                    subscription::Event::Interaction {
+                        window,
+                        event: iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }),
+                        ..
+                    } if window == target && restore_pointer => {
+                        Some(message(Event::RestorePointerHover(position)))
+                    }
+                    _ => None,
+                },
+            )
+        } else {
+            Subscription::none()
+        };
         Subscription::batch([
             animation,
+            touch,
             enzui_shell::launcher_badges::subscription(generation)
                 .map(|(generation, badges)| message(Event::Badges(generation, badges))),
             self.compositor
@@ -945,6 +994,25 @@ impl Shell {
                 .dock_changes()
                 .map(|()| message(Event::Changed)),
         ])
+    }
+    fn dock_hide_after(&mut self, delay: Duration) -> Task<Message> {
+        self.dock.hide_pending = true;
+        self.dock.hide_serial = self.dock.hide_serial.wrapping_add(1);
+        let serial = self.dock.hide_serial;
+        Task::perform(async move { tokio::time::sleep(delay).await }, move |()| {
+            message(Event::Hide(serial))
+        })
+    }
+    fn dock_pointer_hover(&mut self) -> Task<Message> {
+        self.dock.hovered = self.dock.hover_body || self.dock.hover_sensor;
+        if self.dock.hovered {
+            self.dock.hide_pending = false;
+            self.dock.hide_serial = self.dock.hide_serial.wrapping_add(1);
+            self.dock.hidden = false;
+            Task::none()
+        } else {
+            self.dock_hide_after(Duration::from_millis(400))
+        }
     }
     pub(crate) fn dock_event(&mut self, event: Event) -> Task<Message> {
         if !self.dock_active()
@@ -1094,7 +1162,7 @@ impl Shell {
                 open.map(Message::Opened)
             }
             Event::Hover(hovered, body) => {
-                if self.dock.fullscreen && self.dock.menu.is_none() {
+                if self.dock.touch_cursor || (self.dock.fullscreen && self.dock.menu.is_none()) {
                     return Task::none();
                 }
                 if body {
@@ -1102,20 +1170,42 @@ impl Shell {
                 } else {
                     self.dock.hover_sensor = hovered;
                 }
-                let hovered = self.dock.hover_body || self.dock.hover_sensor;
-                self.dock.hovered = hovered;
-                self.dock.hide_pending = !hovered;
-                self.dock.hide_serial = self.dock.hide_serial.wrapping_add(1);
-                let serial = self.dock.hide_serial;
-                if hovered {
-                    self.dock.hidden = false;
-                    Task::none()
-                } else {
-                    Task::perform(
-                        async { tokio::time::sleep(Duration::from_millis(400)).await },
-                        move |()| message(Event::Hide(serial)),
-                    )
+                self.dock_pointer_hover()
+            }
+            Event::RestorePointerHover(point) => {
+                let Some(geometry) = self.dock.geometry.as_ref() else {
+                    return Task::none();
+                };
+                if !self.dock.touch_cursor || !self.dock.touches.is_empty() || self.dock.fullscreen
+                {
+                    return Task::none();
                 }
+                self.dock.touch_cursor = false;
+                self.dock.hover_body = !self.dock.hidden && geometry.body.contains(point);
+                self.dock.hover_sensor = geometry.sensor.contains(point);
+                self.dock_pointer_hover()
+            }
+            Event::TouchContact(id, pressed) => {
+                if self.dock.fullscreen {
+                    return Task::none();
+                }
+                if pressed {
+                    // Iced retains the touch location as its cursor until real pointer motion.
+                    self.dock.touch_cursor = true;
+                    self.dock.touches.insert(id);
+                    self.dock.hovered = true;
+                    self.dock.hidden = false;
+                    self.dock.hide_pending = false;
+                    self.dock.hide_serial = self.dock.hide_serial.wrapping_add(1);
+                    return Task::none();
+                }
+                if !self.dock.touches.remove(&id) || !self.dock.touches.is_empty() {
+                    return Task::none();
+                }
+                self.dock.hover_body = false;
+                self.dock.hover_sensor = false;
+                self.dock.hovered = false;
+                self.dock_hide_after(Duration::from_millis(1600))
             }
             Event::Hide(serial) => {
                 if serial == self.dock.hide_serial {

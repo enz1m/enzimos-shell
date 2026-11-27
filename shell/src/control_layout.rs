@@ -89,8 +89,7 @@ impl Default for Layout {
             shapes: [Shape::Compact; QuickAction::ALL.len()],
             columns: 6,
         };
-        // Toggles whose glyph alone is ambiguous carry their name.
-        for action in [Network, Bluetooth, Appearance, Tiling] {
+        for action in [Network, Bluetooth, Phone, Appearance, Tiling] {
             value.set_shape(action, Shape::Pill);
         }
         for action in [Volume, Brightness] {

@@ -4963,6 +4963,7 @@ shell-phone-sharing = Sharing and streaming
 shell-pair-a-phone = Pair a phone
 shell-phone-link-keywords = phone android ios pair device battery clipboard notification files stream remote connect kdeconnect
 shell-phone-offline = No phone connected
+amount-phones-connected = { $count } connected
 shell-phone-qr-failed = Could not create a pairing code
 shell-phone-restart-needed = Restart Phone Link to apply the computer name or discovery change.
 shell-phone-number-needed = Enter a valid non-negative number.

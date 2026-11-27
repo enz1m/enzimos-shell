@@ -490,6 +490,7 @@ shell-phone-devices = Teléfonos
 shell-phone-sharing = Compartir y transmitir
 shell-phone-link-keywords = teléfono móvil android ios emparejar dispositivo batería portapapeles notificación archivos transmitir remoto conectar kdeconnect phone
 shell-phone-offline = Ningún teléfono conectado
+amount-phones-connected = { $count } con conexión
 shell-phone-qr-failed = No se pudo crear un código de emparejamiento
 shell-phone-restart-needed = Reinicia Phone Link para aplicar el cambio de nombre del equipo o de detección.
 shell-phone-number-needed = Introduce un número válido no negativo.

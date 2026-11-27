@@ -208,18 +208,20 @@ impl Info {
                     },
                     |presence| {
                         if presence.connected > 0 {
+                            let connected = enzui_shell::i18n::count(
+                                "amount-phones-connected",
+                                presence.connected,
+                            );
                             match presence.battery {
-                                Some(level) => {
-                                    format!("{} connected · {level}%", presence.connected)
-                                }
-                                None => format!("{} connected", presence.connected),
+                                Some(level) => format!("{connected} · {level}%"),
+                                None => connected,
                             }
                         } else {
-                            tr("shell-phone-offline").to_owned()
+                            tr("shell-not-connected").to_owned()
                         }
                     },
                 ),
-                Some(system.phone.is_some()),
+                None,
                 true,
                 false,
             ),
@@ -385,7 +387,12 @@ impl Info {
             // A wired connection is no switch, but it is on: its tile fills
             // like a connected Wi-Fi one.
             active: toggle == Some(true)
-                || (action == Network && !system.network.wifi_present && system.network.ethernet),
+                || (action == Network && !system.network.wifi_present && system.network.ethernet)
+                || (action == Phone
+                    && system
+                        .phone
+                        .as_ref()
+                        .is_some_and(|phone| phone.connected > 0)),
             toggle,
             enabled,
             primary_enabled: true,

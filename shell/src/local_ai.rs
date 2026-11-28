@@ -618,40 +618,66 @@ pub fn enabled() -> bool {
     disabled_path().is_none_or(|path| !path.exists())
 }
 
-pub fn set_enabled(enabled: bool) -> Result<(), String> {
+fn write_disabled_marker(path: &std::path::Path, enabled: bool) -> std::io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
+    if enabled {
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    } else {
+        if let Some(config) = path.parent() {
+            std::fs::create_dir_all(config)?;
+        }
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(path)
+            .map(|_| ())
+    }
+}
+
+/// Whether the streaming speech package is installed.
+pub fn streaming_speech_installed() -> bool {
+    std::path::Path::new("/usr/lib/systemd/user/enzimos-streaming-speech.service").is_file()
+}
+
+fn streaming_speech_marker() -> Option<PathBuf> {
+    disabled_path().map(|path| path.with_file_name("dictation-use-inference"))
+}
+
+/// Whether Voice Typing prefers the installed streaming speech service.
+pub fn streaming_speech_enabled() -> bool {
+    streaming_speech_marker().is_none_or(|path| !path.exists())
+}
+
+/// Set the speech backend preference for subsequent dictation takes.
+pub fn set_streaming_speech_enabled(enabled: bool) -> Result<(), String> {
+    let path = streaming_speech_marker()
+        .ok_or_else(|| tr("shell-model-configuration-unavailable").to_owned())?;
+    write_disabled_marker(&path, enabled).map_err(|error| error.to_string())
+}
+
+pub fn set_enabled(enabled: bool) -> Result<(), String> {
     let path =
         disabled_path().ok_or_else(|| tr("shell-model-configuration-unavailable").to_owned())?;
-    let write_marker = |enable: bool| -> std::io::Result<()> {
-        if enable {
-            match std::fs::remove_file(&path) {
-                Ok(()) => Ok(()),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(error),
-            }
-        } else {
-            if let Some(config) = path.parent() {
-                std::fs::create_dir_all(config)?;
-            }
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .mode(0o600)
-                .open(&path)
-                .map(|_| ())
-        }
-    };
     let was_enabled = !path.exists();
-    write_marker(enabled).map_err(|error| error.to_string())?;
-    let units = ["enzimos-inference.service", "enzimos-dictation.service"]
-        .into_iter()
-        .filter(|unit| {
-            std::path::Path::new("/usr/lib/systemd/user")
-                .join(unit)
-                .is_file()
-        })
-        .collect::<Vec<_>>();
+    write_disabled_marker(&path, enabled).map_err(|error| error.to_string())?;
+    let units = [
+        "enzimos-inference.service",
+        "enzimos-dictation.service",
+        "enzimos-streaming-speech.service",
+    ]
+    .into_iter()
+    .filter(|unit| {
+        std::path::Path::new("/usr/lib/systemd/user")
+            .join(unit)
+            .is_file()
+    })
+    .collect::<Vec<_>>();
     if units.is_empty() {
         return Ok(());
     }
@@ -667,7 +693,7 @@ pub fn set_enabled(enabled: bool) -> Result<(), String> {
     if result.as_ref().is_ok_and(|output| output.status.success()) {
         return Ok(());
     }
-    let _ = write_marker(was_enabled);
+    let _ = write_disabled_marker(&path, was_enabled);
     Err(tr("shell-model-service-change-failed").into())
 }
 

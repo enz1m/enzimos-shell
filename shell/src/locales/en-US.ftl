@@ -5591,6 +5591,9 @@ shell-portal-account-requester = { $app } wants to see your username, name, and 
 shell-user-switch-inhibited = An application is preventing user switching.
 
 shell-dictation-listening = Listening…
+shell-dictation-streaming-english = Streaming English
+shell-dictation-streaming-description = Recognizes English on this computer. Turn off to use the fallback speech model for other languages.
+shell-dictation-fallback-model = Fallback speech model
 shell-dictation-transcribing = Transcribing…
 shell-dictation-inserted = Inserted
 shell-dictation-copied = Copied
@@ -5751,3 +5754,7 @@ shell-assistant-web-fetch-tool = Fetch a web page
 shell-assistant-browser-open-tool = Open in Browser
 shell-assistant-browser-read-tool = Read Browser page
 shell-assistant-add-extension-tool = Add Assistant extension
+
+shell-dictation-fallback-uses = Uses { $arg0 } when Streaming English is off or unavailable.
+shell-dictation-fallback-unavailable = Download a speech model to dictate in other languages.
+welcome-streaming-english-included = Streaming English is included. Choose a fallback speech model if you want to dictate in other languages.

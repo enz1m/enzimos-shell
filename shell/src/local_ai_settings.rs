@@ -28,6 +28,7 @@ pub(super) struct State {
     benchmark_serial: u64,
     benchmarks: std::collections::BTreeMap<String, Result<local_ai::Benchmark, String>>,
     enabled: bool,
+    streaming_enabled: bool,
     writing: writing_tools::Preferences,
     writing_error: Option<String>,
     /// The provider being added: preset (past the presets: another), name, address, key.
@@ -44,6 +45,7 @@ type Readings = (
     Option<ChatGpt>,
     Vec<ModelOffer>,
     Vec<model_downloads::Reading>,
+    bool,
     bool,
     writing_tools::Preferences,
 );
@@ -69,6 +71,8 @@ pub(super) enum Message {
     Dropped(enzui_widgets::file_drop::FileDrop),
     /// Dictation uses this speech model.
     SpeechDefault(String),
+    StreamingSpeech(bool),
+    StreamingSpeechSet(Result<(), String>),
     Fetch(String),
     Queued(Result<(), String>),
     RefreshStatus,
@@ -154,6 +158,7 @@ fn read() -> Task<ParentMessage> {
                     catalog,
                     downloads,
                     local_ai::enabled(),
+                    local_ai::streaming_speech_enabled(),
                     writing_tools::Preferences::load(),
                 )
             })
@@ -165,6 +170,7 @@ fn read() -> Task<ParentMessage> {
                     None,
                     Vec::new(),
                     Vec::new(),
+                    false,
                     false,
                     Default::default(),
                 )
@@ -335,6 +341,7 @@ impl SettingsApp {
             "agents/default-text-model" => {
                 self.local_ai.enabled && inference.is_some_and(|state| !state.models.is_empty())
             }
+            "agents/streaming-speech" => local_ai::streaming_speech_installed(),
             "agents/add-ai-provider" => self.local_ai.gateway.as_ref().is_some_and(Result::is_ok),
             _ if route.starts_with("agents/runtime-") => {
                 self.local_ai.enabled && inference.is_some()
@@ -378,7 +385,16 @@ impl SettingsApp {
         match message {
             Message::Extensions(message) => return state.extensions.update(message, live),
             Message::Read(readings) => {
-                let (inference, gateway, chatgpt, offers, downloads, enabled, writing) = *readings;
+                let (
+                    inference,
+                    gateway,
+                    chatgpt,
+                    offers,
+                    downloads,
+                    enabled,
+                    streaming_enabled,
+                    writing,
+                ) = *readings;
                 state.reading = false;
                 if state.inference.as_ref() == Some(&inference)
                     && state.gateway.as_ref() == Some(&gateway)
@@ -386,6 +402,7 @@ impl SettingsApp {
                     && state.offers == offers
                     && state.downloads == downloads
                     && state.enabled == enabled
+                    && state.streaming_enabled == streaming_enabled
                     && state.writing == writing
                 {
                     return iced::window::invalidate(iced::window::Invalidation::none());
@@ -393,6 +410,7 @@ impl SettingsApp {
                 state.writing = writing;
                 state.downloads = downloads;
                 state.enabled = enabled;
+                state.streaming_enabled = streaming_enabled;
                 state.offers = offers;
                 state.inference = Some(inference);
                 state.gateway = Some(gateway);
@@ -606,6 +624,22 @@ impl SettingsApp {
                     Err(error) => tr!("shell-model-not-added", "arg0" => error),
                 };
                 state.notice = Some((Service::Inference, text));
+                state.reading = true;
+                return read();
+            }
+            Message::StreamingSpeech(enabled) => {
+                if state.model_busy() || !live || !state.enabled {
+                    return Task::none();
+                }
+                state.busy = Some(Service::Inference);
+                return blocking(
+                    move || local_ai::set_streaming_speech_enabled(enabled),
+                    Message::StreamingSpeechSet,
+                );
+            }
+            Message::StreamingSpeechSet(result) => {
+                state.busy = None;
+                state.notice = result.err().map(|error| (Service::Inference, error));
                 state.reading = true;
                 return read();
             }
@@ -1404,18 +1438,32 @@ impl SettingsApp {
             .as_ref()
             .and_then(|result| result.as_ref().ok());
         let voice = inference.and_then(Inference::voice_model);
+        let streaming_installed = local_ai::streaming_speech_installed();
         let subtitle = match &state.inference {
             _ if !state.enabled => tr("shell-off").to_owned(),
             None => tr("shell-checking").to_owned(),
             Some(Err(_)) => tr("shell-not-available").to_owned(),
             Some(Ok(_)) => match voice {
                 Some(model) => {
-                    tr!("shell-voice-typing-uses", "arg0" => self.model_title(model).to_owned())
+                    let message = if streaming_installed {
+                        "shell-dictation-fallback-uses"
+                    } else {
+                        "shell-voice-typing-uses"
+                    };
+                    tr!(message, "arg0" => self.model_title(model).to_owned())
+                }
+                None if streaming_installed => {
+                    tr("shell-dictation-fallback-unavailable").to_owned()
                 }
                 None => tr("shell-voice-typing-needs-a-speech-model").to_owned(),
             },
         };
-        let mut row = crate::settings_app::settings_row(tr("shell-model-default-speech"))
+        let title = if streaming_installed {
+            tr("shell-dictation-fallback-model")
+        } else {
+            tr("shell-model-default-speech")
+        };
+        let mut row = crate::settings_app::settings_row(title)
             .subtitle(subtitle)
             .subtitle_wrap(true)
             .icon("mic");
@@ -1447,9 +1495,22 @@ impl SettingsApp {
                 .into_element(),
             );
         }
-        let mut speech =
-            column![self.mark_setting("agents/default-speech-model", row.into_element())]
-                .spacing(2);
+        let mut speech = column![].spacing(2);
+        if streaming_installed {
+            speech = speech.push(self.mark_setting(
+                "agents/streaming-speech",
+                crate::settings_app::settings_row(tr("shell-dictation-streaming-english"))
+                    .subtitle(tr("shell-dictation-streaming-description"))
+                    .subtitle_wrap(true)
+                    .icon("mic")
+                    .switch(state.streaming_enabled, |enabled| {
+                        send(Message::StreamingSpeech(enabled))
+                    })
+                    .enabled(state.enabled && !state.model_busy() && self.controls_live())
+                    .into_element(),
+            ));
+        }
+        speech = speech.push(self.mark_setting("agents/default-speech-model", row.into_element()));
         if let Some(inference) = inference {
             speech = self.benchmark_rows(speech, &inference.speech_models, true);
         }

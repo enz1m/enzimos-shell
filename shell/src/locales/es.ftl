@@ -5567,6 +5567,9 @@ shell-print-no-printers = No hay impresoras configuradas.
 shell-user-switch-inhibited = Una aplicación impide cambiar de usuario.
 
 shell-dictation-listening = Escuchando…
+shell-dictation-streaming-english = Inglés en tiempo real
+shell-dictation-streaming-description = Reconoce el inglés en este equipo. Desactívalo para usar el modelo de voz alternativo con otros idiomas.
+shell-dictation-fallback-model = Modelo de voz alternativo
 shell-dictation-transcribing = Transcribiendo…
 shell-dictation-inserted = Insertado
 shell-dictation-copied = Copiado
@@ -5716,3 +5719,7 @@ shell-assistant-web-fetch-tool = Obtener una página web
 shell-assistant-browser-open-tool = Abrir en el navegador
 shell-assistant-browser-read-tool = Leer una página del navegador
 shell-assistant-add-extension-tool = Añadir extensión del asistente
+
+shell-dictation-fallback-uses = Usa { $arg0 } cuando el inglés en tiempo real está desactivado o no está disponible.
+shell-dictation-fallback-unavailable = Descarga un modelo de voz para dictar en otros idiomas.
+welcome-streaming-english-included = El inglés en tiempo real está incluido. Elige un modelo de voz alternativo si quieres dictar en otros idiomas.

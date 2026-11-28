@@ -1324,6 +1324,15 @@ impl Welcome {
                 Message::SpeechModel,
             ),
         };
+        let mut rows = column![].spacing(8);
+        if kind == ModelKind::Speech && local_ai::streaming_speech_installed() {
+            rows = rows.push(
+                enz_text(tr("welcome-streaming-english-included"))
+                    .tone(TextTone::Muted)
+                    .wrap(true)
+                    .into_element(),
+            );
+        }
         let offers: Vec<&ModelOffer> = self
             .catalog
             .iter()
@@ -1338,24 +1347,25 @@ impl Welcome {
             };
             return self.section(
                 title,
-                enz_text(tr(note))
-                    .tone(TextTone::Muted)
-                    .wrap(true)
-                    .into_element(),
+                rows.push(
+                    enz_text(tr(note))
+                        .tone(TextTone::Muted)
+                        .wrap(true)
+                        .into_element(),
+                ),
             );
         }
         let prefix = match kind {
             ModelKind::Text => "welcome-text-model",
             ModelKind::Speech => "welcome-voice-model",
         };
-        let mut rows = column![self.card(
+        rows = rows.push(self.card(
             format!("{prefix}-none"),
             tr("welcome-model-none").to_owned(),
             selected.is_none(),
             Self::model_caption(tr("welcome-model-none"), String::new()),
             on_choose(None),
-        )]
-        .spacing(8);
+        ));
         for offer in offers {
             let detail = if offer.added {
                 tr!("welcome-model-installed", "size" => offer.size.clone())

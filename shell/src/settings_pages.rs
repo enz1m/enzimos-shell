@@ -520,12 +520,15 @@ impl SettingsApp {
         let body = if self.layout_preview
             && let Some(dock) = self.dock_settings()
         {
-            body.push(
-                self.section_card_for("dock/enabled", dock)
-                    .title(tr("shell-dock"))
-                    .description(tr("shell-dock-visibility-description"))
-                    .into_element(),
-            )
+            let card = self
+                .section_card_for("dock/enabled", dock)
+                .title(tr("shell-dock"));
+            body.push(if self.dock_route_shown("visibility") {
+                card.description(tr("shell-dock-visibility-description"))
+                    .into_element()
+            } else {
+                card.into_element()
+            })
         } else {
             body
         };

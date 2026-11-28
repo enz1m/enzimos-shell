@@ -612,10 +612,6 @@ impl Compositor {
         )
         .await
     }
-    pub async fn focus_launcher(&self) -> Result<(), String> {
-        self.focus_owned_popup("dev.enzui.Launcher", "launcher")
-            .await
-    }
     pub async fn focus_dock(&self) -> Result<(), String> {
         self.focus_owned_popup("dev.enzui.Dock", "dock").await
     }

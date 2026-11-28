@@ -153,12 +153,7 @@ pub fn glass_tokens(
 /// A shadow level as (blur, offset away from the bar, opacity) for a glass
 /// body over `color`.
 pub fn glass_shadow(level: u8, color: Color, bottom: bool) -> Option<(f32, f32, f32)> {
-    let (blur, dark, light, offset) = PanelShadow {
-        room: true,
-        level,
-        bar: false,
-    }
-    .look()?;
+    let (blur, dark, light, offset) = PanelShadow { room: true, level }.look()?;
     let lit = 0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b > 0.5;
     Some((
         blur,
@@ -194,19 +189,16 @@ pub fn chrome_material(panel_glass: u8) -> Option<enzui_theme::MaterialStyle> {
     PANEL_MATERIALS[usize::from(panel_glass).min(PANEL_MATERIALS.len() - 1)].1
 }
 
-/// A popover's shadow: whether its window keeps room for one, the level
-/// (0 none … 4 large), and whether the bar casts one too.
+/// A popover's shadow level and whether its window keeps room for it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PanelShadow {
     pub room: bool,
     pub level: u8,
-    pub bar: bool,
 }
 impl PanelShadow {
     pub const NONE: Self = Self {
         room: false,
         level: 0,
-        bar: false,
     };
     // Blur, opacity on a dark and on a light panel, and offset away from the bar.
     fn look(self) -> Option<(f32, f32, f32, f32)> {
@@ -274,6 +266,185 @@ pub struct Frame {
     pub clip: Rectangle,
     pub fills: Vec<(Rectangle, border::Radius)>,
     pub corners: Vec<(Rectangle, bool, bool)>,
+}
+/// The frame edge a surface grows from.
+#[derive(Clone, Copy)]
+pub enum JoinEdge {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+impl JoinEdge {
+    fn depth(self, bounds: Rectangle) -> f32 {
+        match self {
+            Self::Top | Self::Bottom => bounds.height,
+            Self::Left | Self::Right => bounds.width,
+        }
+    }
+
+    fn inward(self, distance: f32) -> Vector {
+        match self {
+            Self::Top => Vector::new(0.0, distance),
+            Self::Bottom => Vector::new(0.0, -distance),
+            Self::Left => Vector::new(distance, 0.0),
+            Self::Right => Vector::new(-distance, 0.0),
+        }
+    }
+
+    fn shoulders(self, body: Rectangle, radius: f32) -> [(Rectangle, bool, bool); 2] {
+        let Rectangle {
+            x,
+            y,
+            width,
+            height,
+        } = body;
+        let r = radius;
+        match self {
+            Self::Top => [
+                (rect(x - r, y, r, r), true, false),
+                (rect(x + width, y, r, r), false, false),
+            ],
+            Self::Bottom => [
+                (rect(x - r, y + height - r, r, r), true, true),
+                (rect(x + width, y + height - r, r, r), false, true),
+            ],
+            Self::Left => [
+                (rect(x, y - r, r, r), false, true),
+                (rect(x, y + height, r, r), false, false),
+            ],
+            Self::Right => [
+                (rect(x + width - r, y - r, r, r), true, true),
+                (rect(x + width - r, y + height, r, r), true, false),
+            ],
+        }
+    }
+}
+
+/// A surface that extends the frame into the desktop.
+pub struct FrameJoin {
+    pub edge: JoinEdge,
+    pub bounds: Rectangle,
+    pub radius: f32,
+    pub color: Color,
+    pub shadow_level: u8,
+    pub solid: bool,
+}
+
+impl FrameJoin {
+    pub fn draw(&self, renderer: &mut iced::Renderer, viewport: Rectangle) {
+        let Self {
+            edge,
+            bounds,
+            radius,
+            color,
+            shadow_level,
+            solid,
+        } = *self;
+        let radius = radius.min(edge.depth(bounds) / 2.0);
+        let corners = border::Radius::new(radius);
+        let corners = match edge {
+            JoinEdge::Top => corners.top(0.0),
+            JoinEdge::Bottom => corners.bottom(0.0),
+            JoinEdge::Left => corners.left(0.0),
+            JoinEdge::Right => corners.right(0.0),
+        };
+        draw_join_shadow(edge, bounds, color, shadow_level, renderer);
+        if solid {
+            draw_fill(bounds, corners, color, iced::Shadow::default(), renderer);
+        }
+        for (bounds, right, bottom) in edge.shoulders(bounds, radius) {
+            draw_corner(bounds, right, bottom, color, renderer, viewport);
+        }
+    }
+}
+
+fn draw_fill(
+    bounds: Rectangle,
+    radius: border::Radius,
+    color: Color,
+    shadow: iced::Shadow,
+    renderer: &mut iced::Renderer,
+) {
+    renderer.fill_quad(
+        renderer::Quad {
+            bounds,
+            border: iced::Border::default().rounded(radius),
+            shadow,
+            ..Default::default()
+        },
+        color,
+    );
+}
+
+fn draw_corner(
+    bounds: Rectangle,
+    right: bool,
+    bottom: bool,
+    color: Color,
+    renderer: &mut iced::Renderer,
+    viewport: Rectangle,
+) {
+    if bounds.width > 0.0 && bounds.height > 0.0 {
+        renderer.draw_svg(
+            svg::Svg::new(corner(right, bottom)).color(color),
+            bounds,
+            viewport,
+        );
+    }
+}
+
+fn shadow_opacity(color: Color, dark: f32, light: f32) -> f32 {
+    let luma = 0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b;
+    if luma > 0.5 { light } else { dark }
+}
+
+fn draw_join_shadow(
+    edge: JoinEdge,
+    bounds: Rectangle,
+    color: Color,
+    level: u8,
+    renderer: &mut iced::Renderer,
+) {
+    let Some((blur_radius, dark, light, offset)) = (PanelShadow {
+        level,
+        ..PanelShadow::NONE
+    })
+    .look() else {
+        return;
+    };
+    let depth = edge.depth(bounds);
+    let inset = blur_radius.min(depth / 3.0);
+    let caster = match edge {
+        JoinEdge::Top => rect(
+            bounds.x,
+            bounds.y + inset,
+            bounds.width,
+            bounds.height - inset,
+        ),
+        JoinEdge::Bottom => rect(bounds.x, bounds.y, bounds.width, bounds.height - inset),
+        JoinEdge::Left => rect(
+            bounds.x + inset,
+            bounds.y,
+            bounds.width - inset,
+            bounds.height,
+        ),
+        JoinEdge::Right => rect(bounds.x, bounds.y, bounds.width - inset, bounds.height),
+    };
+    // Round the hidden end of the caster so the shadow fades into the frame at both shoulders.
+    let radius = blur_radius.min(caster.width.min(caster.height) / 2.0);
+    draw_fill(
+        caster,
+        radius.into(),
+        Color::TRANSPARENT,
+        iced::Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, shadow_opacity(color, dark, light)),
+            offset: edge.inward(offset),
+            blur_radius,
+        },
+        renderer,
+    );
 }
 fn rect(x: f32, y: f32, width: f32, height: f32) -> Rectangle {
     Rectangle {
@@ -445,13 +616,17 @@ impl Reveal {
                         bottom_right: if bottom { 0.0 } else { r_corner },
                     },
                 ));
-                let join = if bottom { size.height - q } else { 0.0 };
+                let joined = if bottom {
+                    JoinEdge::Bottom
+                } else {
+                    JoinEdge::Top
+                };
+                let [start, end] = joined.shoulders(f.clip, q);
                 if left > 0.0 {
-                    f.corners.push((rect(left - q, join, q, q), true, bottom));
+                    f.corners.push(start);
                 }
                 if right > 0.0 {
-                    f.corners
-                        .push((rect(size.width - right, join, q, q), false, bottom));
+                    f.corners.push(end);
                 }
                 match attachment {
                     Attachment::LeftFrame => f.corners.push((rect(0.0, edge, r, r), false, bottom)),
@@ -505,83 +680,56 @@ impl Reveal {
         renderer: &mut iced::Renderer,
         viewport: Rectangle,
     ) {
-        // A shadowed popover's panel casts a soft shadow away from the bar.
+        let offset = Vector::new(origin.x, origin.y);
         let mut shadow = iced::Shadow::default();
         if let Shape::Controls {
             bottom,
             attachment,
             shadow: panel,
         } = self.shape
-            && let Some((blur, dark, light, offset)) = panel.look()
-            && let Some(&(bounds, radius)) = frame.fills.first()
+            && let Some((blur, dark, light, distance)) = panel.look()
+            && let Some(&(bounds, _)) = frame.fills.first()
+            && frame.extended
         {
-            let lit = 0.2126 * self.color.r + 0.7152 * self.color.g + 0.0722 * self.color.b > 0.5;
-            let alpha = if lit { light } else { dark };
-            let look = |alpha: f32| iced::Shadow {
-                color: Color::from_rgba(0.0, 0.0, 0.0, alpha),
-                offset: Vector::new(0.0, if bottom { -offset } else { offset }),
-                blur_radius: blur,
-            };
-            let joined = !matches!(attachment, Attachment::Island { .. });
-            if !joined || panel.bar {
-                // Floating, or joined to a bar that casts its own: the whole
-                // panel casts, meeting the bar's shadow at the join.
-                shadow = look(alpha);
+            let edge = if bottom {
+                JoinEdge::Bottom
             } else {
-                // Joined-bar shadows fade away from the join to keep both surfaces visually
-                // connected.
-                let reach = (blur * 4.0).min(bounds.height / 2.0);
-                const LAYERS: usize = 8;
-                for layer in 0..LAYERS {
-                    let hold = reach * layer as f32 / LAYERS as f32;
-                    let caster = Rectangle {
-                        y: if bottom { bounds.y } else { bounds.y + hold },
-                        height: bounds.height - hold,
-                        ..bounds
-                    };
-                    renderer.fill_quad(
-                        renderer::Quad {
-                            bounds: caster + Vector::new(origin.x, origin.y),
-                            border: iced::Border {
-                                radius,
-                                ..Default::default()
-                            },
-                            shadow: look(alpha / LAYERS as f32),
-                            ..Default::default()
-                        },
-                        Color::TRANSPARENT,
-                    );
-                }
+                JoinEdge::Top
+            };
+            if matches!(attachment, Attachment::Island { .. }) {
+                shadow = iced::Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, shadow_opacity(self.color, dark, light)),
+                    offset: edge.inward(distance),
+                    blur_radius: blur,
+                };
+            } else {
+                draw_join_shadow(edge, bounds + offset, self.color, panel.level, renderer);
             }
         }
         for (index, &(bounds, radius)) in frame.fills.iter().enumerate() {
             if bounds.width > 0.0 && bounds.height > 0.0 {
-                renderer.fill_quad(
-                    renderer::Quad {
-                        bounds: bounds + Vector::new(origin.x, origin.y),
-                        border: iced::Border {
-                            radius,
-                            ..Default::default()
-                        },
-                        shadow: if index == 0 {
-                            shadow
-                        } else {
-                            iced::Shadow::default()
-                        },
-                        ..Default::default()
-                    },
+                draw_fill(
+                    bounds + offset,
+                    radius,
                     self.color,
+                    if index == 0 {
+                        shadow
+                    } else {
+                        iced::Shadow::default()
+                    },
+                    renderer,
                 );
             }
         }
         for &(bounds, right, bottom) in &frame.corners {
-            if bounds.width > 0.0 && bounds.height > 0.0 {
-                renderer.draw_svg(
-                    svg::Svg::new(corner(right, bottom)).color(self.color),
-                    bounds + Vector::new(origin.x, origin.y),
-                    viewport,
-                );
-            }
+            draw_corner(
+                bounds + offset,
+                right,
+                bottom,
+                self.color,
+                renderer,
+                viewport,
+            );
         }
     }
 }

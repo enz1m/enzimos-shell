@@ -108,6 +108,35 @@ impl Material {
     }
 }
 
+impl Position {
+    /// Resolves an edge occupied by the bar to the integrated dock position.
+    #[must_use]
+    pub fn for_bar(self, bar: crate::settings::BarEdge) -> Self {
+        use crate::settings::BarEdge;
+        match (self, bar) {
+            (Self::Top, BarEdge::Top) | (Self::Bottom, BarEdge::Bottom) => Self::Bar,
+            _ => self,
+        }
+    }
+
+    /// Whether the Settings control applies to this dock position.
+    pub fn shows_setting(self, key: &str) -> bool {
+        key != "visible"
+            && (self != Self::Bar
+                || !matches!(
+                    key,
+                    "style"
+                        | "material"
+                        | "visibility"
+                        | "icon_size"
+                        | "spacing"
+                        | "radius"
+                        | "highlight_radius"
+                        | "margin"
+                ))
+    }
+}
+
 impl Preferences {
     pub fn shares_sidebar(&self, side: crate::settings::SidebarEdge) -> bool {
         use crate::settings::SidebarEdge;
@@ -118,20 +147,20 @@ impl Preferences {
             )
     }
 
-    pub fn in_bar(&self, bar: crate::settings::BarEdge) -> bool {
-        self.position == Position::Bar
-            || (self.style == Style::Desktop
-                && matches!(
-                    (self.position, bar),
-                    (Position::Top, crate::settings::BarEdge::Top)
-                        | (Position::Bottom, crate::settings::BarEdge::Bottom)
-                ))
-    }
     #[must_use]
     pub fn effective(&self, bar: crate::settings::BarEdge) -> Self {
         let mut effective = self.clone();
-        if self.in_bar(bar) {
-            effective.position = Position::Bar;
+        effective.position = self.position.for_bar(bar);
+        if effective.position == Position::Bar {
+            let defaults = Self::default();
+            effective.style = defaults.style;
+            effective.visibility = defaults.visibility;
+            effective.material = defaults.material;
+            effective.icon_size = defaults.icon_size;
+            effective.spacing = defaults.spacing;
+            effective.radius = defaults.radius;
+            effective.highlight_radius = defaults.highlight_radius;
+            effective.margin = defaults.margin;
         }
         effective
     }
@@ -542,6 +571,11 @@ pub fn groups(
         })
         .collect();
     ordered.sort_by(|(_, left), (_, right)| stable_window_order(left, right));
+    let sidebar_apps: BTreeSet<_> = ordered
+        .iter()
+        .filter(|(_, window)| window.target.sidebar.is_some())
+        .map(|(id, _)| id.as_str())
+        .collect();
     let ids = preferences.pins.iter().cloned().chain(
         ordered
             .iter()
@@ -554,7 +588,7 @@ pub fn groups(
     let mut result = Vec::new();
     let mut seen = BTreeSet::new();
     for id in ids {
-        if result.len() == 64 || !seen.insert(id.clone()) {
+        if result.len() == 64 || sidebar_apps.contains(id.as_str()) || !seen.insert(id.clone()) {
             continue;
         }
         let app = apps
@@ -659,7 +693,7 @@ impl Slots {
         let requested = f32::from(p.icon_size);
         let (icon, target) = if p.position == Position::Bar {
             let target = f32::from(metrics.bar_item_height());
-            (requested.min(target - 12.0), target)
+            (f32::from(metrics.icon).min(target - 4.0), target)
         } else if shares_sidebar {
             (
                 requested,
@@ -678,7 +712,11 @@ impl Slots {
         Self {
             icon,
             target,
-            spacing: f32::from(p.spacing),
+            spacing: if p.position == Position::Bar {
+                enzui_theme::SpacingScale::default().sm()
+            } else {
+                f32::from(p.spacing)
+            },
         }
     }
 
@@ -1328,7 +1366,7 @@ mod tests {
     }
 
     #[test]
-    fn same_edge_joins_only_when_following_the_desktop() {
+    fn legacy_same_edge_uses_bar_without_losing_standalone_preferences() {
         use crate::settings::BarEdge;
         let mut preferences = Preferences {
             position: Position::Top,
@@ -1336,9 +1374,16 @@ mod tests {
         };
         assert_eq!(preferences.effective(BarEdge::Top).position, Position::Bar);
         preferences.style = Style::Island;
-        assert_eq!(preferences.effective(BarEdge::Top).position, Position::Top);
+        preferences.material = Material::Solid;
+        preferences.icon_size = 64;
+        let in_bar = preferences.effective(BarEdge::Top);
+        assert_eq!(in_bar.position, Position::Bar);
+        assert_eq!(in_bar.style, Style::Desktop);
+        assert_eq!(in_bar.material, Material::Panels);
+        assert_eq!(in_bar.icon_size, Preferences::default().icon_size);
+        assert_eq!(preferences.effective(BarEdge::Bottom), preferences);
         preferences.position = Position::Bar;
-        assert_eq!(preferences.effective(BarEdge::Top).position, Position::Bar);
+        assert_eq!(preferences.effective(BarEdge::Bottom), in_bar);
     }
 
     #[test]
@@ -1370,6 +1415,28 @@ mod tests {
         assert_eq!(panel.radius, 28.0);
         assert_eq!(panel.reserve, 64.0);
         assert!(!panel.framed);
+    }
+
+    #[test]
+    fn sidebar_pin_suppresses_favorite_and_running_group_until_unpinned() {
+        let id = "app:desktop/org.example.Pinned.desktop";
+        let prefs = Preferences {
+            pins: vec![id.into(), "app:desktop/org.example.Other.desktop".into()],
+            ..Default::default()
+        };
+        let mut pinned = window("org.example.Pinned", 1, 1);
+        pinned.app_id = Some(id.into());
+        pinned.target.sidebar = Some(1);
+        let mut ordinary = window("org.example.Pinned", 1, 2);
+        ordinary.app_id = Some(id.into());
+        let mut windows = [pinned, ordinary];
+        let filtered = groups(&prefs, &[], &windows, 1, 24.0, 1.0);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, prefs.pins[1]);
+        windows[0].target.sidebar = None;
+        let restored = groups(&prefs, &[], &windows, 1, 24.0, 1.0);
+        assert_eq!(restored[0].id, id);
+        assert_eq!(restored[0].windows.len(), 2);
     }
 
     #[test]

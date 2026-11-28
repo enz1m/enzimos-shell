@@ -84,9 +84,9 @@ pub(super) enum Message {
     LauncherPrepared(u64, Result<ControlGeometry, String>),
     LauncherHidden(window::Id),
     LauncherFocusChecked(window::Id, u64, bool),
-    LauncherFocused(window::Id, u64, Result<(), String>),
     ControlsHidden(window::Id),
     DismissRegions,
+    DismissBarRegions,
     RegionInterior,
     OverviewPrepared(u64, Result<ControlGeometry, String>),
     PreviewsReady(

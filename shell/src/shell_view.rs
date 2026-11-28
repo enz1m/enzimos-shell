@@ -17,7 +17,7 @@ use enzui_widgets::{
     toolbar_icon::enz_toolbar_icon,
     toolbar_row::enz_toolbar_row,
 };
-use iced::widget::{column, container, row, space};
+use iced::widget::{column, container, row};
 use iced::{Color, Element, Length, Subscription, Task, window};
 use std::time::Duration;
 
@@ -831,7 +831,6 @@ impl Shell {
         enzui_shell::reveal::PanelShadow {
             room: true,
             level: self.panel_shadow_level(),
-            bar: self.desired_settings.bar_shadow > 0,
         }
     }
 
@@ -992,6 +991,7 @@ impl Shell {
         {
             return if self.dock_active()
                 && self.dock.preferences.position == enzui_shell::dock::Position::Bar
+                && !self.dock.entries.is_empty()
             {
                 let side_padding = self
                     .metrics
@@ -1101,38 +1101,6 @@ impl Shell {
                     .id(iced::advanced::widget::Id::from(format!("bar-island-{id}")))
                     .height(f32::from(self.metrics.bar))
                     .align_y(iced::Alignment::Center);
-                if self
-                    .dock
-                    .surface_element
-                    .as_ref()
-                    .is_some_and(|(_, dock)| dock == id)
-                    && self.bar_dock_material().is_some()
-                {
-                    let separate = self.metrics.islands.is_some_and(|style| !style.joined_bar);
-                    let native = self.bar_dock_glass().is_some()
-                        && self
-                            .bar_geometry
-                            .as_ref()
-                            .and_then(|(_, geometry)| geometry.anchor(id))
-                            .is_some();
-                    let palette = self.tokens().palette;
-                    let radius = if separate {
-                        self.metrics.island_radius()
-                    } else {
-                        0.0
-                    };
-                    return island
-                        .style(move |_| container::Style {
-                            background: (!native).then_some(palette.surface.into()),
-                            border: iced::Border {
-                                radius: radius.into(),
-                                width: f32::from(separate),
-                                color: palette.border,
-                            },
-                            ..Default::default()
-                        })
-                        .into();
-                }
                 match self.metrics.islands {
                     // A glass island's body is the compositor's.
                     Some(style) if !style.joined_bar && !self.bar_glass_on => {
@@ -1260,16 +1228,6 @@ impl Shell {
         }
         zones.into_element()
     }
-    fn bar_dock_glass(&self) -> Option<enzui_theme::MaterialStyle> {
-        self.bar_dock_material()
-            .and_then(|material| material.glass(None))
-            .filter(|_| {
-                self.bar_glass
-                    .as_ref()
-                    .is_some_and(enzui_shell::surface_input::SurfaceInput::glass_supported)
-            })
-    }
-
     pub(crate) fn panel_view(&self) -> Element<'_, Message> {
         let palette = self.window_tokens(Some(self.panel)).palette;
         let zones = iced::widget::responsive(move |size| self.bar_contents(size.width))
@@ -1282,17 +1240,7 @@ impl Shell {
         );
         let islands = self.metrics.islands;
         let radius = self.metrics.island_radius();
-        let dock_key = self
-            .dock
-            .surface_element
-            .as_ref()
-            .map(|(_, key)| key.as_str())
-            .filter(|_| self.bar_dock_material().is_some());
         let continuous = islands.is_none_or(|style| style.joined_bar);
-        let dock_glass = self.bar_dock_glass().and_then(|style| {
-            let bounds = self.bar_geometry.as_ref()?.1.anchor(dock_key?)?;
-            Some((bounds, if continuous { 0.0 } else { radius }, style))
-        });
         let bar_bounds = iced::Rectangle::new(
             iced::Point::new(islands.map_or(0.0, |style| f32::from(style.side_gap)), 0.0),
             self.bar_size,
@@ -1301,19 +1249,6 @@ impl Shell {
             width: (bar_bounds.width - 2.0 * bar_bounds.x).max(0.0),
             ..bar_bounds
         };
-        let split = dock_glass.filter(|_| continuous).map(|(dock, _, _)| {
-            [
-                iced::Rectangle {
-                    width: (dock.x - bar_bounds.x).max(0.0),
-                    ..bar_bounds
-                },
-                iced::Rectangle {
-                    x: dock.x + dock.width,
-                    width: (bar_bounds.x + bar_bounds.width - dock.x - dock.width).max(0.0),
-                    ..bar_bounds
-                },
-            ]
-        });
         // The connected bar on glass: the compositor paints its body, and a
         // hairline rim keeps its shape on any wallpaper, as for the islands.
         let joined_glass = self.bar_glass_on && islands.is_some_and(|style| style.joined_bar);
@@ -1334,8 +1269,7 @@ impl Shell {
             .width(Length::Fill)
             .height(Length::Fill)
             .style(move |_| container::Style {
-                background: (continuous && !joined_glass && split.is_none())
-                    .then_some(palette.surface.into()),
+                background: (continuous && !joined_glass).then_some(palette.surface.into()),
                 border: iced::Border {
                     radius: if islands.is_some() { radius } else { 0.0 }.into(),
                     width: if joined_glass { 1.0 } else { 0.0 },
@@ -1347,48 +1281,7 @@ impl Shell {
             .padding([0.0, islands.map_or(0.0, |style| f32::from(style.side_gap))])
             .width(Length::Fill)
             .height(Length::Fill);
-        let bar = if let Some(split) = split.filter(|_| !joined_glass) {
-            let mut layers: Vec<Element<'_, Message>> = Vec::new();
-            for (part, left) in split.into_iter().zip([true, false]) {
-                let corners = iced::border::Radius::new(radius);
-                let corners = if left {
-                    corners.right(0.0)
-                } else {
-                    corners.left(0.0)
-                };
-                layers.push(
-                    container(
-                        container(space())
-                            .width(part.width)
-                            .height(part.height)
-                            .style(move |_| container::Style {
-                                background: Some(palette.surface.into()),
-                                border: iced::Border {
-                                    radius: corners,
-                                    ..Default::default()
-                                },
-                                ..Default::default()
-                            }),
-                    )
-                    .padding(iced::Padding::ZERO.left(part.x))
-                    .into(),
-                );
-            }
-            layers.push(bar.into());
-            iced::widget::stack(layers)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
-        } else {
-            bar.into()
-        };
-        let regions = if let Some(split) = split {
-            split
-                .into_iter()
-                .filter(|part| part.width > 0.0)
-                .map(|part| (part, radius))
-                .collect()
-        } else if continuous && self.bar_geometry.is_some() && bar_bounds.width > 0.0 {
+        let regions = if continuous && self.bar_geometry.is_some() && bar_bounds.width > 0.0 {
             vec![(bar_bounds, radius)]
         } else {
             self.bar_geometry
@@ -1397,13 +1290,12 @@ impl Shell {
                     geometry
                         .islands
                         .iter()
-                        .filter(|island| Some(island.key.as_str()) != dock_key)
                         .map(|island| (island.clip, radius))
                         .collect()
                 })
         };
-        let bar = enzui_shell::desktop_glass::fixed_glass_with_extra(
-            bar,
+        let bar = enzui_shell::desktop_glass::fixed_glass(
+            bar.into(),
             enzui_shell::desktop_glass::WindowGlass {
                 input: self.bar_glass.clone(),
                 style: self.chrome_glass().filter(|_| self.bar_glass_on),
@@ -1418,7 +1310,6 @@ impl Shell {
                 pending: self.bar_glass_pending,
             },
             regions,
-            dock_glass,
         );
         iced::widget::mouse_area(enzui_widgets::motion::motion(
             bar,
@@ -1426,7 +1317,7 @@ impl Shell {
             self.chrome_shown(),
             enzui_widgets::motion::MotionEffect::Fade,
         ))
-        .on_press(Message::DismissRegions)
+        .on_press(Message::DismissBarRegions)
         .on_right_press(Message::DismissRegions)
         .on_middle_press(Message::DismissRegions)
         .into()

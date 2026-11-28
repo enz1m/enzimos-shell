@@ -237,10 +237,16 @@ impl Shell {
                     Task::none()
                 }
             }
-            Message::DismissRegions => {
+            Message::DismissRegions | Message::DismissBarRegions => {
                 self.cancel_panel_action();
+                // Search classifies bar presses against the trigger's release itself.
+                let search = if matches!(message, Message::DismissRegions) {
+                    self.close_search()
+                } else {
+                    Task::none()
+                };
                 Task::batch([
-                    self.close_search(),
+                    search,
                     self.close_overview(),
                     self.close_controls(),
                     self.close_plugin(),
@@ -572,22 +578,8 @@ impl Shell {
             Message::ShowLauncher => {
                 if self.bar_busy {
                     Task::none()
-                } else if let Some(id) = self.launcher {
-                    if self.launcher_geometry.is_some() {
-                        if self.launcher_visible || !self.launcher_started {
-                            self.close_launcher()
-                        } else {
-                            self.launcher_visible = true;
-                            let compositor = self.compositor.clone();
-                            let revision = self.launcher_focus_revision;
-                            Task::perform(
-                                async move { compositor.focus_launcher().await },
-                                move |result| Message::LauncherFocused(id, revision, result),
-                            )
-                        }
-                    } else {
-                        window::gain_focus(id)
-                    }
+                } else if self.launcher.is_some() {
+                    self.close_launcher()
                 } else if self.launcher_opening {
                     self.force_close_launcher()
                 } else {
@@ -668,16 +660,6 @@ impl Shell {
                         }
                     }
                 }
-            }
-            Message::LauncherFocused(id, revision, result) => {
-                if self.launcher == Some(id)
-                    && revision == self.launcher_focus_revision
-                    && self.launcher_visible
-                    && let Err(error) = result
-                {
-                    self.notice = Some(error);
-                }
-                Task::none()
             }
             Message::LauncherFocusChecked(id, revision, retained) => {
                 if self.launcher == Some(id)

@@ -84,15 +84,7 @@ impl Store {
             let package = applications::package()?;
             let mut config = package.manifest().defaults();
             if let Some(settings) = self.settings.as_ref().and_then(|s| s.load().ok()) {
-                let mut legacy = settings.dock;
-                if legacy.position == crate::dock::Position::Bar {
-                    legacy.position = if settings.bar == crate::settings::BarEdge::Top {
-                        crate::dock::Position::Top
-                    } else {
-                        crate::dock::Position::Bottom
-                    };
-                }
-                let value = serde_json::to_value(legacy)
+                let value = serde_json::to_value(settings.dock)
                     .map_err(|_| tr("shell-invalid-old-dock-configuration"))?;
                 for (key, value) in value
                     .as_object()

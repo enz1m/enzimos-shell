@@ -10,8 +10,7 @@ use enzui_shell::i18n::tr;
 use enzui_shell::tr;
 use enzui_shell::{
     dock::{
-        self, Action, App, Builtin, Change, Geometry, Group, Indicator, Material, Position,
-        Snapshot, Style,
+        self, Action, App, Builtin, Change, Geometry, Group, Indicator, Position, Snapshot, Style,
     },
     search::{AppTarget, Target, WindowTarget},
     settings::QuickAction,
@@ -36,21 +35,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-const FIND_APPS_WIDTH: f32 = 132.0;
 const MENU_WINDOWS: usize = 16;
 const MENU_GAP: f32 = 6.0;
-
-fn has_no_favorites(prefs: &dock::Preferences) -> bool {
-    prefs.pins.is_empty() && prefs.folders.is_empty()
-}
-
-fn show_find_apps(prefs: &dock::Preferences) -> bool {
-    has_no_favorites(prefs) && !prefs.applications
-}
-
-fn find_apps_width(metrics: enzui_shell::settings::Metrics) -> f32 {
-    FIND_APPS_WIDTH * metrics.text_scale().max(1.0)
-}
 
 fn edge_padding(edge: Position, inset: f32) -> iced::Padding {
     match edge {
@@ -70,13 +56,9 @@ fn dock_menu_anchor(point: iced::Point, body: iced::Rectangle, edge: Position) -
     }
 }
 
-struct GlassRim {
-    edge: Position,
-    radius: iced::border::Radius,
-    taper: f32,
-}
+struct JoinedDock(enzui_shell::reveal::FrameJoin);
 
-impl iced::advanced::Widget<Message, iced::Theme, iced::Renderer> for GlassRim {
+impl iced::advanced::Widget<Message, iced::Theme, iced::Renderer> for JoinedDock {
     fn size(&self) -> iced::Size<Length> {
         iced::Size::new(Length::Fill, Length::Fill)
     }
@@ -96,60 +78,11 @@ impl iced::advanced::Widget<Message, iced::Theme, iced::Renderer> for GlassRim {
         renderer: &mut iced::Renderer,
         _: &iced::Theme,
         _: &iced::advanced::renderer::Style,
-        layout: iced::advanced::Layout,
+        _: iced::advanced::Layout,
         _: iced::mouse::Cursor,
-        _: &iced::Rectangle,
+        viewport: &iced::Rectangle,
     ) {
-        use iced::advanced::{Renderer, renderer::Quad};
-        let bounds = layout.bounds();
-        let vertical = matches!(self.edge, Position::Left | Position::Right);
-        let cross = if vertical {
-            bounds.width
-        } else {
-            bounds.height
-        };
-        let from_start = matches!(self.edge, Position::Right | Position::Bottom);
-        let mut stroke = |start: f32, end: f32, alpha| {
-            let inset = if from_start { start } else { cross - end };
-            let mut band = bounds;
-            if vertical {
-                band.x += inset;
-                band.width = end - start;
-            } else {
-                band.y += inset;
-                band.height = end - start;
-            }
-            renderer.with_layer(band, |renderer| {
-                renderer.fill_quad(
-                    Quad {
-                        bounds,
-                        border: iced::Border {
-                            radius: self.radius,
-                            width: 1.0,
-                            color: iced::Color::WHITE.scale_alpha(alpha),
-                        },
-                        ..Default::default()
-                    },
-                    iced::Color::TRANSPARENT,
-                );
-            });
-        };
-        let taper = self.taper.clamp(1.0, cross);
-        let step = (taper - 1.0) / 6.0;
-        stroke(0.0, 1.0, 0.14);
-        if step > 0.0 {
-            for i in 0..6 {
-                let i = i as f32;
-                stroke(
-                    1.0 + i * step,
-                    1.0 + (i + 1.0) * step,
-                    0.14 - 0.095 * (i + 0.5) / 6.0,
-                );
-            }
-        }
-        if taper < cross {
-            stroke(taper, cross, 0.045);
-        }
+        self.0.draw(renderer, *viewport);
     }
 }
 
@@ -734,15 +667,9 @@ impl Shell {
                 };
             }
         }
-        let bar_material = self.bar_dock_material();
         let was = self.dock.preferences.enabled;
         self.dock.preferences = desired;
         self.dock.keyboard = None;
-        let bar = if bar_material != self.bar_dock_material() {
-            self.refresh_bar_glass()
-        } else {
-            Task::none()
-        };
         let sidebar = if sidebar_changed {
             self.refresh_sidebar(None)
         } else {
@@ -798,9 +725,9 @@ impl Shell {
                 if let Some(input) = self.surface_inputs.remove(&id) {
                     input.invalidate();
                 }
-                return Task::batch([bar, sidebar, window::close(id).chain(self.dock_publish())]);
+                return Task::batch([sidebar, window::close(id).chain(self.dock_publish())]);
             }
-            return Task::batch([bar, sidebar]);
+            return sidebar;
         }
         let reload = if !was || owner_changed || self.dock.apps.is_empty() || pin_membership_changed
         {
@@ -809,7 +736,7 @@ impl Shell {
         } else {
             self.dock_refresh()
         };
-        Task::batch([bar, sidebar, reload])
+        Task::batch([sidebar, reload])
     }
     pub(crate) fn dock_publish(&mut self) -> Task<Message> {
         let Some(geometry) = self.dock.geometry.as_ref() else {
@@ -927,23 +854,11 @@ impl Shell {
         };
         let p = &self.dock.preferences;
         let shares_sidebar = self.dock_shares_sidebar();
-        let sidebar_windows;
-        let windows = if shares_sidebar {
-            sidebar_windows = snapshot
-                .windows
-                .iter()
-                .filter(|w| w.target.sidebar.is_none())
-                .cloned()
-                .collect::<Vec<_>>();
-            &sidebar_windows
-        } else {
-            &snapshot.windows
-        };
         let slots = dock::Slots::new(p, self.metrics, shares_sidebar);
         let groups = dock::groups(
             p,
             &self.dock.apps,
-            windows,
+            &snapshot.windows,
             snapshot.desktop,
             slots.icon,
             snapshot.scale,
@@ -961,7 +876,12 @@ impl Shell {
         self.dock
             .preview
             .update_windows(&self.dock.entries, snapshot.screen);
-        let pinned = p.pins.len().min(self.dock.entries.len());
+        let pinned = self
+            .dock
+            .entries
+            .iter()
+            .take_while(|entry| entry.group.pinned && entry.group.builtin.is_none())
+            .count();
         self.dock.pinned = pinned;
         let divider = pinned > 0
             && self
@@ -984,30 +904,8 @@ impl Shell {
             now,
             motion,
         );
-        let find_apps = if !show_find_apps(p) {
-            0.0
-        } else if self.dock.entries.is_empty()
-            && matches!(p.position, Position::Top | Position::Bottom)
-        {
-            find_apps_width(self.metrics).max(slots.target)
-        } else {
-            slots.target
-        };
-        let track = &mut self.dock.strip.find_apps;
-        track.retarget(
-            find_apps,
-            now,
-            motion.with_reduced_motion(
-                motion.reduced_motion || find_apps == 0.0 || track.value() == 0.0,
-            ),
-            enzui_theme::MotionToken::Fast,
-        );
-        let count = self.dock.entries.len();
-        let span = if find_apps > 0.0 {
-            find_apps + slots.span(count) + if count > 0 { slots.spacing } else { 0.0 }
-        } else {
-            slots.span(count) + f32::from(divider) * slots.separator_span()
-        };
+        let span =
+            slots.span(self.dock.entries.len()) + f32::from(divider) * slots.separator_span();
         let mut geometry = dock::geometry(
             p,
             span,
@@ -1065,9 +963,6 @@ impl Shell {
     }
 
     fn first_dock_focus(&self) -> Option<iced::widget::Id> {
-        if show_find_apps(&self.dock.preferences) {
-            return Some("dock-add-app".into());
-        }
         self.dock
             .entries
             .iter()
@@ -1452,13 +1347,24 @@ impl Shell {
                 }
                 Task::none()
             }
-            Event::Reorder(request) => {
+            Event::Reorder(mut request) => {
                 self.dock.preview.clear();
-                let change = Change::ReorderPins(request);
                 let mut preview = self.dock.preferences.clone();
                 if let Some(order) = &self.dock.pending_pin_order {
                     preview.pins.clone_from(order);
                 }
+                if self.dock.pinned != preview.pins.len() {
+                    let visible = &self.dock.entries[..self.dock.pinned];
+                    let slot = preview
+                        .pins
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, pin)| visible.iter().any(|entry| &entry.group.id == *pin))
+                        .nth(request.slot.index())
+                        .map_or(preview.pins.len(), |(index, _)| index);
+                    request.slot = enzui_core::drag::InsertionSlot(slot);
+                }
+                let change = Change::ReorderPins(request);
                 if preview.apply(&change).is_ok() {
                     // Keep the drop position while the delegated store writes the order.
                     self.dock.pending_pin_order = Some(preview.pins);
@@ -1952,12 +1858,6 @@ impl Shell {
             }
         }
     }
-    pub(crate) fn bar_dock_material(&self) -> Option<Material> {
-        let p = &self.dock.preferences;
-        (p.enabled && p.position == Position::Bar && p.material != Material::Panels)
-            .then_some(p.material)
-    }
-
     fn dock_plate_material(&self) -> Option<enzui_theme::MaterialStyle> {
         let prefs = &self.dock.preferences;
         if prefs.style == Style::Minimal || prefs.position == Position::Bar {
@@ -1978,8 +1878,7 @@ impl Shell {
     fn dock_popup_material(&self) -> Option<enzui_theme::MaterialStyle> {
         let prefs = &self.dock.preferences;
         if prefs.position == Position::Bar {
-            let panels = self.metrics.islands.and_then(|_| self.chrome_glass());
-            prefs.material.glass(panels)
+            self.metrics.islands.and_then(|_| self.chrome_glass())
         } else if prefs.style == Style::Minimal {
             self.metrics.islands.and_then(|_| self.panel_glass())
         } else {
@@ -2005,13 +1904,7 @@ impl Shell {
     pub(crate) fn dock_icons(&self, origin: Origin, vertical: bool) -> Element<'_, Message> {
         let p = &self.dock.preferences;
         let theme = match origin {
-            Origin::Bar => match self.bar_dock_material() {
-                Some(material) => match material.glass(None) {
-                    Some(style) => self.tokens().on_material(style),
-                    None => self.tokens(),
-                },
-                None => self.window_tokens(Some(self.panel)),
-            },
+            Origin::Bar => self.window_tokens(Some(self.panel)),
             Origin::Dock if p.style == Style::Minimal => self.tokens(),
             Origin::Dock => self.window_tokens(self.dock.window),
         };
@@ -2047,8 +1940,7 @@ impl Shell {
         };
         let cross = (target - frame_inset).max(1.0);
         let slot_padding = edge_padding(edge, target - cross);
-        let default_highlight = p.highlight_radius == dock::Preferences::default().highlight_radius;
-        let radius = if default_highlight && matches!(origin, Origin::Bar) {
+        let radius = if matches!(origin, Origin::Bar) {
             self.metrics.bar_item_radius(7.0).min(cross / 2.0)
         } else {
             f32::from(p.highlight_radius).min(cross / 2.0)
@@ -2074,13 +1966,10 @@ impl Shell {
         if contrast {
             pressable.focus_ring_width = pressable.focus_ring_width.max(3.0);
         }
-        let (selected, hovered) = if translucent {
-            (
-                palette.text.scale_alpha(0.16),
-                palette.text.scale_alpha(0.11),
-            )
+        let selected = if translucent {
+            palette.text.scale_alpha(0.16)
         } else {
-            (palette.surface_selected, palette.surface_hover)
+            palette.surface_selected
         };
         let active_plane = enzui_widgets::surface_interaction::composite(
             iced::Color { a: 1.0, ..plane },
@@ -2412,7 +2301,11 @@ impl Shell {
             .surface_colors_resolved({
                 move |_| SurfaceColors {
                     background: active.then_some(selected),
-                    hover_background: Some(hovered),
+                    hover_background: Some(if active {
+                        selected
+                    } else {
+                        iced::Color::TRANSPARENT
+                    }),
                     border: None,
                 }
             })
@@ -2457,13 +2350,7 @@ impl Shell {
             } else {
                 enzui_widgets::tooltip::enz_tooltip_with_tokens(
                     button,
-                    if has_no_favorites(p)
-                        && matches!(group.builtin, Some(Builtin::Action(Action::Applications)))
-                    {
-                        tr("shell-dock-find-apps-tooltip").into()
-                    } else {
-                        group.title.clone()
-                    },
+                    group.title.clone(),
                     tooltip,
                     tip,
                 )
@@ -2485,76 +2372,7 @@ impl Shell {
             };
             buttons.push((group.id.clone(), button));
         }
-        let find_apps = self.dock.strip.find_apps.value();
         let mut items = Vec::new();
-        if find_apps > 0.0 {
-            let labelled = !in_bar
-                && !vertical
-                && self.dock.strip.trailing.is_empty()
-                && self.dock.entries.is_empty();
-            let mut content = row![
-                enzui_widgets::icon::enz_icon("plus")
-                    .size(size.min(18.0) * 0.78)
-                    .tint(muted_ink)
-                    .into_element()
-            ]
-            .spacing(spacing.sm())
-            .align_y(iced::Alignment::Center);
-            if labelled {
-                content = content.push(
-                    enzui_widgets::text::enz_text(tr("shell-dock-find-apps"))
-                        .no_wrap()
-                        .size(enzui_widgets::text::TextSize::Caption)
-                        .announce(false)
-                        .into_element(),
-                );
-            }
-            let empty_radius = if labelled
-                && default_highlight
-                && matches!(origin, Origin::Dock)
-                && p.style == Style::Desktop
-                && self.metrics.islands.is_some()
-            {
-                self.dock
-                    .geometry
-                    .as_ref()
-                    .map_or(radius, |g| g.radius.min(target / 2.0))
-            } else {
-                radius
-            };
-            let width = if vertical { cross } else { find_apps };
-            let add = enz_pressable(
-                container(content)
-                    .center_x(width)
-                    .center_y(if vertical { target } else { cross })
-                    .into(),
-                Message::ShowLauncher,
-            )
-            .style(PressableStyle::Plain)
-            .tokens(pressable)
-            .width(width)
-            .padding(0)
-            .radius(empty_radius)
-            .surface_colors_resolved(move |_| SurfaceColors {
-                background: None,
-                hover_background: Some(hovered),
-                border: None,
-            })
-            .semantics(
-                Semantics::new(Role::Button)
-                    .label(tr("shell-dock-find-apps"))
-                    .description(tr("shell-dock-find-apps-hint")),
-            )
-            .id("dock-add-app".into())
-            .into_element();
-            let add = enzui_widgets::tooltip::enz_tooltip_with_tokens(
-                container(add).padding(slot_padding).into(),
-                tr("shell-dock-find-apps-tooltip"),
-                tooltip,
-                tip,
-            );
-            items.push(("dock:find-apps".into(), add));
-        }
         let trailing = buttons.split_off(pinned);
         if pinned > 0 {
             let mut list = enzui_widgets::reorder_list::enz_reorder_list(buttons, |request| {
@@ -2603,7 +2421,7 @@ impl Shell {
             .enumerate()
         {
             use enzui_widgets::motion::{MotionEffect, motion};
-            let gap = if index == 0 && pinned == 0 && find_apps == 0.0 {
+            let gap = if index == 0 && pinned == 0 {
                 0.0
             } else {
                 slots.spacing
@@ -2709,6 +2527,38 @@ impl Shell {
             vec![space().width(Length::Fill).height(Length::Fill).into()];
         if p.position != Position::Bar {
             if progress > 0.0 {
+                if g.framed {
+                    use enzui_shell::reveal::{FrameJoin, JoinEdge};
+                    let inset = f32::from(self.metrics.frame);
+                    let outside_frame = iced::Rectangle::new(
+                        iced::Point::new(inset, inset),
+                        iced::Size::new(
+                            g.screen.width - 2.0 * inset,
+                            g.screen.height - 2.0 * inset,
+                        ),
+                    );
+                    if let Some(bounds) = visible.intersection(&outside_frame) {
+                        layers.push(Element::new(JoinedDock(FrameJoin {
+                            edge: match p.position {
+                                Position::Left => JoinEdge::Left,
+                                Position::Right => JoinEdge::Right,
+                                Position::Top => JoinEdge::Top,
+                                _ => JoinEdge::Bottom,
+                            },
+                            bounds,
+                            radius: g.radius,
+                            color: self
+                                .chrome_color()
+                                .unwrap_or_else(|| self.tokens().palette.surface),
+                            shadow_level: if glass.is_none() {
+                                self.desired_settings.bar_shadow
+                            } else {
+                                0
+                            },
+                            solid: glass.is_none(),
+                        })));
+                    }
+                }
                 let icons = self.dock_icons(Origin::Dock, g.vertical);
                 let width = (g.body.width - 2.0 * g.padding[1]).max(1.0);
                 let height = (g.body.height - 2.0 * g.padding[0]).max(1.0);
@@ -2739,7 +2589,6 @@ impl Shell {
                 } else {
                     iced::Shadow::default()
                 };
-                let framed = g.framed;
                 let dark_glass = glass.is_some() && palette.is_dark();
                 let fill = if dark_glass && glass == Some(enzui_theme::MaterialStyle::FlatFrosted) {
                     use iced::{Color, gradient::Linear};
@@ -2751,14 +2600,8 @@ impl Shell {
                             .into(),
                     )
                 } else {
-                    (p.style != Style::Minimal && glass.is_none()).then_some(palette.surface.into())
-                };
-                let contour = if glass.is_some() && !palette.is_dark() {
-                    palette.text.scale_alpha(0.24)
-                } else if self.chrome_light() {
-                    palette.border_strong
-                } else {
-                    palette.border
+                    (p.style != Style::Minimal && glass.is_none() && !g.framed)
+                        .then_some(palette.surface.into())
                 };
                 let body = self.dock_folder_target(
                     container(crate::plugin_applications::dock_scroll::dock_scroll(
@@ -2771,33 +2614,12 @@ impl Shell {
                     .center_y(g.body.height)
                     .style(move |_| container::Style {
                         background: fill,
-                        border: iced::Border {
-                            radius,
-                            width: f32::from(
-                                !dark_glass
-                                    && p.style != Style::Minimal
-                                    && (!framed || glass.is_some()),
-                            ),
-                            color: contour,
-                        },
+                        border: iced::Border::default().rounded(radius),
                         shadow,
                         ..Default::default()
                     })
                     .into(),
                 );
-                let body = if dark_glass {
-                    iced::widget::stack([
-                        body,
-                        Element::new(GlassRim {
-                            edge: p.position,
-                            radius,
-                            taper: g.radius,
-                        }),
-                    ])
-                    .into()
-                } else {
-                    body
-                };
                 let body = mouse_area(body)
                     .on_enter(message(Event::Hover(true, true)))
                     .on_exit(message(Event::Hover(false, true)));

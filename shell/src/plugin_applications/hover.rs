@@ -635,6 +635,7 @@ impl Shell {
         radius: f32,
         glass: bool,
     ) -> Option<Element<'_, Message>> {
+        const FRAME_INSET: f32 = 6.0;
         let preview = self.dock.preview.preview.as_ref()?;
         let palette = self.window_tokens(self.dock.window).palette;
         let snapshot = self.dock.snapshot.as_ref()?;
@@ -702,7 +703,7 @@ impl Shell {
                 )
                 .style(enzui_widgets::pressable::PressableStyle::Plain)
                 .padding(4)
-                .radius(f32::from(self.dock.preferences.highlight_radius))
+                .radius((radius - FRAME_INSET).max(0.0))
                 .surface_colors_resolved(move |_| enzui_widgets::pressable::SurfaceColors {
                     background: active.then_some(palette.surface_selected),
                     hover_background: Some(palette.surface_hover),
@@ -719,11 +720,11 @@ impl Shell {
         let bounds = preview.bounds;
         let content = enzui_widgets::scroll_view::enz_scroll_view(row(cards).spacing(4))
             .axis(enzui_widgets::scroll_view::Axis::Horizontal)
-            .width(bounds.width - 12.0)
-            .height(bounds.height - 12.0)
+            .width(bounds.width - 2.0 * FRAME_INSET)
+            .height(bounds.height - 2.0 * FRAME_INSET)
             .into_element();
         let body = container(content)
-            .padding(6)
+            .padding(FRAME_INSET)
             .width(bounds.width)
             .height(bounds.height)
             .style(move |_| container::Style {

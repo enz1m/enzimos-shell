@@ -84,12 +84,7 @@ impl Shell {
         let style = self
             .chrome_glass()
             .filter(|_| self.metrics.islands.is_some());
-        if style.is_none()
-            && self
-                .bar_dock_material()
-                .and_then(|material| material.glass(None))
-                .is_none()
-        {
+        if style.is_none() {
             if let Some(input) = &self.bar_glass {
                 input.clear_glass();
             }

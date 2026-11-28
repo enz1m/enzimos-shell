@@ -211,14 +211,25 @@ impl State {
         Some((record, data.packages.get(id)?.as_ref()))
     }
 
-    fn dock_route_shown(&self, route: &str) -> bool {
-        self.dock().is_some_and(|(_, package)| {
+    fn dock_position(
+        &self,
+        record: &Record,
+        bar: enzui_shell::settings::BarEdge,
+    ) -> enzui_shell::dock::Position {
+        serde_json::from_value::<enzui_shell::dock::Position>(self.config(record, "position"))
+            .unwrap_or_default()
+            .for_bar(bar)
+    }
+
+    fn dock_route_shown(&self, route: &str, bar: enzui_shell::settings::BarEdge) -> bool {
+        self.dock().is_some_and(|(record, package)| {
             route == "enabled"
-                || package
-                    .manifest()
-                    .settings
-                    .iter()
-                    .any(|spec| spec.key == route)
+                || self.dock_position(record, bar).shows_setting(route)
+                    && package
+                        .manifest()
+                        .settings
+                        .iter()
+                        .any(|spec| spec.key == route)
         })
     }
 
@@ -1015,7 +1026,7 @@ impl SettingsApp {
     }
 
     pub(super) fn dock_route_shown(&self, route: &str) -> bool {
-        self.layout_preview && self.plugins.dock_route_shown(route)
+        self.layout_preview && self.plugins.dock_route_shown(route, self.settings.bar)
     }
 
     pub(super) fn dock_settings_ready(&self) -> bool {
@@ -1046,11 +1057,21 @@ impl SettingsApp {
         let dock = id == enzui_shell::plugins::applications::DOCK_PLUGIN;
         let palette = self.tokens().palette;
         let mut rows = column![].spacing(4);
+        let bar = self.settings.bar;
+        let position = self.plugins.dock_position(record, bar);
+        let bar_edge = match bar {
+            enzui_shell::settings::BarEdge::Top => "top",
+            enzui_shell::settings::BarEdge::Bottom => "bottom",
+        };
         for spec in &package.manifest().settings {
-            if dock && spec.key == "visible" {
+            if dock && !position.shows_setting(&spec.key) {
                 continue;
             }
-            let current = self.plugins.config(record, &spec.key);
+            let current = if dock && spec.key == "position" {
+                json!(position.key())
+            } else {
+                self.plugins.config(record, &spec.key)
+            };
             let plugin = id.to_owned();
             let key = spec.key.clone();
             let route = dock.then(|| format!("dock/{key}"));
@@ -1163,13 +1184,19 @@ impl SettingsApp {
                             str::to_owned,
                         )
                     };
+                    let choices = choices.iter().filter(|v| {
+                        !(dock
+                            && key == "position"
+                            && v.as_str() == bar_edge
+                            && choices.iter().any(|choice| choice == "bar"))
+                    });
                     let mapping = choices
-                        .iter()
+                        .clone()
                         .map(|v| (choice_label(v), v.clone()))
                         .collect::<BTreeMap<_, _>>();
                     let field = enz_combo_box(
                         "",
-                        choices.iter().map(|v| choice_label(v)).collect(),
+                        choices.map(|v| choice_label(v)).collect(),
                         current.as_str().map(choice_label),
                         move |v| {
                             message(Message::Config(
@@ -1415,6 +1442,33 @@ mod tests {
 
             let _ = app.update(AppMessage::Reveal("dock/visible"));
             assert_eq!(app.highlighted, Some("dock/enabled"));
+
+            for position in ["bar", "top"] {
+                store
+                    .configure("app-dock", digest, "position", json!(position))
+                    .unwrap();
+                app.plugins.data = Some(read(&store).unwrap());
+                let (record, _) = app.plugins.dock().unwrap();
+                assert_eq!(
+                    app.plugins.dock_position(record, app.settings.bar),
+                    enzui_shell::dock::Position::Bar
+                );
+                for key in [
+                    "style",
+                    "material",
+                    "visibility",
+                    "icon_size",
+                    "spacing",
+                    "radius",
+                    "highlight_radius",
+                    "margin",
+                ] {
+                    assert!(!app.dock_route_shown(key), "{key}");
+                }
+                for key in ["enabled", "position", "indicator", "pins", "hover_previews"] {
+                    assert!(app.dock_route_shown(key), "{key}");
+                }
+            }
         });
     }
 

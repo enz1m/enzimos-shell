@@ -1095,6 +1095,7 @@ impl Shell {
             | Message::SidebarScroll(..)
             | Message::DesktopsRead(..)
             | Message::DesktopWheel(..)
+            | Message::DismissBarRegions
             | Message::DismissRegions
             | Message::OverviewHidden(..)
             | Message::ControlsHidden(..)
@@ -1111,7 +1112,6 @@ impl Shell {
             | Message::LauncherPrepared(..)
             | Message::LauncherHidden(..)
             | Message::LauncherFocusChecked(..)
-            | Message::LauncherFocused(..)
             | Message::Search(..)
             | Message::Launch(..)
             | Message::Launched(..)

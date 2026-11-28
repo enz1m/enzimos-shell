@@ -159,6 +159,25 @@ fn control_disclosures_switch_without_activating_the_other_tiles_primary_action(
 }
 
 #[test]
+fn bar_launcher_press_and_release_closes_the_open_surface() {
+    let mut shell = controls_shell();
+    shell.search.configured = true;
+    shell.search.showing = true;
+    shell.bar_busy = false;
+    let _ = shell.update(Message::DismissBarRegions);
+    assert!(shell.search.showing);
+    let _ = shell.update(Message::ShowLauncher);
+    assert!(!shell.search.showing);
+    let _ = shell.update(Message::ShowLauncher);
+    assert!(shell.search.showing);
+
+    shell.search.configured = false;
+    shell.launcher = Some(window::Id::unique());
+    let _ = shell.update(Message::ShowLauncher);
+    assert!(shell.launcher.is_none());
+}
+
+#[test]
 fn shell_behaviour() {
     // Panel action dispatch is once only and new intent rejects an already queued completion.
     {

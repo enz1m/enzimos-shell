@@ -27,14 +27,14 @@ path = "src/bin/enzui-greeter.rs"
 test = false
 
 [dependencies]
-enzui-core = { git = "https://github.com/enz1m/enzui.git", rev = "46648f263fbfd31bb2a6327c4dda4845f8d5af97" }
-enzui-theme = { git = "https://github.com/enz1m/enzui.git", rev = "46648f263fbfd31bb2a6327c4dda4845f8d5af97" }
+enzui-core = { git = "https://github.com/enz1m/enzui.git", rev = "05e1b1faa4aef2f42a818866ad06fb374dbb37f5" }
+enzui-theme = { git = "https://github.com/enz1m/enzui.git", rev = "05e1b1faa4aef2f42a818866ad06fb374dbb37f5" }
 enzui-shell = { path = "../shell" }
-enzui-widgets = { git = "https://github.com/enz1m/enzui.git", rev = "46648f263fbfd31bb2a6327c4dda4845f8d5af97" }
-iced = { git = "https://github.com/enz1m/enzim-iced.git", rev = "58b66f27b82d30cb0fd09db524307b6a0e099279", features = ["wgpu", "tiny-skia", "crisp", "web-colors", "thread-pool", "linux-theme-detection", "wayland", "tokio", "advanced", "image-without-codecs"], default-features = false }
-iced_runtime = { git = "https://github.com/enz1m/enzim-iced.git", rev = "58b66f27b82d30cb0fd09db524307b6a0e099279" }
-iced_wgpu = { git = "https://github.com/enz1m/enzim-iced.git", rev = "58b66f27b82d30cb0fd09db524307b6a0e099279" }
-iced_tiny_skia = { git = "https://github.com/enz1m/enzim-iced.git", rev = "58b66f27b82d30cb0fd09db524307b6a0e099279", features = ["image"] }
+enzui-widgets = { git = "https://github.com/enz1m/enzui.git", rev = "05e1b1faa4aef2f42a818866ad06fb374dbb37f5" }
+iced = { git = "https://github.com/enz1m/enzim-iced.git", rev = "72167eb68a68532e461dbafc1c3656453ae842f1", features = ["wgpu", "tiny-skia", "crisp", "web-colors", "thread-pool", "linux-theme-detection", "wayland", "tokio", "advanced", "image-without-codecs"], default-features = false }
+iced_runtime = { git = "https://github.com/enz1m/enzim-iced.git", rev = "72167eb68a68532e461dbafc1c3656453ae842f1" }
+iced_wgpu = { git = "https://github.com/enz1m/enzim-iced.git", rev = "72167eb68a68532e461dbafc1c3656453ae842f1" }
+iced_tiny_skia = { git = "https://github.com/enz1m/enzim-iced.git", rev = "72167eb68a68532e461dbafc1c3656453ae842f1", features = ["image"] }
 tiny-skia = "0.12"
 resvg = { version = "=0.45.1", default-features = false }
 serde_json = "1"

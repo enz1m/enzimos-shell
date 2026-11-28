@@ -103,6 +103,32 @@ fn exchange_at_with_timeout(
     parse_response(&response).ok_or(lost)
 }
 
+/// Exchanges a bounded HTTP request with a local AI service over its private socket.
+pub async fn exchange_local_async(
+    service: Service,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+    timeout: Duration,
+) -> Option<(u16, Value)> {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let socket = crate::agent_harness::private_socket(&service.socket()?).ok()?;
+    socket.set_nonblocking(true).ok()?;
+    let mut socket = tokio::net::UnixStream::from_std(socket).ok()?;
+    tokio::time::timeout(timeout, async {
+        socket
+            .write_all(&request_bytes(method, path, body))
+            .await
+            .ok()?;
+        let mut reply = Vec::new();
+        socket.take(MAX_REPLY).read_to_end(&mut reply).await.ok()?;
+        parse_response(&reply)
+    })
+    .await
+    .ok()?
+}
+
 fn request_bytes(method: &str, path: &str, body: Option<&Value>) -> Vec<u8> {
     let payload = body
         .map(|b| serde_json::to_vec(b).unwrap_or_default())
@@ -144,27 +170,15 @@ pub enum Benchmark {
 /// # Errors
 /// Returns the service refusal or an unavailable or invalid response.
 pub async fn benchmark(model: String) -> Result<Benchmark, String> {
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-
     let unavailable = || Failure::Unavailable.message(Service::Inference);
-    let path = Service::Inference.socket().ok_or_else(unavailable)?;
-    let socket = crate::agent_harness::private_socket(&path)?;
-    socket.set_nonblocking(true).map_err(|_| unavailable())?;
-    let mut socket = tokio::net::UnixStream::from_std(socket).map_err(|_| unavailable())?;
-    let request = request_bytes(
+    let (status, response) = exchange_local_async(
+        Service::Inference,
         "POST",
         "/v1/models/benchmark",
         Some(&json!({"model": model})),
-    );
-    let (status, response) = tokio::time::timeout(Duration::from_secs(150), async {
-        socket.write_all(&request).await.ok()?;
-        let mut reply = Vec::new();
-        socket.take(MAX_REPLY).read_to_end(&mut reply).await.ok()?;
-        parse_response(&reply)
-    })
+        Duration::from_secs(150),
+    )
     .await
-    .ok()
-    .flatten()
     .ok_or_else(unavailable)?;
     let invalid = || Failure::Invalid.message(Service::Inference);
     if status != 200 {

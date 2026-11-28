@@ -1,0 +1,11 @@
+[package]
+name = "enzui-voice-runtime"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[dependencies]
+ptts = { git = "https://github.com/gradium-ai/xn-ptts.git", rev = "5f9522b3e245846d312caaeb460d3dcae5d1a991", features = ["hf"] }

@@ -11,6 +11,7 @@ mod resize;
 mod shortcuts;
 mod transcript;
 mod view;
+mod voice;
 
 use crate::{Message as ShellMessage, Shell};
 use enzui_shell::compositor::{ControlGeometry, TriggerLayout};
@@ -35,6 +36,7 @@ pub(crate) struct SessionRow {
 #[derive(Debug, Clone)]
 pub(crate) enum Message {
     Service(client::Service),
+    Voice(voice::Message),
     Attachments(attachments::Message),
     Resize(resize::Message),
     Models(models::Message),
@@ -58,10 +60,10 @@ pub(crate) enum Message {
     Close,
     Sessions(Result<Vec<SessionRow>, String>),
     Loaded(String, Result<Value, String>),
-    Created(String, Result<String, String>),
+    Created(String, Option<u64>, Result<String, String>),
     Turn(u64, client::TurnEvent),
     Answered(String, Result<Value, String>),
-    Steered(String, Result<Value, String>),
+    Steered(Option<String>, Result<Value, String>),
     Edit(text_editor::Action),
     WarmDraft(String),
     Send,
@@ -137,6 +139,7 @@ struct RevisionRun {
 pub(crate) struct Running {
     pub serial: u64,
     pub since: Instant,
+    turn_id: Option<String>,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     revision: Option<RevisionRun>,
     completed: Option<u64>,
@@ -192,6 +195,7 @@ pub(crate) struct State {
     pub viewport: f32,
     pub away: bool,
     pub now: Option<Instant>,
+    voice: voice::State,
 }
 
 impl State {
@@ -351,6 +355,12 @@ impl Shell {
         iced::Subscription::batch([
             client::service().map(|state| message(Message::Service(state))),
             self.assistant.attachment_loader.subscription(),
+            self.assistant.voice.subscription(
+                !self.tokens().motion.reduced_motion
+                    && (self.assistant.running.is_some()
+                        || self.assistant.voice.recording
+                        || self.assistant.voice.speaking()),
+            ),
             if self.assistant.shortcuts
                 || (self.assistant.panel.is_some()
                     && !self.desired_settings.assistant_shortcuts.is_empty())
@@ -439,7 +449,7 @@ impl Shell {
                 self.assistant.shortcuts = show;
                 if show {
                     self.assistant.history = false;
-                    Task::none()
+                    self.assistant.voice.end()
                 } else {
                     Task::batch([
                         self.cancel_assistant_shortcut(),
@@ -540,6 +550,7 @@ impl Shell {
                 iced::widget::operation::focus(COMPOSER)
             }
             Message::CancelEdit => Task::none(),
+            Message::Voice(action) => self.assistant_voice(action),
             Message::Service(state) => {
                 let ready = matches!(state, client::Service::Ready(_));
                 let was_ready = self.assistant.service == Some(Ok(()));
@@ -756,13 +767,20 @@ impl Shell {
                     }
                 }
             }
-            Message::Created(prompt, result) => {
+            Message::Created(prompt, voice_epoch, result) => {
                 self.assistant.approval_busy = false;
+                if voice_epoch.is_some() && voice_epoch != self.assistant.voice.epoch() {
+                    return Task::none();
+                }
                 match result {
                     Ok(id) => {
                         self.assistant.session = Some(id.clone());
-                        self.assistant.clear_sent_draft(&prompt);
-                        let files = std::mem::take(&mut self.assistant.files);
+                        let files = if voice_epoch.is_some() {
+                            Vec::new()
+                        } else {
+                            self.assistant.clear_sent_draft(&prompt);
+                            std::mem::take(&mut self.assistant.files)
+                        };
                         self.assistant_start(id, prompt, files, None)
                     }
                     Err(error) => {
@@ -786,8 +804,14 @@ impl Shell {
                             && event["installed"] != true
                             && let Some(app_id) = event["app_id"].as_str()
                         {
-                            let installed = enzui_shell::search::catalogue::installed_entry(app_id).is_some();
+                            let installed =
+                                enzui_shell::search::catalogue::installed_entry(app_id).is_some();
                             event["installed"] = json!(installed);
+                        }
+                        if event["type"] == "turn.started"
+                            && let Some(run) = self.assistant.running.as_mut()
+                        {
+                            run.turn_id = event["turn_id"].as_str().map(str::to_owned);
                         }
                         if event["type"] == "turn.started"
                             && let Some(model) = event["model"].as_str()
@@ -812,17 +836,22 @@ impl Shell {
                             run.completed = event["sequence"].as_u64();
                         }
                         self.assistant.transcript.apply(&event);
-                        Task::none()
+                        self.assistant.voice.turn_event(&event)
                     }
                     client::TurnEvent::Finished(result) => {
                         let run = self.assistant.running.take().expect("turn serial matched");
                         let completed = matches!(&result, Ok(status) if status == "completed");
+                        let voice = if completed {
+                            Task::none()
+                        } else {
+                            self.assistant.voice.turn_failed()
+                        };
                         if let Some(revision) = run.revision
                             && (!completed || !revision.started)
                         {
                             self.assistant.transcript = revision.original;
                             self.assistant.error = result.err();
-                            return iced::widget::operation::focus(COMPOSER);
+                            return Task::batch([voice, iced::widget::operation::focus(COMPOSER)]);
                         }
                         self.assistant.completed = run.completed.filter(|_| completed);
                         if completed {
@@ -841,7 +870,7 @@ impl Shell {
                             Ok(_) => self.assistant.transcript.finish(None),
                             Err(error) => self.assistant.transcript.fail(&error),
                         }
-                        Task::batch([list(), iced::widget::operation::focus(COMPOSER)])
+                        Task::batch([voice, list(), iced::widget::operation::focus(COMPOSER)])
                     }
                 }
             }
@@ -855,7 +884,11 @@ impl Shell {
             Message::Steered(prompt, result) => {
                 self.assistant.steering = false;
                 match result {
-                    Ok(_) => self.assistant.clear_sent_draft(&prompt),
+                    Ok(_) => {
+                        if let Some(prompt) = prompt {
+                            self.assistant.clear_sent_draft(&prompt);
+                        }
+                    }
                     Err(error) => self.assistant.error = Some(error),
                 }
                 Task::none()
@@ -957,6 +990,7 @@ impl Shell {
                 self.assistant.error = None;
                 Task::batch([
                     revoke,
+                    self.assistant.voice.end(),
                     self.cancel_assistant_shortcut(),
                     iced::widget::operation::focus(COMPOSER),
                 ])
@@ -969,6 +1003,7 @@ impl Shell {
                 if open {
                     self.assistant.history_search.clear();
                     Task::batch([
+                        self.assistant.voice.end(),
                         self.cancel_assistant_shortcut(),
                         list(),
                         iced::widget::operation::focus("assistant-search"),
@@ -1008,7 +1043,12 @@ impl Shell {
                     .map(|row| row.title.clone())
                     .unwrap_or_default();
                 self.assistant.transcript.clear();
-                Task::batch([revoke, export(id.clone()), warmup(Some(id))])
+                Task::batch([
+                    revoke,
+                    self.assistant.voice.end(),
+                    export(id.clone()),
+                    warmup(Some(id)),
+                ])
             }
             Message::Toggled(key) => {
                 self.assistant.transcript.toggle(&key);
@@ -1229,6 +1269,10 @@ impl Shell {
     }
 
     fn assistant_send(&mut self, text: String) -> Task<ShellMessage> {
+        self.assistant_submit(text, false)
+    }
+
+    fn assistant_submit(&mut self, text: String, microphone: bool) -> Task<ShellMessage> {
         if self.assistant.approval_busy
             || self.assistant.confirming_full_send
             || self.assistant.steering
@@ -1241,26 +1285,35 @@ impl Shell {
         self.assistant.history = false;
         self.assistant.choosing_approval = false;
         self.assistant.model_picker.close();
-        if self.assistant.running.is_some() {
+        if let Some(run) = self.assistant.running.as_ref() {
             // Mid-turn: the message steers the running turn.
             let Some(session) = self.assistant.session.clone() else {
                 return Task::none();
             };
+            let mut body = json!({"session_id": session, "text": text});
+            if microphone {
+                let Some(turn) = &run.turn_id else {
+                    return Task::none();
+                };
+                body["turn_id"] = json!(turn);
+            }
             self.assistant.steering = true;
             return Task::batch([
                 perform(async move {
-                    let result =
-                        client::request("turn.steer", json!({"session_id": session, "text": text}))
-                            .await;
-                    Message::Steered(text, result)
+                    let result = client::request("turn.steer", body).await;
+                    Message::Steered((!microphone).then_some(text), result)
                 }),
                 iced::widget::operation::focus(COMPOSER),
             ]);
         }
         match self.assistant.session.clone() {
             Some(session) => {
-                self.assistant.clear_sent_draft(&text);
-                let files = std::mem::take(&mut self.assistant.files);
+                let files = if microphone {
+                    Vec::new()
+                } else {
+                    self.assistant.clear_sent_draft(&text);
+                    std::mem::take(&mut self.assistant.files)
+                };
                 self.assistant_start(session, text, files, None)
             }
             None => {
@@ -1272,8 +1325,13 @@ impl Shell {
                 if let Some(choice) = &choice {
                     self.assistant.model.clone_from(&choice.model);
                 }
+                let voice_epoch = microphone.then(|| self.assistant.voice.epoch()).flatten();
                 perform(async move {
-                    Message::Created(text, client::open(mode, screenshots, choice).await)
+                    Message::Created(
+                        text,
+                        voice_epoch,
+                        client::open(mode, screenshots, choice).await,
+                    )
                 })
             }
         }
@@ -1324,6 +1382,7 @@ impl Shell {
         self.assistant.running = Some(Running {
             serial,
             since: Instant::now(),
+            turn_id: None,
             stop: Some(stop),
             revision,
             completed: None,
@@ -1339,20 +1398,27 @@ impl Shell {
         }
         let mode = self.assistant.approval_mode;
         let screenshots = self.assistant.screenshots;
+        let playback = self.assistant.voice.new_turn();
+        let modality = if self.assistant.voice.enabled {
+            "voice"
+        } else {
+            "text"
+        };
         let (method, payload) = if let Some(expected) = expected {
             (
                 "turn.revise",
                 json!({"session_id": session, "prompt": prompt, "expected_revision": expected,
-                "approval_mode": mode.wire(), "screenshots": screenshots.wire()}),
+                "approval_mode": mode.wire(), "screenshots": screenshots.wire(), "modality": modality}),
             )
         } else {
             (
                 "turn.start",
                 json!({"session_id": session, "prompt": prompt, "attachments": files.iter().map(attachments::Attachment::wire).collect::<Vec<_>>(),
-                "approval_mode": mode.wire(), "screenshots": screenshots.wire()}),
+                "approval_mode": mode.wire(), "screenshots": screenshots.wire(), "modality": modality}),
             )
         };
         Task::batch([
+            playback,
             Task::run(client::turn(method, payload, cancelled), move |event| {
                 message(Message::Turn(serial, event))
             }),
@@ -1433,6 +1499,7 @@ impl Shell {
         self.assistant.history = false;
         self.assistant.shortcuts = false;
         let cancel = self.cancel_assistant_shortcut();
+        let voice = self.assistant.voice.end();
         let close = match self.assistant.panel.as_mut() {
             Some(pane) if pane.started => {
                 pane.visible = false;
@@ -1441,7 +1508,7 @@ impl Shell {
             Some(_) => self.force_close_assistant(),
             None => Task::none(),
         };
-        Task::batch([cancel, close])
+        Task::batch([cancel, close, voice])
     }
 
     pub(crate) fn force_close_assistant(&mut self) -> Task<ShellMessage> {
@@ -1450,8 +1517,9 @@ impl Shell {
         self.assistant.model_picker.close();
         self.assistant.panel_opening = false;
         let cancel = self.cancel_assistant_shortcut();
+        let voice = self.assistant.voice.end();
         let Some(pane) = self.assistant.panel.take() else {
-            return cancel;
+            return Task::batch([cancel, voice]);
         };
         // Pressing the button can nudge its window; it returns to its corner.
         let trigger = self
@@ -1460,7 +1528,7 @@ impl Shell {
             .as_ref()
             .map(|trigger| trigger.window);
         let place = trigger.map_or_else(Task::none, |id| self.assistant_mapped(id));
-        Task::batch([cancel, self.finish_panel_close(pane.window), place])
+        Task::batch([cancel, self.finish_panel_close(pane.window), place, voice])
     }
 
     pub(crate) fn assistant_window_event(
@@ -1494,6 +1562,7 @@ impl Shell {
                 Task::none()
             }
             window::Event::Unfocused => {
+                self.finish_voice_hold();
                 self.assistant.drag = None;
                 self.cancel_assistant_shortcut()
             }
@@ -1501,6 +1570,7 @@ impl Shell {
             window::Event::Closed => {
                 if self.assistant.owns_panel(id) {
                     self.assistant.panel = None;
+                    return self.assistant.voice.end();
                 }
                 Task::none()
             }

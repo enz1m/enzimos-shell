@@ -403,6 +403,9 @@ impl Shell {
                 if state.choosing_approval {
                     content = content.push(self.assistant_approvals(&palette));
                 }
+                if state.voice.enabled {
+                    content = content.push(self.assistant_voice_panel(&palette));
+                }
                 content = content.push(self.assistant_composer(&palette));
             }
         }
@@ -891,6 +894,231 @@ impl Shell {
         permissions.into()
     }
 
+    fn assistant_voice_panel(&self, palette: &Palette) -> Element<'_, ShellMessage> {
+        use super::voice::{Message as Voice, Mode};
+        let state = &self.assistant;
+        let voice = &state.voice;
+        let send = |action| message(Message::Voice(action));
+        let (status, tint, style) = if voice.speaking() {
+            ("shell-voice-speaking", palette.accent, 3)
+        } else if voice.recording {
+            ("shell-voice-listening", palette.danger, 1)
+        } else if voice.recognizing {
+            ("shell-voice-recognizing", palette.accent, 2)
+        } else if state.running.is_some() {
+            ("shell-voice-thinking", palette.accent, 2)
+        } else {
+            ("shell-voice-ready", palette.text_muted, 0)
+        };
+        let still = self.tokens().motion.reduced_motion;
+        let mut wave = row![].spacing(3).align_y(Alignment::Center);
+        for index in 0..5 {
+            let weight = [0.35, 0.67, 1.0, 0.67, 0.35][index];
+            let phase = (voice.tick % 100) as f32 * 0.251_327 + index as f32 * 0.85;
+            let amplitude = match (still, style) {
+                (_, 0) => 5.0 * weight,
+                (true, _) => 16.0 * weight,
+                (false, 2) => 7.0 + phase.sin().max(0.0) * 11.0,
+                (false, 3) => 5.0 + phase.sin().abs() * 18.0 * weight,
+                _ => 7.0 + (phase.sin() + 1.0) * 6.0 * weight,
+            };
+            wave = wave.push(
+                container(space().width(4).height(amplitude)).style(move |_| container::Style {
+                    background: Some(tint.into()),
+                    border: iced::Border {
+                        radius: 2.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+            );
+        }
+        let silence = enz_toolbar_icon("volume-x", send(Voice::Silence))
+            .tokens(self.icon_tokens())
+            .id("assistant-voice-silence".into())
+            .aria_label(tr("shell-voice-silence"))
+            .tooltip(tr("shell-voice-silence"))
+            .enabled(voice.speaking())
+            .into_element();
+        let mic = enz_toolbar_icon(
+            if voice.muted { "mic-off" } else { "mic" },
+            send(Voice::Mute),
+        )
+        .tokens(self.icon_tokens())
+        .id("assistant-voice-mute".into())
+        .aria_label(tr(if voice.muted {
+            "shell-voice-unmute"
+        } else {
+            "shell-voice-mute"
+        }))
+        .tooltip(tr(if voice.muted {
+            "shell-voice-unmute"
+        } else {
+            "shell-voice-mute"
+        }))
+        .into_element();
+        let mic_status = if voice.recording {
+            "shell-voice-mic-live"
+        } else {
+            "shell-voice-mic-off"
+        };
+        let heading = row![
+            container(wave).width(37).height(28).center_y(28),
+            column![
+                enz_text(tr(status))
+                    .size_px(BODY)
+                    .weight(Weight::Semibold)
+                    .into_element(),
+                enz_text(tr(mic_status))
+                    .size_px(TINY)
+                    .color(if voice.recording {
+                        palette.danger
+                    } else {
+                        palette.text_muted
+                    })
+                    .into_element(),
+            ],
+            space().width(Length::Fill),
+            silence,
+            mic,
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center);
+        let mut modes = row![].spacing(4);
+        for (mode, id) in [
+            (Mode::Tap, "tap"),
+            (Mode::Hold, "hold"),
+            (Mode::Always, "always"),
+        ] {
+            modes = modes.push(
+                enz_button(mode.label(), send(Voice::Mode(mode)))
+                    .id(format!("assistant-voice-mode-{id}").into())
+                    .kind(if voice.mode == mode {
+                        ButtonKind::Secondary
+                    } else {
+                        ButtonKind::Quiet
+                    })
+                    .size(ButtonSize::Sm)
+                    .into_element(),
+            );
+        }
+        let mut card = column![heading, modes].spacing(6);
+        if let Some(error) = voice.error {
+            card = card.push(
+                enz_text(tr(error))
+                    .size_px(SMALL)
+                    .color(palette.danger)
+                    .wrap(true)
+                    .into_element(),
+            );
+        }
+        if let Some(review) = &voice.review {
+            if let Some(original) = &review.original {
+                card = card.push(
+                    enz_text(enzui_shell::tr!("shell-voice-heard", "arg0" => original.clone()))
+                        .size_px(SMALL)
+                        .wrap(true)
+                        .into_element(),
+                );
+            }
+            let mut actions = row![
+                enz_button(tr("shell-send"), send(Voice::Confirm))
+                    .id("assistant-voice-confirm".into())
+                    .kind(ButtonKind::Primary)
+                    .size(ButtonSize::Sm)
+                    .into_element(),
+            ]
+            .spacing(4);
+            if review.original.is_some() {
+                actions = actions.push(
+                    enz_button(tr("shell-voice-use-original"), send(Voice::UseOriginal))
+                        .id("assistant-voice-use-original".into())
+                        .kind(ButtonKind::Quiet)
+                        .size(ButtonSize::Sm)
+                        .into_element(),
+                );
+            }
+            card = card
+                .push(
+                    enz_text(review.text.clone())
+                        .size_px(BODY)
+                        .wrap(true)
+                        .into_element(),
+                )
+                .push(
+                    actions.push(
+                        enz_button(tr("shell-cancel"), send(Voice::Dismiss))
+                            .id("assistant-voice-dismiss".into())
+                            .kind(ButtonKind::Quiet)
+                            .size(ButtonSize::Sm)
+                            .into_element(),
+                    ),
+                );
+        } else {
+            let control: Element<'_, ShellMessage> = match voice.mode {
+                Mode::Tap => enz_button(
+                    tr(if voice.recording {
+                        "shell-voice-finish"
+                    } else {
+                        "shell-voice-speak"
+                    }),
+                    send(Voice::Mic),
+                )
+                .id("assistant-voice-capture".into())
+                .kind(ButtonKind::Secondary)
+                .size(ButtonSize::Sm)
+                .enabled(!voice.muted && !voice.recognizing)
+                .into_element(),
+                Mode::Hold if !voice.muted => mouse_area(
+                    container(
+                        enz_text(tr("shell-voice-hold-f9"))
+                            .size_px(SMALL)
+                            .into_element(),
+                    )
+                    .padding([5, 8]),
+                )
+                .on_press(send(Voice::Hold(true)))
+                .on_release(send(Voice::Hold(false)))
+                .interaction(iced::mouse::Interaction::Pointer)
+                .into(),
+                Mode::Hold => enz_text(tr("shell-voice-hold-f9"))
+                    .size_px(SMALL)
+                    .color(palette.text_muted)
+                    .into_element(),
+                Mode::Always => enz_text(tr("shell-voice-address"))
+                    .size_px(SMALL)
+                    .wrap(true)
+                    .color(palette.text_muted)
+                    .into_element(),
+            };
+            card = card.push(control);
+        }
+        if !voice.partial.is_empty() {
+            card = card.push(
+                enz_text(&voice.partial)
+                    .size_px(SMALL)
+                    .wrap(true)
+                    .color(palette.text_muted)
+                    .into_element(),
+            );
+        }
+        let fill = palette.field;
+        let border = palette.field_border;
+        container(card)
+            .padding([8, 9])
+            .width(Length::Fill)
+            .style(move |_| container::Style {
+                background: Some(fill.into()),
+                border: iced::Border {
+                    color: border,
+                    width: 1.0,
+                    radius: 9.0.into(),
+                },
+                ..Default::default()
+            })
+            .into()
+    }
+
     fn assistant_composer(&self, palette: &Palette) -> Element<'_, ShellMessage> {
         let state = &self.assistant;
         let running = state.running.is_some();
@@ -957,6 +1185,23 @@ impl Shell {
         if state.screenshots != Screenshots::Off {
             options = options.push(enz_icon("camera").size(13.0).tint(muted).into_element());
         }
+        let label = tr(if state.voice.enabled {
+            "shell-voice-end"
+        } else {
+            "shell-voice-start"
+        });
+        options = options.push(
+            enz_toolbar_icon(
+                "audio-lines",
+                message(Message::Voice(super::voice::Message::Toggle)),
+            )
+            .tokens(self.icon_tokens())
+            .id("assistant-voice-toggle".into())
+            .enabled(state.voice.enabled || !running)
+            .aria_label(label)
+            .tooltip(label)
+            .into_element(),
+        );
         options = options
             .push(space().width(Length::Fill))
             .push(self.assistant_model_picker());
@@ -1497,7 +1742,13 @@ fn assistant_row<'a>(
             ]
             .spacing(6);
             if !reason.is_empty() {
-                card = card.push(enz_text(reason.clone()).size_px(SMALL).color(muted).wrap(true).into_element());
+                card = card.push(
+                    enz_text(reason.clone())
+                        .size_px(SMALL)
+                        .color(muted)
+                        .wrap(true)
+                        .into_element(),
+                );
             }
             if tool == "screenshot" {
                 card = card.push(

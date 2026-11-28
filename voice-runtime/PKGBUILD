@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: MIT
+pkgname=enzimos-assistant-voice
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Local English Phonon voice for enzimOS Assistant'
+arch=('x86_64')
+url='https://github.com/enz1m/enzimos-shell'
+license=('MIT' 'Apache-2.0')
+depends=('glibc' 'gcc-libs' 'pipewire-audio')
+makedepends=('cargo' 'git')
+options=('!debug')
+_model=https://huggingface.co/gradium/phonon-31m-en/resolve/8f7a37c94a4c58b04c8287300c53f11d2e208eae
+_runtime=https://raw.githubusercontent.com/gradium-ai/xn-ptts/5f9522b3e245846d312caaeb460d3dcae5d1a991
+source=(
+  "$_model/model.q8.gguf"
+  "$_model/config.json"
+  "$_model/tokenizer.json"
+  "$_model/default-voice.safetensors"
+  "phonon-model-card.md::$_model/README.md"
+  "phonon-model-LICENSE::$_model/LICENSE"
+  "ptts-LICENSE-MIT::$_runtime/LICENSE-MIT"
+  "ptts-LICENSE-APACHE::$_runtime/LICENSE-APACHE"
+)
+sha256sums=(
+  'a7d9aad2cd6dc66473f24a08bc6d2939030ef4d751ef82349361fbef3272dbae'
+  'b5d0f88353638370d94035b7d73d7d6577c0554d78f8d7ecfd40490aae39ae85'
+  '691a00068fa7b989f2f3e5ae5daa2d1a5bb319f2d5360deafcfb19a8bb6e7936'
+  'dc537478eaadc1a5257fcda2e3501ab81e14c111a5d95a5838f350db2afd0f1a'
+  'fc04467c0e5560e89cd5bbded052e9b7f6c23e2abcdd03a32a3a07a27a7ea3ed'
+  'c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4'
+  '23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3'
+  'c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4'
+)
+
+prepare() {
+    cargo fetch --locked --manifest-path "$startdir/Cargo.toml"
+}
+
+build() {
+    export CARGO_TARGET_DIR="$srcdir/cargo-target"
+    cargo build --frozen --release --manifest-path "$startdir/Cargo.toml"
+}
+
+package() {
+    local voice="$pkgdir/usr/share/enzimos/voice/phonon-31m-en"
+    local notices="$pkgdir/usr/share/licenses/$pkgname"
+    install -Dm755 "$srcdir/cargo-target/release/enzui-voice-runtime" "$pkgdir/usr/bin/enzui-voice-runtime"
+    install -Dm644 -t "$voice" "$srcdir"/{model.q8.gguf,config.json,tokenizer.json,default-voice.safetensors}
+    install -Dm644 "$srcdir/phonon-model-card.md" "$voice/README.md"
+    install -Dm644 -t "$notices" "$srcdir"/{phonon-model-LICENSE,ptts-LICENSE-MIT,ptts-LICENSE-APACHE}
+    install -Dm644 "$startdir/../LICENSE" "$notices/enzui-voice-runtime-LICENSE"
+}

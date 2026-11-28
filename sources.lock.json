@@ -36,7 +36,7 @@
   },
   "enzwall": {
     "url": "https://github.com/enz1m/enzwall.git",
-    "revision": "59f3477801d5b869f7114ec7a5491d21c96559cd",
+    "revision": "8d8ac1fb88c8d50f315202fdafd80fe91a5f1f20",
     "destination": "enzwall"
   },
   "remote_desktop_portal": {
@@ -47,7 +47,7 @@
   },
   "phone_link_client": {
     "url": "https://github.com/enz1m/enzimos-phone-link.git",
-    "revision": "e31aaf00c025f77cd911fc0d65a68ab64d80dc1e",
+    "revision": "75ea513af59de824cc2d60d740d03dbe3f95c3e5",
     "destination": "vendor/phone-link"
   }
 }

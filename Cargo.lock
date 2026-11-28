@@ -1121,7 +1121,7 @@ source = "git+https://github.com/enz1m/enzui.git?rev=46648f263fbfd31bb2a6327c4dd
 
 [[package]]
 name = "enzui-lock"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -1156,7 +1156,7 @@ source = "git+https://github.com/enz1m/enzui.git?rev=46648f263fbfd31bb2a6327c4dd
 
 [[package]]
 name = "enzui-power-boost"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "tempfile",
@@ -1174,7 +1174,7 @@ dependencies = [
 
 [[package]]
 name = "enzui-shell"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ab_glyph",
  "async-trait",

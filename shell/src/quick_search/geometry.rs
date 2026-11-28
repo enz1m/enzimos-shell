@@ -107,10 +107,14 @@ impl Shell {
                 }),
         )
     }
+    pub(crate) fn overview_search_height() -> f32 {
+        FIELD_SIZE.tokens().height + CARD_PADDING.y() + 2.0 * CARD_OUTER_PADDING
+    }
+
     /// The card's height before anything is typed, as it rests under the bar.
-    pub(crate) fn search_resting_height(&self) -> f32 {
+    fn search_resting_height(&self) -> f32 {
         if self.search.overview {
-            FIELD_SIZE.tokens().height + CARD_PADDING.y() + 2.0 * CARD_OUTER_PADDING
+            Self::overview_search_height()
         } else if self.search.blank_apps() {
             BLANK_HEIGHT
         } else {

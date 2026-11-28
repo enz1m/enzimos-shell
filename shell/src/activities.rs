@@ -1,5 +1,4 @@
-//! The Island bar's overview, opened by Super on its own: Search, the
-//! desktops and the current desktop's windows side by side, as one view.
+//! The desktop overview combines Search, desktop previews and the current windows.
 //!
 //! It composes the existing surfaces: Search's card (centred under the bar,
 //! keeping the keyboard) over the window spread, whose overlay also draws the
@@ -54,12 +53,7 @@ impl Shell {
         if self.activities {
             return Task::none();
         }
-        if self.metrics.islands.is_none()
-            || self
-                .snapshot
-                .as_ref()
-                .is_some_and(|snapshot| snapshot.tiling)
-        {
+        if self.overview_uses_search_only() {
             return if self.search.showing {
                 Task::none()
             } else {
@@ -93,12 +87,8 @@ impl Shell {
             self.quiet = true;
             return interrupted;
         }
-        let interactive = !self.window_tokens(None).motion.reduced_motion
-            && self.metrics.islands.is_some()
-            && !self
-                .snapshot
-                .as_ref()
-                .is_some_and(|snapshot| snapshot.tiling);
+        let interactive =
+            !self.window_tokens(None).motion.reduced_motion && !self.overview_uses_search_only();
         enzui_shell::power_boost::request();
         let mut mode = SwipeMode::Discrete;
         let prepare = if interactive && opening && !self.search.showing {
@@ -115,6 +105,14 @@ impl Shell {
         };
         self.activities_swipe = Some(Swipe { opening, mode });
         Task::batch([interrupted, prepare])
+    }
+
+    fn overview_uses_search_only(&self) -> bool {
+        self.metrics.islands.is_some()
+            && self
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.tiling)
     }
 
     fn prepare_overview_swipe(&mut self) -> (f32, Task<Message>) {
@@ -199,11 +197,13 @@ impl Shell {
         ])
     }
 
-    // The centred card can join the bar with rounded corners that add the
-    // panel radius below its resting height.
     fn overview_band(&self) -> OverviewBand {
         OverviewBand {
-            search: self.search_resting_height() + f32::from(self.metrics.radius),
+            search_height: Self::overview_search_height()
+                + self
+                    .metrics
+                    .islands
+                    .map_or_else(|| f32::from(self.metrics.radius), |_| 0.0),
         }
     }
 
@@ -287,6 +287,31 @@ mod tests {
         let mut shell = Shell::new(compositor, std::path::PathBuf::from("/")).0;
         shell.metrics.islands = Some(enzui_shell::shell_style::Islands::default());
         shell
+    }
+
+    #[test]
+    fn framed_swipe_uses_the_spread_without_enabling_super_tap() {
+        let mut shell = island_shell();
+        shell.metrics.islands = None;
+        shell.snapshot = Some(enzui_shell::compositor::Snapshot {
+            workspace: 1,
+            tiling: true,
+            keyboard_layout: None,
+            keyboard: None,
+        });
+        let _ = shell.activities_command(true);
+        assert!(!shell.spread_active());
+
+        let _ = shell.activities_swipe(OverviewSwipe::Begin { opening: true });
+        assert!(shell.activities);
+        assert!(shell.spread_active());
+        assert!(matches!(
+            shell.activities_swipe,
+            Some(Swipe {
+                mode: SwipeMode::Spread { .. },
+                ..
+            })
+        ));
     }
 
     #[test]

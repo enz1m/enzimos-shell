@@ -24,8 +24,6 @@ use std::{
 #[path = "spread_motion.rs"]
 mod motion;
 
-// Floating-desktop window overview using captures while the compositor hides the original
-// windows.
 const DURATION: f32 = 0.26;
 const MARGIN: f32 = 32.0;
 const GAP: f32 = 28.0;
@@ -35,8 +33,7 @@ const CAPTION_PADDING_Y: f32 = 5.0;
 const RING: f32 = 5.0;
 const CLOSE_SIZE: f32 = 32.0;
 const WINDOW_KEYS: [&str; 10] = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"];
-// The overview's desktops strip: room between it, Search and the windows.
-const STRIP_GAP: f32 = 18.0;
+const STRIP_GAP: f32 = 8.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 enum Phase {
@@ -69,11 +66,10 @@ pub(crate) struct Loaded {
     strip: Option<Rect>,
 }
 
-/// Room the overview keeps on the bar's side for Search's resting card; the
-/// desktops strip goes beside it.
+/// Space occupied by Search's resting card.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct OverviewBand {
-    pub search: f32,
+    pub search_height: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -357,32 +353,27 @@ impl Spread {
     }
 }
 
-// The strip and the bands the windows keep clear, overlay-local; the strip
-// sits beside Search on the bar's side.
 fn overview_bands(
     area: [f32; 4],
     insets: Padding,
-    band: OverviewBand,
+    search: OverviewBand,
+    bar_band: f32,
     bottom: bool,
 ) -> (Rect, Padding) {
-    // A tenth of the output, between a readable preview and the windows' room.
     let height = (area[3] * 0.1).clamp(56.0, 104.0);
+    let start = bar_band + search.search_height + STRIP_GAP;
     let y = if bottom {
-        area[3] - insets.bottom - band.search - STRIP_GAP - height
+        area[3] - start - height
     } else {
-        insets.top + band.search + STRIP_GAP
+        start
     };
-    let strip = Rect::new(
-        insets.left + MARGIN,
-        y,
-        (area[2] - insets.x() - 2.0 * MARGIN).max(1.0),
-        height,
-    );
-    let clear = height + band.search + STRIP_GAP;
+    let side = insets.left.max(insets.right) + MARGIN;
+    let strip = Rect::new(side, y, (area[2] - 2.0 * side).max(1.0), height);
+    let clear = start + height;
     let insets = if bottom {
-        insets.bottom(insets.bottom + clear)
+        insets.bottom(insets.bottom.max(clear))
     } else {
-        insets.top(insets.top + clear)
+        insets.top(insets.top.max(clear))
     };
     (strip, insets)
 }
@@ -457,10 +448,11 @@ async fn load(
         };
     }
     let (strip, insets) = match overview {
-        Some(band) => {
+        Some(search) => {
             let (strip, bands) = overview_bands(
                 area,
                 insets,
+                search,
                 band,
                 bar == enzui_shell::settings::BarEdge::Bottom,
             );
@@ -1290,18 +1282,18 @@ impl Shell {
         Subscription::batch([keys, presented])
     }
 
-    // The desktops beside Search: each one's preview, the current one ringed,
-    // and the empty one at the end as a small add button.
     fn overview_strip(&self, strip: Rect, palette: &enzui_theme::Palette) -> Element<'_, Message> {
         let p = palette.clone();
         let aspect = (self.spread.area[2] / self.spread.area[3].max(1.0)).clamp(0.5, 4.0);
         let height = (strip.height - 6.0).max(1.0);
-        let width = height * aspect;
         let mut cards = iced::widget::row![]
             .spacing(14)
             .align_y(iced::Alignment::Center);
         if let Some(desktops) = &self.desktops {
             let count = desktops.entries.len();
+            let width = (height * aspect)
+                .min((strip.width + 14.0) / count as f32 - 20.0)
+                .max(32.0);
             for (index, desktop) in desktops.entries.iter().enumerate() {
                 let active = desktop.id == desktops.active;
                 let spare = !active && desktop.windows == 0 && index + 1 == count && index > 0;

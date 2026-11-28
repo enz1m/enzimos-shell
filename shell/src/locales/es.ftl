@@ -5723,3 +5723,6 @@ shell-assistant-add-extension-tool = Añadir extensión del asistente
 shell-dictation-fallback-uses = Usa { $arg0 } cuando el inglés en tiempo real está desactivado o no está disponible.
 shell-dictation-fallback-unavailable = Descarga un modelo de voz para dictar en otros idiomas.
 welcome-streaming-english-included = El inglés en tiempo real está incluido. Elige un modelo de voz alternativo si quieres dictar en otros idiomas.
+shell-microphone-cleanup = Limpieza del micrófono
+shell-microphone-cleanup-note = Reduce el zumbido y el ruido de fondo del micrófono predeterminado.
+shell-microphone-cleanup-search = micrófono reducción de ruido zumbido grabación

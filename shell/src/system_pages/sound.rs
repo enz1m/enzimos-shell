@@ -169,7 +169,7 @@ impl SettingsApp {
         if let Some(choice) = choice("sound/input", Kind::Input) {
             input = input.push(choice);
         }
-        let input = input
+        let mut input = input
             .push(self.level_row(
                 "sound/input_volume",
                 sound.input,
@@ -178,6 +178,14 @@ impl SettingsApp {
                 Request::InputMute,
             ))
             .push(self.microphone_test_view(&sound));
+        if let Some(on) = sound.microphone_cleanup {
+            input = input.push(self.switch_setting_noted(
+                "sound/microphone_cleanup",
+                on,
+                tr("shell-microphone-cleanup-note"),
+                |on| Self::request(Request::MicrophoneCleanup(on)),
+            ));
+        }
         body.push(
             self.section_card_for("sound/output", output)
                 .title(tr("shell-output"))

@@ -458,6 +458,16 @@ def main():
         copy(ROOT / "config/systemd" / name, session_target, 0o644)
         track(session_target, "session")
 
+    cleanup_unit = at(prefix / "lib/systemd/user/enzui-microphone-cleanup.service")
+    cleanup_unit.write_text((ROOT / "config/systemd/enzui-microphone-cleanup.service").read_text()
+                            .replace("/usr/share/pipewire/", f"{prefix}/share/pipewire/"))
+    cleanup_unit.chmod(0o644)
+    track(cleanup_unit, "session")
+    cleanup_config = at(prefix / "share/pipewire/enzui-microphone-cleanup.conf")
+    cleanup_config.parent.mkdir(parents=True, exist_ok=True)
+    copy(ROOT / "config/pipewire/enzui-microphone-cleanup.conf", cleanup_config, 0o644)
+    track(cleanup_config, "session")
+
     notices = at(prefix / "share/licenses/enzui-desktop")
     notices.mkdir(parents=True, exist_ok=True)
     copy(xwayland_notice, notices / "Xwayland-COPYING", 0o644)

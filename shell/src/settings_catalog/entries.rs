@@ -1278,6 +1278,13 @@ pub static ENTRIES: &[Entry] = &[
     ),
     entry!(
         Sound,
+        "sound/microphone_cleanup",
+        "shell-microphone-cleanup",
+        "shell-input",
+        "shell-microphone-cleanup-search"
+    ),
+    entry!(
+        Sound,
         "sound/microphone_test",
         "shell-mic-test",
         "shell-input",

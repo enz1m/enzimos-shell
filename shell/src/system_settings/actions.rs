@@ -151,6 +151,15 @@ impl SystemSettings {
                 )
                 .await
                 .map(drop),
+            Request::MicrophoneCleanup(on) => {
+                let command = if *on { "enable" } else { "disable" };
+                self.tool(
+                    "systemctl",
+                    &["--user", command, "--now", MICROPHONE_CLEANUP_UNIT],
+                    12,
+                )
+                .await
+            }
             Request::AudioDevice(device) => run.apply(&Action::AudioDevice(device.clone())).await,
             Request::WifiRadio(on) => run.apply(&Action::Wifi(*on)).await,
             Request::Vpn(uuid, on) => {

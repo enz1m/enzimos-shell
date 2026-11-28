@@ -73,6 +73,9 @@ pub(crate) fn parse_nodes<'a>(
             continue;
         }
         let props = &node["info"]["props"];
+        if props["node.name"] == "enzui_microphone_cleanup" {
+            continue;
+        }
         let kind = match props["media.class"].as_str() {
             Some("Audio/Sink") => Kind::Output,
             Some("Audio/Source") => Kind::Input,

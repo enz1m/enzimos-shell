@@ -27,12 +27,14 @@ impl SystemSettings {
                 output,
                 input,
                 devices: devices.ok(),
+                microphone_cleanup: None,
             };
         }
-        let (output, input, devices) = tokio::join!(
+        let (output, input, devices, microphone_cleanup) = tokio::join!(
             run.run("wpctl", &["get-volume", "@DEFAULT_AUDIO_SINK@"]),
             run.run("wpctl", &["get-volume", "@DEFAULT_AUDIO_SOURCE@"]),
             run.audio_devices(),
+            self.microphone_cleanup(),
         );
         let error = match (&output, run.tool("wpctl")) {
             (_, None) => Some(tr("shell-pipewire-s-wpctl-is-not-installed").into()),
@@ -43,9 +45,36 @@ impl SystemSettings {
             output: output.ok().and_then(|t| parse::level(&t)),
             input: input.ok().and_then(|t| parse::level(&t)),
             devices: devices.ok(),
+            microphone_cleanup,
             error,
         }
     }
+    async fn microphone_cleanup(&self) -> Option<bool> {
+        if !std::path::Path::new("/usr/lib/ladspa/librnnoise_ladspa.so").is_file() {
+            return None;
+        }
+        let status = self
+            .controls
+            .run(
+                "systemctl",
+                &[
+                    "--user",
+                    "show",
+                    MICROPHONE_CLEANUP_UNIT,
+                    "-p",
+                    "LoadState",
+                    "-p",
+                    "ActiveState",
+                ],
+            )
+            .await
+            .ok()?;
+        status
+            .lines()
+            .any(|line| line == "LoadState=loaded")
+            .then(|| status.lines().any(|line| line == "ActiveState=active"))
+    }
+
     pub(super) async fn network(&self) -> Network {
         let run = &self.controls;
         use iced::futures::{StreamExt, stream};

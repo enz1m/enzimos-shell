@@ -5758,3 +5758,6 @@ shell-assistant-add-extension-tool = Add Assistant extension
 shell-dictation-fallback-uses = Uses { $arg0 } when Streaming English is off or unavailable.
 shell-dictation-fallback-unavailable = Download a speech model to dictate in other languages.
 welcome-streaming-english-included = Streaming English is included. Choose a fallback speech model if you want to dictate in other languages.
+shell-microphone-cleanup = Microphone Cleanup
+shell-microphone-cleanup-note = Reduce hum and background noise on the default microphone.
+shell-microphone-cleanup-search = microphone denoise noise suppression static hum recording

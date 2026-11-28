@@ -56,6 +56,8 @@ impl Reading {
     }
 }
 
+const MICROPHONE_CLEANUP_UNIT: &str = "enzui-microphone-cleanup.service";
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
     Display(Vec<display::Change>),
@@ -63,6 +65,7 @@ pub enum Request {
     OutputMute(bool),
     InputVolume(u8),
     InputMute(bool),
+    MicrophoneCleanup(bool),
     AudioDevice(crate::audio_devices::Device),
     WifiRadio(bool),
     Vpn(String, bool),
@@ -195,6 +198,7 @@ impl Request {
                 | Self::OutputMute(_)
                 | Self::InputVolume(_)
                 | Self::InputMute(_)
+                | Self::MicrophoneCleanup(_)
                 | Self::AudioDevice(_)
                 | Self::AgentRevokeIdentity(_)
                 | Self::AgentRevokePermission { .. }
@@ -227,6 +231,7 @@ impl Request {
                 | Self::OutputMute(_)
                 | Self::InputVolume(_)
                 | Self::InputMute(_)
+                | Self::MicrophoneCleanup(_)
                 | Self::WifiRadio(_)
                 | Self::Airplane(_)
                 | Self::Firewall(_)
@@ -332,6 +337,7 @@ impl Reading {
                 s.input.get_or_insert_default().percent = *v;
             }
             (Self::Sound(s), Request::InputMute(m)) => s.input.get_or_insert_default().muted = *m,
+            (Self::Sound(s), Request::MicrophoneCleanup(on)) => s.microphone_cleanup = Some(*on),
             (Self::Sound(s), Request::AudioDevice(device)) => {
                 if let Some(devices) = s.devices.as_mut() {
                     match device.kind {

@@ -63,6 +63,7 @@ pub struct Sound {
     pub output: Option<Level>,
     pub input: Option<Level>,
     pub devices: Option<Devices>,
+    pub microphone_cleanup: Option<bool>,
     pub error: Option<String>,
 }
 

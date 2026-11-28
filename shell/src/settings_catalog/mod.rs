@@ -252,7 +252,7 @@ pub fn icon(route: &str) -> Option<&'static str> {
         "display/night_light_times" => "clock",
         "display/x11_sharp" => "focus",
         "sound/output" => "speaker",
-        "sound/input" | "sound/microphone_test" => "mic",
+        "sound/input" | "sound/microphone_test" | "sound/microphone_cleanup" => "mic",
         "accessibility/reduce_motion" => "move",
         "accessibility/keyboard" => "keyboard",
         "accessibility/menu" => "accessibility",

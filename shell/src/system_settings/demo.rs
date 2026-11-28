@@ -194,6 +194,7 @@ fn initial() -> State {
             }],
         },
         sound: Sound {
+            microphone_cleanup: Some(false),
             output: Some(Level {
                 percent: 64,
                 muted: false,

@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: MIT
+[Unit]
+Description=enzUI microphone cleanup
+PartOf=enzui-session-ready.target
+Wants=wireplumber.service
+After=pipewire.service wireplumber.service
+
+[Service]
+Type=exec
+Environment=LADSPA_PATH=/usr/lib/ladspa
+ExecStart=/usr/bin/pipewire -c /usr/share/pipewire/enzui-microphone-cleanup.conf
+
+[Install]
+WantedBy=enzui-session-ready.target

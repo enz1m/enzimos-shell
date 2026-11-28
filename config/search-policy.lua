@@ -191,6 +191,13 @@ function enzui_search_follow(owner,epoch)
     end
     return {ok=true}
 end
+function enzui_search_refocus_spread()
+    local active, search = hl.get_active_window(), enzui_search_presented
+    if active and active.class == "dev.enzui.WindowSpread" and local_window(search)
+        and search.pinned and active.pid == search.pid and active.monitor == search.monitor then
+        preserve_pointer(function() dispatch(hl.dsp.focus({window=search})) end)
+    end
+end
 function enzui_search_park(owner,epoch)
     transition(owner,epoch)
     local w=search_surface(owner)

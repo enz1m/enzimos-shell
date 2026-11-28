@@ -4721,6 +4721,7 @@ shell-a11y-allow = Allow { $arg0 }
 shell-a11y-enable = Enable { $arg0 }
 shell-a11y-eject = Eject { $arg0 }
 shell-overview-window-close-failed = Could not close the window
+shell-overview-window-move-failed = Could not move the window to that desktop
 shell-overview-close-window = Close { $title }
 shell-overview-window-shortcut = { $title }, shortcut { $key }
 shell-a11y-use = Use { $arg0 }

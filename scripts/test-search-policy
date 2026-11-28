@@ -67,6 +67,15 @@ assert(enzui_search_present(42,monitor.name,740,570,1).ok and enzui_search_prese
 assert(active==search and search.size.x==740 and search.at.x==350 and search.at.y==132)
 assert(app.at.x==100 and app.size.x==400)
 assert(pointer.x==712.5 and pointer.y==540.25)
+local spread=window("0xd",42,"dev.enzui.WindowSpread")
+search.pinned=true
+active=spread
+enzui_search_refocus_spread()
+assert(active==search and pointer.x==712.5 and pointer.y==540.25 and not no_warps)
+spread.pid=43;active=spread
+enzui_search_refocus_spread()
+assert(active==spread)
+search.pinned=false;active=search
 local focus_count=0
 for _,action in ipairs(actions) do if action.name=="focus" then focus_count=focus_count+1 end end
 for _,height in ipairs({80,320,570,80}) do

@@ -863,6 +863,21 @@ impl Compositor {
         }
     }
 
+    /// Moves a spread window to another desktop without switching to it.
+    pub async fn spread_move(&self, id: u64, source: i64, destination: u32) -> Result<(), String> {
+        let reply = self
+            .request(&[
+                "eval",
+                &format!("return enzui_spread_move('{id:x}', {source}, {destination})"),
+            ])
+            .await?;
+        if reply.trim() == "ok" {
+            Ok(())
+        } else {
+            Err(tr("shell-overview-window-move-failed").into())
+        }
+    }
+
     /// Returns mapped window identities so a close request is confirmed by disappearance.
     pub async fn spread_live_windows(&self) -> Result<std::collections::HashSet<u64>, String> {
         let response = self.request(&["-j", "clients"]).await?;

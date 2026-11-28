@@ -4771,6 +4771,7 @@ shell-a11y-allow = Permitir { $arg0 }
 shell-a11y-enable = Activar { $arg0 }
 shell-a11y-eject = Expulsar { $arg0 }
 shell-overview-window-close-failed = No se pudo cerrar la ventana
+shell-overview-window-move-failed = No se pudo mover la ventana a ese escritorio
 shell-overview-close-window = Cerrar { $title }
 shell-overview-window-shortcut = { $title }, atajo { $key }
 shell-a11y-use = Usar { $arg0 }

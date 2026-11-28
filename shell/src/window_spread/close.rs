@@ -7,10 +7,10 @@ use std::{collections::HashSet, time::Instant};
 
 #[derive(Debug, Default)]
 pub(super) struct CloseState {
-    pending: HashSet<u64>,
+    pub(super) pending: HashSet<u64>,
     checking: bool,
     dirty: bool,
-    removed: HashSet<u64>,
+    pub(super) removed: HashSet<u64>,
     reflow: Option<Reflow>,
 }
 
@@ -86,7 +86,7 @@ impl Spread {
         ))
     }
 
-    fn start_reflow(&mut self, at: Instant, reduced: bool) {
+    pub(super) fn start_reflow(&mut self, at: Instant, reduced: bool) {
         if self.close.reflow.is_some() || self.close.removed.is_empty() {
             return;
         }

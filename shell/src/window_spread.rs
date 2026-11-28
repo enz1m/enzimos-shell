@@ -1,4 +1,5 @@
 mod close;
+mod drag;
 
 use super::{Message, Shell, window_settings};
 use close::{CloseState, caption_line};
@@ -158,6 +159,7 @@ pub(crate) struct Spread {
     ready_frames: u8,
     // The overview's desktops strip, overlay-local; Search keeps the keyboard.
     strip: Option<Rect>,
+    moving: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -175,6 +177,8 @@ pub(crate) enum SpreadMessage {
     Select(u64),
     Pick(u64),
     Close(u64),
+    Move(u64, u32),
+    Moved(u64, u64, Result<(), String>),
     CloseRequested(u64, u64, Result<(), String>),
     LiveWindows(u64, Result<std::collections::HashSet<u64>, String>),
     Dismiss,
@@ -616,7 +620,7 @@ fn picture_button<'a>(
         );
         focus_button(picture, activate)
             .semantics(Semantics::new(Role::Button).label(name))
-            .id(format!("overview-window-{id:x}").into())
+            .id(drag::window_widget(id))
             .style_focus(|_, _| Default::default())
             .into()
     } else {
@@ -893,6 +897,46 @@ impl Shell {
                 .live_index(id)
                 .map_or_else(Task::none, |index| self.close_spread(Some(index))),
             SpreadMessage::Close(id) => self.request_spread_close(id),
+            SpreadMessage::Move(id, destination)
+                if self.activities
+                    && self.spread.phase == Phase::Open
+                    && !self.spread.is_reflowing()
+                    && !self.spread.moving
+                    && !self.spread.close.pending.contains(&id)
+                    && self.spread.live_index(id).is_some()
+                    && self.desktops.as_ref().is_some_and(|desktops| {
+                        i64::from(desktops.active) == self.spread.desktop
+                            && destination != desktops.active
+                            && desktops
+                                .entries
+                                .iter()
+                                .any(|desktop| desktop.id == destination)
+                    }) =>
+            {
+                self.spread.moving = true;
+                let compositor = self.compositor.clone();
+                let source = self.spread.desktop;
+                Task::perform(
+                    async move { compositor.spread_move(id, source, destination).await },
+                    move |result| Message::Spread(SpreadMessage::Moved(generation, id, result)),
+                )
+            }
+            SpreadMessage::Moved(sent, id, result) if sent == generation => {
+                self.spread.moving = false;
+                match result {
+                    Err(error) => self.notice = Some(error),
+                    Ok(()) if self.spread.phase == Phase::Open => {
+                        if self.spread.close.removed.insert(id) {
+                            let reduced =
+                                self.window_tokens(self.spread.window).motion.reduced_motion;
+                            self.spread.start_reflow(Instant::now(), reduced);
+                        }
+                    }
+                    Ok(()) => {}
+                }
+                Task::none()
+            }
+            SpreadMessage::Move(..) | SpreadMessage::Moved(..) => Task::none(),
             SpreadMessage::CloseRequested(sent, id, result) if sent == generation => {
                 self.spread_close_requested(id, result)
             }
@@ -1360,7 +1404,7 @@ impl Shell {
                     )
                     .aria_label(enzui_shell::tr!("workspace-caption", "number" => index + 1, "windows" => desktop.windows, "current" => if active { "yes" } else { "no" }))
                     .description(tr("shell-select-desktop"))
-                    .id(format!("overview-desktop-{}", desktop.id).into())
+                    .id(drag::desktop_widget(desktop.id))
                     .tokens(tokens)
                     .width(size.width + 6.0)
                     .height(size.height + 6.0)
@@ -1411,12 +1455,37 @@ impl Shell {
                 ));
             }
         }
-        Some(
-            stack(layers)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into(),
-        )
+        let view = stack(layers)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
+        if self.spread.strip.is_none()
+            || self.spread.phase != Phase::Open
+            || self.spread.is_reflowing()
+            || self.spread.moving
+        {
+            return Some(view);
+        }
+        let targets = self.desktops.iter().flat_map(|desktops| {
+            desktops
+                .entries
+                .iter()
+                .filter(|desktop| desktop.id != desktops.active)
+                .map(|desktop| desktop.id)
+        });
+        Some(drag::overview_drag(
+            view,
+            self.spread
+                .entries
+                .iter()
+                .filter(|entry| {
+                    !self.spread.entry_gone(entry)
+                        && !self.spread.close.pending.contains(&entry.window.stable_id)
+                })
+                .map(|entry| entry.window.stable_id),
+            targets,
+            palette.accent,
+        ))
     }
 
     fn resting_tiles<'a>(

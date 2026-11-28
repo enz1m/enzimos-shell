@@ -208,6 +208,34 @@ function enzui_spread_request_close(owner, id)
     return { ok = false, error = "Window is no longer in the spread" }
 end
 
+function enzui_spread_move(id, source, destination)
+    for address, window in pairs(enzui_desktop.spread) do
+        if window.mapped and window.address == address and window.stable_id == id
+            and regular(window) and workspace_of(window) == source and window.monitor
+            and not enzui_desktop.spread_closing[id] then
+            local state = enzui_desktop_state(window.monitor.name)
+            if state.active ~= source or source == destination then break end
+            for _, candidate in ipairs(state.order) do
+                if candidate == destination then
+                    local result = hl.dispatch(hl.dsp.window.move({
+                        window = window, workspace = destination, follow = false,
+                    }))
+                    if result and result.ok and workspace_of(window) == destination then
+                        hl.dispatch(hl.dsp.window.set_prop({prop="no_anim", value="unset", window=window}))
+                        set_opacity(window, "1")
+                        enzui_desktop.spread[address] = nil
+                        pcall(enzui_search_refocus_spread)
+                        return {ok=true}
+                    end
+                    return {ok=false}
+                end
+            end
+            break
+        end
+    end
+    return {ok=false}
+end
+
 local function spread_prompt_focused(window)
     local old = enzui_desktop.spread_prompt
     local id = window and window.stable_id
